@@ -1,0 +1,109 @@
+tf_range: -2.0671 32.6147 
+key frame nums = 20
+mesh type = structuredSpherical
+world bbox size = 10
+bg img file name = /home/collab/[username]/PhD/codes/vis_user_tool/renderingApps/mesh/land.png
+angle: 0.785398
+angle: 0.825675
+angle: 0.865952
+angle: 0.906229
+angle: 0.946505
+angle: 0.986782
+angle: 1.02706
+angle: 1.06734
+angle: 1.10761
+angle: 1.14789
+angle: 1.18817
+angle: 1.22844
+angle: 1.26872
+angle: 1.309
+angle: 1.34927
+angle: 1.38955
+angle: 1.42983
+angle: 1.4701
+angle: 1.51038
+angle: 1.55066
+angle: 1.59093
+angle: 1.63121
+angle: 1.67149
+angle: 1.71177
+angle: 1.75204
+angle: 1.79232
+angle: 1.8326
+angle: 1.87287
+angle: 1.91315
+angle: 1.95343
+angle: 1.9937
+angle: 2.03398
+angle: 2.07426
+angle: 2.11453
+angle: 2.15481
+angle: 2.19509
+angle: 2.23536
+angle: 2.27564
+angle: 2.31592
+angle: 2.35619
+output_dir:  /home/collab/[username]/PhD/codes/vis_user_tool/python/case_study_4/Out_text
+0.0
+Read Duration: 0:00:00.035969
+Download Duration: 0:00:00.071464
+438.0
+Read Duration: 0:00:00.600513
+Download Duration: 0:00:00.058182
+876.0
+Read Duration: 0:00:00.063071
+Download Duration: 0:00:00.057738
+1314.0
+Read Duration: 0:00:01.031836
+Download Duration: 0:00:00.076222
+1752.0
+Read Duration: 0:00:00.067326
+Download Duration: 0:00:00.068390
+2190.0
+Read Duration: 0:00:00.046015
+Download Duration: 0:00:00.058627
+2628.0
+Read Duration: 0:00:00.070303
+Download Duration: 0:00:00.063612
+3066.0
+Read Duration: 0:00:01.469742
+Download Duration: 0:00:00.060411
+3504.0
+Read Duration: 0:00:00.050162
+Download Duration: 0:00:00.066471
+3942.0
+Read Duration: 0:00:01.190440
+Download Duration: 0:00:00.055689
+4380.0
+Read Duration: 0:00:00.038647
+Download Duration: 0:00:00.057933
+4818.0
+Read Duration: 0:00:01.618931
+Download Duration: 0:00:00.060016
+5256.0
+Read Duration: 0:00:00.077260
+Download Duration: 0:00:00.078016
+5694.0
+Read Duration: 0:00:00.646182
+Download Duration: 0:00:00.057307
+6132.0
+Read Duration: 0:00:00.061120
+Download Duration: 0:00:00.061921
+6570.0
+Read Duration: 0:00:00.041021
+Download Duration: 0:00:00.069791
+7008.0
+Read Duration: 0:00:00.063494
+Download Duration: 0:00:00.059741
+7446.0
+Read Duration: 0:00:01.761834
+Download Duration: 0:00:00.056832
+7884.0
+Read Duration: 0:00:00.057926
+Download Duration: 0:00:00.060417
+8322.0
+Read Duration: 0:00:00.555916
+Download Duration: 0:00:00.057305
+count  0
+Download Duration: 0:00:10.815086
+Data saved to disk

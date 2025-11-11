@@ -1,0 +1,26 @@
+
+0 40.791
+load pos:-10 -5 20
+load dir:0.561659 0.421244 -0.712104
+load up:0 0.682884 -0.730527
+load scale:16.7
+0 40.791
+load pos:-10 -5 20
+load dir:0.561659 0.421244 -0.712104
+load up:0 0.682884 -0.730527
+load scale:16.7
+load pos:-10 -5 20
+load dir:0.561659 0.421244 -0.712104
+load up:0 0.682884 -0.730527
+load scale:16.7
+0 40.1638
+load pos:-10 -5 20
+load dir:0.561659 0.421244 -0.712104
+load up:0 0.682884 -0.730527
+load scale:16.7
+load pos:-10 -5 20
+load dir:0.561659 0.421244 -0.712104
+load up:0 0.682884 -0.730527
+load scale:16.7
+Total render time (seconds): 2287
+Total render time (minutes): 0 minutes

@@ -1,0 +1,30 @@
+{
+    "isheader": true,
+    "data_list": "case2_script_data_list.json",
+    "kf_list": [
+        "case2_script_kf0.json",
+        "case2_script_kf1.json",
+        "case2_script_kf2.json",
+        "case2_script_kf3.json",
+        "case2_script_kf4.json",
+        "case2_script_kf5.json",
+        "case2_script_kf6.json",
+        "case2_script_kf7.json",
+        "case2_script_kf8.json",
+        "case2_script_kf9.json",
+        "case2_script_kf10.json",
+        "case2_script_kf11.json",
+        "case2_script_kf12.json",
+        "case2_script_kf13.json",
+        "case2_script_kf14.json",
+        "case2_script_kf15.json",
+        "case2_script_kf16.json",
+        "case2_script_kf17.json",
+        "case2_script_kf18.json",
+        "case2_script_kf19.json",
+        "case2_script_kf20.json",
+        "case2_script_kf21.json",
+        "case2_script_kf22.json",
+        "case2_script_kf23.json"
+    ]
+}

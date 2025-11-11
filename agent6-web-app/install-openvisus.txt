@@ -1,0 +1,20 @@
+# Install venv if you don’t have it
+sudo apt install python3-venv -y
+
+# Create a virtual environment just for OpenVisus
+python3 -m venv ~/openvisus_env
+
+# Activate it
+source ~/openvisus_env/bin/activate
+
+# Upgrade pip inside it
+pip install --upgrade pip
+
+# Install OpenVisus
+pip install OpenVisus
+
+# Configure OpenVisus
+python -m OpenVisus configure
+
+# Launch the viewer
+python -m OpenVisus viewer

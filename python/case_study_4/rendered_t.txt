@@ -1,0 +1,462 @@
+Reading python/case_study_4/GAD_text/case4_script.json
+path: /home/collab/[username]/PhD/codes/vis_user_tool/python/case_study_4/GAD_text/
+
+Reading /home/collab/[username]/PhD/codes/vis_user_tool/python/case_study_4/GAD_text/case4_script_data_list.json
+
+Reading /home/collab/[username]/PhD/codes/vis_user_tool/python/case_study_4/GAD_text/case4_script_kf0.json
+key frame case4_script_kf0.json with data [ 0 ]
+
+Reading /home/collab/[username]/PhD/codes/vis_user_tool/python/case_study_4/GAD_text/case4_script_kf1.json
+key frame case4_script_kf1.json with data [ 1 ]
+
+Reading /home/collab/[username]/PhD/codes/vis_user_tool/python/case_study_4/GAD_text/case4_script_kf2.json
+key frame case4_script_kf2.json with data [ 2 ]
+
+Reading /home/collab/[username]/PhD/codes/vis_user_tool/python/case_study_4/GAD_text/case4_script_kf3.json
+key frame case4_script_kf3.json with data [ 3 ]
+
+Reading /home/collab/[username]/PhD/codes/vis_user_tool/python/case_study_4/GAD_text/case4_script_kf4.json
+key frame case4_script_kf4.json with data [ 4 ]
+
+Reading /home/collab/[username]/PhD/codes/vis_user_tool/python/case_study_4/GAD_text/case4_script_kf5.json
+key frame case4_script_kf5.json with data [ 5 ]
+
+Reading /home/collab/[username]/PhD/codes/vis_user_tool/python/case_study_4/GAD_text/case4_script_kf6.json
+key frame case4_script_kf6.json with data [ 6 ]
+
+Reading /home/collab/[username]/PhD/codes/vis_user_tool/python/case_study_4/GAD_text/case4_script_kf7.json
+key frame case4_script_kf7.json with data [ 7 ]
+
+Reading /home/collab/[username]/PhD/codes/vis_user_tool/python/case_study_4/GAD_text/case4_script_kf8.json
+key frame case4_script_kf8.json with data [ 8 ]
+
+Reading /home/collab/[username]/PhD/codes/vis_user_tool/python/case_study_4/GAD_text/case4_script_kf9.json
+key frame case4_script_kf9.json with data [ 9 ]
+
+Reading /home/collab/[username]/PhD/codes/vis_user_tool/python/case_study_4/GAD_text/case4_script_kf10.json
+key frame case4_script_kf10.json with data [ 10 ]
+
+Reading /home/collab/[username]/PhD/codes/vis_user_tool/python/case_study_4/GAD_text/case4_script_kf11.json
+key frame case4_script_kf11.json with data [ 11 ]
+
+Reading /home/collab/[username]/PhD/codes/vis_user_tool/python/case_study_4/GAD_text/case4_script_kf12.json
+key frame case4_script_kf12.json with data [ 12 ]
+
+Reading /home/collab/[username]/PhD/codes/vis_user_tool/python/case_study_4/GAD_text/case4_script_kf13.json
+key frame case4_script_kf13.json with data [ 13 ]
+
+Reading /home/collab/[username]/PhD/codes/vis_user_tool/python/case_study_4/GAD_text/case4_script_kf14.json
+key frame case4_script_kf14.json with data [ 14 ]
+
+Reading /home/collab/[username]/PhD/codes/vis_user_tool/python/case_study_4/GAD_text/case4_script_kf15.json
+key frame case4_script_kf15.json with data [ 15 ]
+
+Reading /home/collab/[username]/PhD/codes/vis_user_tool/python/case_study_4/GAD_text/case4_script_kf16.json
+key frame case4_script_kf16.json with data [ 16 ]
+
+Reading /home/collab/[username]/PhD/codes/vis_user_tool/python/case_study_4/GAD_text/case4_script_kf17.json
+key frame case4_script_kf17.json with data [ 17 ]
+
+Reading /home/collab/[username]/PhD/codes/vis_user_tool/python/case_study_4/GAD_text/case4_script_kf18.json
+key frame case4_script_kf18.json with data [ 18 ]
+
+Reading /home/collab/[username]/PhD/codes/vis_user_tool/python/case_study_4/GAD_text/case4_script_kf19.json
+key frame case4_script_kf19.json with data [ 19 ]
+dim 540 405 6
+Load 1312200 :0 00% 
+0 10% 
+0 20% 
+0 30% 
+0 40% 
+0 50% 
+0 60% 
+0 70% 
+0 80% 
+0 90% 
+End load 
+range: 32.6147 -2.0671
+load tf col sz=21 7 
+load earth image: 512 512 4
+volume loaded
+dim 540 405 6
+Load 1312200 :0 00% 
+0 10% 
+0 20% 
+0 30% 
+0 40% 
+0 50% 
+0 60% 
+0 70% 
+0 80% 
+0 90% 
+End load 
+range: 32.6147 -2.0671
+load tf col sz=21 7 
+
+render frame 0 - 1 sec 
+write: f0 0.169071sec 
+write: f1 0.082428sec 
+
+dim 540 405 6
+Load 1312200 :0 00% 
+0 10% 
+0 20% 
+0 30% 
+0 40% 
+0 50% 
+0 60% 
+0 70% 
+0 80% 
+0 90% 
+End load 
+range: 34.2935 -2.05824
+load tf col sz=21 7 
+
+render frame 1 - 2 sec 
+write: f1 0.0772254sec 
+write: f2 0.0814698sec 
+
+dim 540 405 6
+Load 1312200 :0 00% 
+0 10% 
+0 20% 
+0 30% 
+0 40% 
+0 50% 
+0 60% 
+0 70% 
+0 80% 
+0 90% 
+End load 
+range: 33.5373 -2.05368
+load tf col sz=21 7 
+
+render frame 2 - 3 sec 
+write: f2 0.0762173sec 
+write: f3 0.0845929sec 
+
+dim 540 405 6
+Load 1312200 :0 00% 
+0 10% 
+0 20% 
+0 30% 
+0 40% 
+0 50% 
+0 60% 
+0 70% 
+0 80% 
+0 90% 
+End load 
+range: 34.0121 -2.0514
+load tf col sz=21 7 
+
+render frame 3 - 4 sec 
+write: f3 0.0788907sec 
+write: f4 0.0947937sec 
+
+dim 540 405 6
+Load 1312200 :0 00% 
+0 10% 
+0 20% 
+0 30% 
+0 40% 
+0 50% 
+0 60% 
+0 70% 
+0 80% 
+0 90% 
+End load 
+range: 33.7727 -2.0471
+load tf col sz=21 7 
+
+render frame 4 - 5 sec 
+write: f4 0.0737434sec 
+write: f5 0.0983387sec 
+
+dim 540 405 6
+Load 1312200 :0 00% 
+0 10% 
+0 20% 
+0 30% 
+0 40% 
+0 50% 
+0 60% 
+0 70% 
+0 80% 
+0 90% 
+End load 
+range: 33.9616 -2.04764
+load tf col sz=21 7 
+
+render frame 5 - 6 sec 
+write: f5 0.0748232sec 
+write: f6 0.0752911sec 
+
+dim 540 405 6
+Load 1312200 :0 00% 
+0 10% 
+0 20% 
+0 30% 
+0 40% 
+0 50% 
+0 60% 
+0 70% 
+0 80% 
+0 90% 
+End load 
+range: 34.3023 -2.04431
+load tf col sz=21 7 
+
+render frame 6 - 7 sec 
+write: f6 0.0708202sec 
+write: f7 0.0932271sec 
+
+dim 540 405 6
+Load 1312200 :0 00% 
+0 10% 
+0 20% 
+0 30% 
+0 40% 
+0 50% 
+0 60% 
+0 70% 
+0 80% 
+0 90% 
+End load 
+range: 33.6545 -2.04604
+load tf col sz=21 7 
+
+render frame 7 - 8 sec 
+write: f7 0.0719856sec 
+write: f8 0.067272sec 
+
+dim 540 405 6
+Load 1312200 :0 00% 
+0 10% 
+0 20% 
+0 30% 
+0 40% 
+0 50% 
+0 60% 
+0 70% 
+0 80% 
+0 90% 
+End load 
+range: 33.9372 -2.03364
+load tf col sz=21 7 
+
+render frame 8 - 9 sec 
+write: f8 0.0707782sec 
+write: f9 0.0693697sec 
+
+dim 540 405 6
+Load 1312200 :0 00% 
+0 10% 
+0 20% 
+0 30% 
+0 40% 
+0 50% 
+0 60% 
+0 70% 
+0 80% 
+0 90% 
+End load 
+range: 34.1775 -2.03662
+load tf col sz=21 7 
+
+render frame 9 - 10 sec 
+write: f9 0.0682641sec 
+write: f10 0.0663412sec 
+
+dim 540 405 6
+Load 1312200 :0 00% 
+0 10% 
+0 20% 
+0 30% 
+0 40% 
+0 50% 
+0 60% 
+0 70% 
+0 80% 
+0 90% 
+End load 
+range: 34.9857 -2.03807
+load tf col sz=21 7 
+
+render frame 10 - 11 sec 
+write: f10 0.0635757sec 
+write: f11 0.0623451sec 
+
+dim 540 405 6
+Load 1312200 :0 00% 
+0 10% 
+0 20% 
+0 30% 
+0 40% 
+0 50% 
+0 60% 
+0 70% 
+0 80% 
+0 90% 
+End load 
+range: 35.6221 -2.0334
+load tf col sz=21 7 
+
+render frame 11 - 12 sec 
+write: f11 0.061169sec 
+write: f12 0.0654644sec 
+
+dim 540 405 6
+Load 1312200 :0 00% 
+0 10% 
+0 20% 
+0 30% 
+0 40% 
+0 50% 
+0 60% 
+0 70% 
+0 80% 
+0 90% 
+End load 
+range: 35.3289 -2.03047
+load tf col sz=21 7 
+
+render frame 12 - 13 sec 
+write: f12 0.0575097sec 
+write: f13 0.0616669sec 
+
+dim 540 405 6
+Load 1312200 :0 00% 
+0 10% 
+0 20% 
+0 30% 
+0 40% 
+0 50% 
+0 60% 
+0 70% 
+0 80% 
+0 90% 
+End load 
+range: 34.7728 -2.02976
+load tf col sz=21 7 
+
+render frame 13 - 14 sec 
+write: f13 0.0555168sec 
+write: f14 0.0597372sec 
+
+dim 540 405 6
+Load 1312200 :0 00% 
+0 10% 
+0 20% 
+0 30% 
+0 40% 
+0 50% 
+0 60% 
+0 70% 
+0 80% 
+0 90% 
+End load 
+range: 35.1783 -2.02375
+load tf col sz=21 7 
+
+render frame 14 - 15 sec 
+write: f14 0.0513388sec 
+write: f15 0.0600341sec 
+
+dim 540 405 6
+Load 1312200 :0 00% 
+0 10% 
+0 20% 
+0 30% 
+0 40% 
+0 50% 
+0 60% 
+0 70% 
+0 80% 
+0 90% 
+End load 
+range: 34.4813 -2.02482
+load tf col sz=21 7 
+
+render frame 15 - 16 sec 
+write: f15 0.0535506sec 
+write: f16 0.0578892sec 
+
+dim 540 405 6
+Load 1312200 :0 00% 
+0 10% 
+0 20% 
+0 30% 
+0 40% 
+0 50% 
+0 60% 
+0 70% 
+0 80% 
+0 90% 
+End load 
+range: 33.5029 -2.02167
+load tf col sz=21 7 
+
+render frame 16 - 17 sec 
+write: f16 0.0515655sec 
+write: f17 0.0632266sec 
+
+dim 540 405 6
+Load 1312200 :0 00% 
+0 10% 
+0 20% 
+0 30% 
+0 40% 
+0 50% 
+0 60% 
+0 70% 
+0 80% 
+0 90% 
+End load 
+range: 34.4037 -2.01536
+load tf col sz=21 7 
+
+render frame 17 - 18 sec 
+write: f17 0.053263sec 
+write: f18 0.0507748sec 
+
+dim 540 405 6
+Load 1312200 :0 00% 
+0 10% 
+0 20% 
+0 30% 
+0 40% 
+0 50% 
+0 60% 
+0 70% 
+0 80% 
+0 90% 
+End load 
+range: 34.1909 -2.0132
+load tf col sz=21 7 
+
+render frame 18 - 19 sec 
+write: f18 0.0455124sec 
+write: f19 0.0572985sec 
+
+dim 540 405 6
+Load 1312200 :0 00% 
+0 10% 
+0 20% 
+0 30% 
+0 40% 
+0 50% 
+0 60% 
+0 70% 
+0 80% 
+0 90% 
+End load 
+range: 34.3786 -1.97394
+load tf col sz=21 7 
+
+render frame 19 - 20 sec 
+write: f19 0.0509939sec 
+write: f20 0.0551303sec 
+
+Total render time (seconds): 7140
+Total render time (minutes): 0 minutes

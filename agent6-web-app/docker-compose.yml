@@ -1,0 +1,24 @@
+version: '3.8'
+
+services:
+  web:
+    build: .
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./src:/app/src
+      - ./src/static/uploads:/app/src/static/uploads
+    environment:
+      - FLASK_ENV=development
+      - FLASK_APP=src/app.py
+      - DATABASE_URL=sqlite:///app.db
+    depends_on:
+      - db
+
+  db:
+    image: sqlite:latest
+    volumes:
+      - db_data:/data
+
+volumes:
+  db_data:

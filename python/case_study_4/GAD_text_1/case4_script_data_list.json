@@ -1,0 +1,26 @@
+{
+    "list": [
+        {
+            "type": "structuredSpherical",
+            "src": {
+                "name": "/home/collab/[username]/PhD/codes/vis_user_tool/python/case_study_4/Out_text/ocean_2160_810_12_t0_float32.raw",
+                "dims": [
+                    2160,
+                    810,
+                    12
+                ]
+            }
+        },
+        {
+            "type": "structuredSpherical",
+            "src": {
+                "name": "/home/collab/[username]/PhD/codes/vis_user_tool/python/case_study_4/Out_text/ocean_2160_810_12_t4380_float32.raw",
+                "dims": [
+                    2160,
+                    810,
+                    12
+                ]
+            }
+        }
+    ]
+}

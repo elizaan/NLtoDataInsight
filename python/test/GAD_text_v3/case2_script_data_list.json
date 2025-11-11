@@ -1,0 +1,378 @@
+{
+    "list": [
+        {
+            "type": "streamline",
+            "src": {
+                "name": "/home/eliza89/PhD/codes/vis_user_tool/python/test/Out_text/ocean_290_198_23_t2184.vtk",
+                "dims": [
+                    290,
+                    198,
+                    23
+                ]
+            },
+            "time": 2184,
+            "metadata": {
+                "file_size_mb": 5.0379180908203125
+            }
+        },
+        {
+            "type": "streamline",
+            "src": {
+                "name": "/home/eliza89/PhD/codes/vis_user_tool/python/test/Out_text/ocean_290_198_23_t2185.vtk",
+                "dims": [
+                    290,
+                    198,
+                    23
+                ]
+            },
+            "time": 2185,
+            "metadata": {
+                "file_size_mb": 5.0379180908203125
+            }
+        },
+        {
+            "type": "streamline",
+            "src": {
+                "name": "/home/eliza89/PhD/codes/vis_user_tool/python/test/Out_text/ocean_290_198_23_t2186.vtk",
+                "dims": [
+                    290,
+                    198,
+                    23
+                ]
+            },
+            "time": 2186,
+            "metadata": {
+                "file_size_mb": 5.0379180908203125
+            }
+        },
+        {
+            "type": "streamline",
+            "src": {
+                "name": "/home/eliza89/PhD/codes/vis_user_tool/python/test/Out_text/ocean_290_198_23_t2187.vtk",
+                "dims": [
+                    290,
+                    198,
+                    23
+                ]
+            },
+            "time": 2187,
+            "metadata": {
+                "file_size_mb": 5.0379180908203125
+            }
+        },
+        {
+            "type": "streamline",
+            "src": {
+                "name": "/home/eliza89/PhD/codes/vis_user_tool/python/test/Out_text/ocean_290_198_23_t2188.vtk",
+                "dims": [
+                    290,
+                    198,
+                    23
+                ]
+            },
+            "time": 2188,
+            "metadata": {
+                "file_size_mb": 5.0379180908203125
+            }
+        },
+        {
+            "type": "streamline",
+            "src": {
+                "name": "/home/eliza89/PhD/codes/vis_user_tool/python/test/Out_text/ocean_290_198_23_t2189.vtk",
+                "dims": [
+                    290,
+                    198,
+                    23
+                ]
+            },
+            "time": 2189,
+            "metadata": {
+                "file_size_mb": 5.0379180908203125
+            }
+        },
+        {
+            "type": "streamline",
+            "src": {
+                "name": "/home/eliza89/PhD/codes/vis_user_tool/python/test/Out_text/ocean_290_198_23_t2190.vtk",
+                "dims": [
+                    290,
+                    198,
+                    23
+                ]
+            },
+            "time": 2190,
+            "metadata": {
+                "file_size_mb": 5.0379180908203125
+            }
+        },
+        {
+            "type": "streamline",
+            "src": {
+                "name": "/home/eliza89/PhD/codes/vis_user_tool/python/test/Out_text/ocean_290_198_23_t2191.vtk",
+                "dims": [
+                    290,
+                    198,
+                    23
+                ]
+            },
+            "time": 2191,
+            "metadata": {
+                "file_size_mb": 5.0379180908203125
+            }
+        },
+        {
+            "type": "streamline",
+            "src": {
+                "name": "/home/eliza89/PhD/codes/vis_user_tool/python/test/Out_text/ocean_290_198_23_t2192.vtk",
+                "dims": [
+                    290,
+                    198,
+                    23
+                ]
+            },
+            "time": 2192,
+            "metadata": {
+                "file_size_mb": 5.0379180908203125
+            }
+        },
+        {
+            "type": "streamline",
+            "src": {
+                "name": "/home/eliza89/PhD/codes/vis_user_tool/python/test/Out_text/ocean_290_198_23_t2193.vtk",
+                "dims": [
+                    290,
+                    198,
+                    23
+                ]
+            },
+            "time": 2193,
+            "metadata": {
+                "file_size_mb": 5.0379180908203125
+            }
+        },
+        {
+            "type": "streamline",
+            "src": {
+                "name": "/home/eliza89/PhD/codes/vis_user_tool/python/test/Out_text/ocean_290_198_23_t2194.vtk",
+                "dims": [
+                    290,
+                    198,
+                    23
+                ]
+            },
+            "time": 2194,
+            "metadata": {
+                "file_size_mb": 5.0379180908203125
+            }
+        },
+        {
+            "type": "streamline",
+            "src": {
+                "name": "/home/eliza89/PhD/codes/vis_user_tool/python/test/Out_text/ocean_290_198_23_t2195.vtk",
+                "dims": [
+                    290,
+                    198,
+                    23
+                ]
+            },
+            "time": 2195,
+            "metadata": {
+                "file_size_mb": 5.0379180908203125
+            }
+        },
+        {
+            "type": "streamline",
+            "src": {
+                "name": "/home/eliza89/PhD/codes/vis_user_tool/python/test/Out_text/ocean_290_198_23_t2196.vtk",
+                "dims": [
+                    290,
+                    198,
+                    23
+                ]
+            },
+            "time": 2196,
+            "metadata": {
+                "file_size_mb": 5.0379180908203125
+            }
+        },
+        {
+            "type": "streamline",
+            "src": {
+                "name": "/home/eliza89/PhD/codes/vis_user_tool/python/test/Out_text/ocean_290_198_23_t2197.vtk",
+                "dims": [
+                    290,
+                    198,
+                    23
+                ]
+            },
+            "time": 2197,
+            "metadata": {
+                "file_size_mb": 5.0379180908203125
+            }
+        },
+        {
+            "type": "streamline",
+            "src": {
+                "name": "/home/eliza89/PhD/codes/vis_user_tool/python/test/Out_text/ocean_290_198_23_t2198.vtk",
+                "dims": [
+                    290,
+                    198,
+                    23
+                ]
+            },
+            "time": 2198,
+            "metadata": {
+                "file_size_mb": 5.0379180908203125
+            }
+        },
+        {
+            "type": "streamline",
+            "src": {
+                "name": "/home/eliza89/PhD/codes/vis_user_tool/python/test/Out_text/ocean_290_198_23_t2199.vtk",
+                "dims": [
+                    290,
+                    198,
+                    23
+                ]
+            },
+            "time": 2199,
+            "metadata": {
+                "file_size_mb": 5.0379180908203125
+            }
+        },
+        {
+            "type": "streamline",
+            "src": {
+                "name": "/home/eliza89/PhD/codes/vis_user_tool/python/test/Out_text/ocean_290_198_23_t2200.vtk",
+                "dims": [
+                    290,
+                    198,
+                    23
+                ]
+            },
+            "time": 2200,
+            "metadata": {
+                "file_size_mb": 5.0379180908203125
+            }
+        },
+        {
+            "type": "streamline",
+            "src": {
+                "name": "/home/eliza89/PhD/codes/vis_user_tool/python/test/Out_text/ocean_290_198_23_t2201.vtk",
+                "dims": [
+                    290,
+                    198,
+                    23
+                ]
+            },
+            "time": 2201,
+            "metadata": {
+                "file_size_mb": 5.0379180908203125
+            }
+        },
+        {
+            "type": "streamline",
+            "src": {
+                "name": "/home/eliza89/PhD/codes/vis_user_tool/python/test/Out_text/ocean_290_198_23_t2202.vtk",
+                "dims": [
+                    290,
+                    198,
+                    23
+                ]
+            },
+            "time": 2202,
+            "metadata": {
+                "file_size_mb": 5.0379180908203125
+            }
+        },
+        {
+            "type": "streamline",
+            "src": {
+                "name": "/home/eliza89/PhD/codes/vis_user_tool/python/test/Out_text/ocean_290_198_23_t2203.vtk",
+                "dims": [
+                    290,
+                    198,
+                    23
+                ]
+            },
+            "time": 2203,
+            "metadata": {
+                "file_size_mb": 5.0379180908203125
+            }
+        },
+        {
+            "type": "streamline",
+            "src": {
+                "name": "/home/eliza89/PhD/codes/vis_user_tool/python/test/Out_text/ocean_290_198_23_t2204.vtk",
+                "dims": [
+                    290,
+                    198,
+                    23
+                ]
+            },
+            "time": 2204,
+            "metadata": {
+                "file_size_mb": 5.0379180908203125
+            }
+        },
+        {
+            "type": "streamline",
+            "src": {
+                "name": "/home/eliza89/PhD/codes/vis_user_tool/python/test/Out_text/ocean_290_198_23_t2205.vtk",
+                "dims": [
+                    290,
+                    198,
+                    23
+                ]
+            },
+            "time": 2205,
+            "metadata": {
+                "file_size_mb": 5.0379180908203125
+            }
+        },
+        {
+            "type": "streamline",
+            "src": {
+                "name": "/home/eliza89/PhD/codes/vis_user_tool/python/test/Out_text/ocean_290_198_23_t2206.vtk",
+                "dims": [
+                    290,
+                    198,
+                    23
+                ]
+            },
+            "time": 2206,
+            "metadata": {
+                "file_size_mb": 5.0379180908203125
+            }
+        },
+        {
+            "type": "streamline",
+            "src": {
+                "name": "/home/eliza89/PhD/codes/vis_user_tool/python/test/Out_text/ocean_290_198_23_t2207.vtk",
+                "dims": [
+                    290,
+                    198,
+                    23
+                ]
+            },
+            "time": 2207,
+            "metadata": {
+                "file_size_mb": 5.0379180908203125
+            }
+        }
+    ],
+    "global_metadata": {
+        "grid_type": "structured",
+        "coordinate_system": "cartesian",
+        "spacing": [
+            1.0,
+            1.0,
+            1.0
+        ],
+        "origin": [
+            0.0,
+            0.0,
+            0.0
+        ]
+    }
+}

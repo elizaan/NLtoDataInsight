@@ -1,0 +1,260 @@
+python python/case_study_1-3/script_cs1-3.py -save
+Python directory: /home/collab/[username]/PhD/codes/vis_user_tool/python
+Build path: /home/collab/[username]/PhD/codes/vis_user_tool/build/renderingApps/py
+sys.path: ['/home/collab/[username]/PhD/codes/vis_user_tool/python/case_study_1-3', '/usr/lib/python312.zip', '/usr/lib/python3.12', '/usr/lib/python3.12/lib-dynload', '/home/collab/[username]/PhD/codes/vis_user_tool/anm/lib/python3.12/site-packages', '/home/collab/[username]/PhD/codes/vis_user_tool/python', '/home/collab/[username]/PhD/codes/vis_user_tool/build/renderingApps/py']
+set data dims [0, 17280] [0, 12960] [0, 90] t=[0, 10311]
+(90, 1590, 2315) 23.627775 -0.3946291
+0
+4
+8
+12
+16
+20
+24
+28
+32
+36
+40
+44
+48
+52
+56
+60
+64
+68
+72
+76
+80
+84
+88
+92
+96
+100
+104
+108
+112
+116
+120
+124
+128
+132
+136
+140
+144
+148
+152
+156
+160
+164
+168
+172
+176
+180
+184
+188
+192
+196
+200
+204
+208
+212
+216
+220
+224
+228
+232
+236
+generating fixed camera script to:  /home/collab/[username]/PhD/codes/vis_user_tool/python/case_study_1-3/GAD_text/case1_script 
+
+output file name /home/collab/[username]/PhD/codes/vis_user_tool/python/case_study_1-3/GAD_text/case1_script
+filenames: ocean_2315_1590_90_t0_float32.raw ocean_2315_1590_90_t4_float32.raw ocean_2315_1590_90_t8_float32.raw ocean_2315_1590_90_t12_float32.raw ocean_2315_1590_90_t16_float32.raw ocean_2315_1590_90_t20_float32.raw ocean_2315_1590_90_t24_float32.raw ocean_2315_1590_90_t28_float32.raw ocean_2315_1590_90_t32_float32.raw ocean_2315_1590_90_t36_float32.raw ocean_2315_1590_90_t40_float32.raw ocean_2315_1590_90_t44_float32.raw ocean_2315_1590_90_t48_float32.raw ocean_2315_1590_90_t52_float32.raw ocean_2315_1590_90_t56_float32.raw ocean_2315_1590_90_t60_float32.raw ocean_2315_1590_90_t64_float32.raw ocean_2315_1590_90_t68_float32.raw ocean_2315_1590_90_t72_float32.raw ocean_2315_1590_90_t76_float32.raw ocean_2315_1590_90_t80_float32.raw ocean_2315_1590_90_t84_float32.raw ocean_2315_1590_90_t88_float32.raw ocean_2315_1590_90_t92_float32.raw ocean_2315_1590_90_t96_float32.raw ocean_2315_1590_90_t100_float32.raw ocean_2315_1590_90_t104_float32.raw ocean_2315_1590_90_t108_float32.raw ocean_2315_1590_90_t112_float32.raw ocean_2315_1590_90_t116_float32.raw ocean_2315_1590_90_t120_float32.raw ocean_2315_1590_90_t124_float32.raw ocean_2315_1590_90_t128_float32.raw ocean_2315_1590_90_t132_float32.raw ocean_2315_1590_90_t136_float32.raw ocean_2315_1590_90_t140_float32.raw ocean_2315_1590_90_t144_float32.raw ocean_2315_1590_90_t148_float32.raw ocean_2315_1590_90_t152_float32.raw ocean_2315_1590_90_t156_float32.raw ocean_2315_1590_90_t160_float32.raw ocean_2315_1590_90_t164_float32.raw ocean_2315_1590_90_t168_float32.raw ocean_2315_1590_90_t172_float32.raw ocean_2315_1590_90_t176_float32.raw ocean_2315_1590_90_t180_float32.raw ocean_2315_1590_90_t184_float32.raw ocean_2315_1590_90_t188_float32.raw ocean_2315_1590_90_t192_float32.raw ocean_2315_1590_90_t196_float32.raw ocean_2315_1590_90_t200_float32.raw ocean_2315_1590_90_t204_float32.raw ocean_2315_1590_90_t208_float32.raw ocean_2315_1590_90_t212_float32.raw ocean_2315_1590_90_t216_float32.raw ocean_2315_1590_90_t220_float32.raw ocean_2315_1590_90_t224_float32.raw ocean_2315_1590_90_t228_float32.raw ocean_2315_1590_90_t232_float32.raw ocean_2315_1590_90_t236_float32.raw 
+dims: 2315 1590 90 
+cam: 4.73527 -3.04682 -6.37486 0 0.690022 0.723305 0 0.723612 -0.690202 
+tf_range: -0.394629 23.6278 
+key frame interval = 1
+mesh type = structured
+world bbox size = 10
+bg img file name = 
+output_dir:  /home/collab/[username]/PhD/codes/vis_user_tool/python/case_study_1-3/Out_text
+0
+Read Duration: 0:00:34.246005
+Download Duration: 0:00:12.106940
+4
+Read Duration: 0:00:32.646869
+Download Duration: 0:00:12.017146
+8
+Read Duration: 0:00:32.507462
+Download Duration: 0:00:11.809507
+12
+Read Duration: 0:00:32.384738
+Download Duration: 0:00:11.614252
+16
+Read Duration: 0:00:32.485911
+Download Duration: 0:00:11.728511
+20
+Read Duration: 0:00:32.482827
+Download Duration: 0:00:11.759395
+24
+Read Duration: 0:00:33.093831
+Download Duration: 0:00:11.426985
+28
+Read Duration: 0:00:32.264157
+Download Duration: 0:00:11.648777
+32
+Read Duration: 0:00:33.186960
+Download Duration: 0:00:11.483818
+36
+Read Duration: 0:00:35.434247
+Download Duration: 0:00:11.512319
+40
+Read Duration: 0:00:33.173883
+Download Duration: 0:00:11.727337
+44
+Read Duration: 0:00:33.232840
+Download Duration: 0:00:11.521297
+48
+Read Duration: 0:00:33.320795
+Download Duration: 0:00:11.767323
+52
+Read Duration: 0:00:32.923008
+Download Duration: 0:00:12.057948
+56
+Read Duration: 0:00:32.902666
+Download Duration: 0:00:11.741320
+60
+Read Duration: 0:00:32.738612
+Download Duration: 0:00:11.604454
+64
+Read Duration: 0:00:33.053690
+Download Duration: 0:00:11.510169
+68
+Read Duration: 0:00:33.356023
+Download Duration: 0:00:11.603343
+72
+Read Duration: 0:00:32.865003
+Download Duration: 0:00:11.875983
+76
+Read Duration: 0:00:32.482546
+Download Duration: 0:00:11.517532
+80
+Read Duration: 0:00:33.098001
+Download Duration: 0:00:11.426513
+84
+Read Duration: 0:00:35.087538
+Download Duration: 0:00:11.502193
+88
+Read Duration: 0:00:32.599166
+Download Duration: 0:00:12.072105
+92
+Read Duration: 0:00:32.841154
+Download Duration: 0:00:11.669918
+96
+Read Duration: 0:00:32.653958
+Download Duration: 0:00:11.411606
+100
+Read Duration: 0:00:33.158543
+Download Duration: 0:00:11.342768
+104
+Read Duration: 0:00:32.804834
+Download Duration: 0:00:11.684896
+108
+Read Duration: 0:00:32.872946
+Download Duration: 0:00:11.583259
+112
+Read Duration: 0:00:32.767927
+Download Duration: 0:00:11.627424
+116
+Read Duration: 0:00:32.396337
+Download Duration: 0:00:11.522434
+120
+Read Duration: 0:00:32.455589
+Download Duration: 0:00:11.334776
+124
+Read Duration: 0:00:33.391086
+Download Duration: 0:00:11.554247
+128
+Read Duration: 0:00:33.196778
+Download Duration: 0:00:11.512598
+132
+Read Duration: 0:00:33.306975
+Download Duration: 0:00:11.556025
+136
+Read Duration: 0:00:33.362323
+Download Duration: 0:00:11.496047
+140
+Read Duration: 0:00:33.138192
+Download Duration: 0:00:11.669386
+144
+Read Duration: 0:00:32.567427
+Download Duration: 0:00:11.953150
+148
+Read Duration: 0:00:36.071251
+Download Duration: 0:00:12.189891
+152
+Read Duration: 0:00:32.685092
+Download Duration: 0:00:11.821079
+156
+Read Duration: 0:00:32.665058
+Download Duration: 0:00:11.539839
+160
+Read Duration: 0:00:32.919567
+Download Duration: 0:00:11.645917
+164
+Read Duration: 0:00:32.555312
+Download Duration: 0:00:11.834324
+168
+Read Duration: 0:00:32.542436
+Download Duration: 0:00:11.832125
+172
+Read Duration: 0:00:32.586668
+Download Duration: 0:00:11.737065
+176
+Read Duration: 0:00:32.701902
+Download Duration: 0:00:11.815949
+180
+Read Duration: 0:00:32.781597
+Download Duration: 0:00:11.733367
+184
+Read Duration: 0:00:32.351533
+Download Duration: 0:00:11.628698
+188
+Read Duration: 0:00:32.956246
+Download Duration: 0:00:11.478417
+192
+Read Duration: 0:00:33.208955
+Download Duration: 0:00:11.572463
+196
+Read Duration: 0:00:32.717413
+Download Duration: 0:00:11.662176
+200
+Read Duration: 0:00:32.934831
+Download Duration: 0:00:11.511009
+204
+Read Duration: 0:00:32.602614
+Download Duration: 0:00:11.469183
+208
+Read Duration: 0:00:33.114239
+Download Duration: 0:00:11.391925
+212
+Read Duration: 0:00:33.207592
+Download Duration: 0:00:11.455524
+216
+Read Duration: 0:00:32.947549
+Download Duration: 0:00:11.735589
+220
+Read Duration: 0:00:33.070395
+Download Duration: 0:00:12.136743
+224
+Read Duration: 0:00:32.474508
+Download Duration: 0:00:11.880396
+228
+Read Duration: 0:00:32.842595
+Download Duration: 0:00:11.777391
+232
+Read Duration: 0:00:32.828692
+Download Duration: 0:00:12.131818
+236
+Read Duration: 0:00:32.557766
+Download Duration: 0:00:11.573709
+count  0
+Download Duration: 0:44:40.961025

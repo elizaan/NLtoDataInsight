@@ -1,0 +1,3 @@
+[submodule "ext/umesh"]
+	path = ext/umesh
+	url = git@gitlab.com:ingowald/umesh.git

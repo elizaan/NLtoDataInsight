@@ -1,0 +1,9 @@
+{
+    "isheader": true,
+    "data_list": "case4_script_data_list.json",
+    "kf_list": [
+        "case4_script_kf0.json",
+        "case4_script_kf1.json",
+        "case4_script_kf2.json"
+    ]
+}

@@ -1,0 +1,961 @@
+/* Dark Theme ChatGPT-like Interface */
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background-color: #0f0f0f;
+    color: #ffffff;
+    height: 100vh;
+    overflow: hidden;
+}
+
+.container {
+    display: flex;
+    height: 100vh;
+}
+
+/* Resize Handle */
+.resize-handle {
+    width: 5px;
+    background-color: #2a2a2a;
+    cursor: col-resize;
+    position: relative;
+    flex-shrink: 0;
+    transition: background-color 0.2s ease;
+}
+
+.resize-handle:hover {
+    background-color: #00d4aa;
+}
+
+.resize-handle.dragging {
+    background-color: #00d4aa;
+    width: 3px;
+}
+
+/* Left Panel - Chat Interface */
+
+.chat-panel {
+    width: 40%;
+    min-width: 300px;
+    max-width: 70%;
+    background-color: #171717;
+    display: flex;
+    flex-direction: column;
+    position: relative;
+    flex-shrink: 0;
+}
+
+.chat-header {
+    padding: 20px;
+    border-bottom: 1px solid #2a2a2a;
+    background-color: #1a1a1a;
+}
+
+.chat-header h2 {
+    color: #00d4aa;
+    font-size: 1.4em;
+    margin-bottom: 5px;
+}
+
+.chat-header p {
+    color: #888;
+    font-size: 0.9em;
+}
+
+.chat-messages {
+    flex: 1;
+    overflow-y: auto;
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+}
+
+.message {
+    display: flex;
+    gap: 12px;
+    animation: fadeIn 0.5s ease-in;
+}
+
+.message-avatar {
+    width: 35px;
+    height: 35px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+
+.bot-message .message-avatar {
+    background-color: #00d4aa;
+    color: #000;
+}
+
+.user-message .message-avatar {
+    background-color: #4a90e2;
+}
+
+.message-content {
+    flex: 1;
+    background-color: #2a2a2a;
+    padding: 15px;
+    border-radius: 12px;
+    line-height: 1.5;
+}
+
+.user-message .message-content {
+    background-color: #3a3a3a;
+}
+
+.option-buttons {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-top: 15px;
+}
+
+.option-btn {
+    background-color: #333;
+    color: #fff;
+    border: 1px solid #555;
+    padding: 12px 16px;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.option-btn:hover {
+    background-color: #444;
+    border-color: #00d4aa;
+}
+
+.dataset-selection {
+    padding: 20px;
+    border-bottom: 1px solid #2a2a2a;
+}
+
+.dataset-card {
+    background-color: #2a2a2a;
+    border: 2px solid #444;
+    padding: 15px;
+    border-radius: 12px;
+    display: flex;
+    align-items: center;
+    gap: 15px;
+    cursor: pointer;
+    transition: all 0.3s ease;
+}
+
+.dataset-card.selected {
+    border-color: #00d4aa;
+    background-color: #1a3d2e;
+}
+
+.dataset-card i {
+    font-size: 1.5em;
+    color: #00d4aa;
+}
+
+.phenomenon-options {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-top: 15px;
+}
+
+.phenomenon-btn {
+    background-color: #333;
+    color: #fff;
+    border: 1px solid #555;
+    padding: 15px;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    text-align: left;
+}
+
+.phenomenon-btn:hover {
+    background-color: #444;
+    border-color: #00d4aa;
+}
+
+.phenomenon-btn i {
+    color: #00d4aa;
+    width: 20px;
+}
+
+.input-container {
+    position: relative;
+    display: flex;
+    background-color: #2a2a2a;
+    border-radius: 12px;
+    border: 1px solid #444;
+    overflow: hidden;
+}
+
+.input-container input,
+.input-container textarea {
+    flex: 1;
+    background: transparent;
+    border: none;
+    padding: 15px;
+    color: #fff;
+    font-size: 16px;
+    resize: none;
+    outline: none;
+}
+
+.input-container button {
+    background-color: #00d4aa;
+    color: #000;
+    border: none;
+    padding: 15px 20px;
+    cursor: pointer;
+    transition: background-color 0.3s ease;
+}
+
+.input-container button:hover {
+    background-color: #00b894;
+}
+
+.custom-input {
+    padding: 20px;
+    border-bottom: 1px solid #2a2a2a;
+}
+
+.chat-input-container {
+    padding: 20px;
+    background-color: #1a1a1a;
+}
+
+
+/* Right Panel - Animation Display */
+
+.animation-panel {
+    flex: 1;
+    min-width: 400px;
+    background-color: #0f0f0f;
+    display: flex;
+    flex-direction: column;
+}
+
+.animation-header {
+    padding: 8px 16px; /* Shrink vertical padding */
+    border-bottom: 1px solid #2a2a2a;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background-color: #1a1a1a;
+    min-height: 32px; /* Shrink header height */
+    font-size: 0.95em;
+}
+
+.animation-header h3 {
+    color: #fff;
+    font-size: 1em; /* Slightly smaller title */
+    margin: 0;
+}
+
+.animation-status {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: #888;
+}
+
+.status-indicator {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background-color: #00d4aa;
+    animation: pulse 2s infinite;
+}
+
+/* Multi-Panel Animation Grid */
+.animation-grid {
+    flex: 1;
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 15px;
+    padding: 8px; /* Uniform padding - bottom will be set dynamically by JS */
+    width: 100%;
+    height: 100%;
+    overflow-y: auto;
+    background-color: #0a0a0a;
+}
+
+/* Single panel (1 animation) */
+.animation-grid.panel-count-1 {
+    grid-template-columns: 1fr;
+}
+
+/* Two panels (1x2 side-by-side) */
+.animation-grid.panel-count-2 {
+    grid-template-columns: repeat(2, 1fr);
+}
+
+/* Three panels (1 left taking full height, 2 stacked on right) */
+.animation-grid.panel-count-3 {
+    grid-template-columns: repeat(2, 1fr);
+    grid-template-rows: repeat(2, 1fr);
+}
+
+/* Four panels (2x2) */
+.animation-grid.panel-count-4 {
+    grid-template-columns: repeat(2, 1fr);
+    grid-template-rows: repeat(2, 1fr);
+}
+
+.animation-panel-item {
+    position: relative;
+    background-color: #1a1a1a;
+    border: 1px solid #2a2a2a;
+    border-radius: 8px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    transition: all 0.3s ease;
+}
+
+.animation-panel-item:hover {
+    border-color: #00d4aa;
+    box-shadow: 0 0 15px rgba(0, 212, 170, 0.3);
+}
+
+/* First panel in 3-panel layout spans 2 rows on left */
+.animation-grid.panel-count-3 .animation-panel-item:nth-child(1) {
+    grid-row: 1 / 3;
+}
+
+.panel-header {
+    padding: 10px 15px;
+    background-color: #2a2a2a;
+    border-bottom: 1px solid #3a3a3a;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.panel-title {
+    font-size: 12px;
+    color: #00d4aa;
+    font-weight: 600;
+    margin: 0;
+}
+
+.panel-actions {
+    display: flex;
+    gap: 8px;
+}
+
+.panel-action-btn {
+    background-color: transparent;
+    border: 1px solid #444;
+    color: #888;
+    padding: 4px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 12px;
+    transition: all 0.2s ease;
+}
+
+.panel-action-btn:hover {
+    background-color: #333;
+    border-color: #00d4aa;
+    color: #00d4aa;
+}
+
+.panel-viewer {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-start; /* Align to top instead of center */
+    padding: 0; /* No padding */
+    overflow: hidden;
+    min-height: 0; /* Allow flex shrinking */
+}
+
+.panel-canvas {
+    max-width: 100%;
+    max-height: 100%;
+    width: 100%; /* Fill width */
+    height: auto; /* Auto height - respect aspect ratio, don't overflow */
+    object-fit: contain;
+    border-radius: 0; /* Remove border radius for full fill */
+    display: block;
+}
+
+.panel-controls {
+    padding: 6px; /* Reduce padding to save space */
+    background-color: #1a1a1a;
+    border-top: 1px solid #2a2a2a;
+    flex-shrink: 0; /* Don't let controls shrink */
+    min-height: 60px; /* Ensure minimum space for controls */
+}
+
+.panel-control-buttons {
+    display: flex;
+    gap: 5px;
+    justify-content: center;
+    margin-bottom: 8px;
+}
+
+.panel-control-btn {
+    background-color: #333;
+    color: #fff;
+    border: 1px solid #555;
+    padding: 6px 10px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 12px;
+    transition: all 0.2s ease;
+}
+
+.panel-control-btn:hover {
+    background-color: #444;
+    border-color: #00d4aa;
+}
+
+.panel-control-btn.active {
+    background-color: #00d4aa;
+    color: #000;
+}
+
+.panel-progress {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 11px;
+}
+
+.panel-progress input[type="range"] {
+    flex: 1;
+    height: 4px;
+}
+
+.panel-frame-info {
+    color: #888;
+    min-width: 80px;
+    text-align: right;
+}
+
+/* Fullscreen modal for panels */
+.panel-fullscreen-modal {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    background-color: rgba(0, 0, 0, 0.95);
+    z-index: 9999;
+    display: none;
+    flex-direction: column;
+}
+
+.panel-fullscreen-modal.active {
+    display: flex;
+}
+
+.fullscreen-header {
+    padding: 15px 20px;
+    background-color: #1a1a1a;
+    border-bottom: 1px solid #2a2a2a;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.fullscreen-title {
+    color: #00d4aa;
+    font-size: 18px;
+    margin: 0;
+}
+
+.fullscreen-close-btn {
+    background-color: #f44336;
+    color: white;
+    border: none;
+    padding: 8px 16px;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background-color 0.2s ease;
+}
+
+.fullscreen-close-btn:hover {
+    background-color: #d32f2f;
+}
+
+.fullscreen-viewer {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+}
+
+.fullscreen-canvas {
+    max-width: 100%;
+    max-height: calc(100vh - 200px);
+    width: auto;
+    height: auto;
+    object-fit: contain;
+}
+
+.fullscreen-controls {
+    padding: 20px;
+    background-color: #1a1a1a;
+    border-top: 1px solid #2a2a2a;
+}
+
+.animation-viewer {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-start;
+    position: relative;
+    background-color: #0a0a0a;
+    padding: 20px;
+    padding-bottom: 70px;
+    /* Space for minimized system logs */
+    overflow-y: auto;
+    /* Allow scrolling if content is too tall */
+}
+
+.animation-placeholder {
+    text-align: center;
+    color: #666;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+}
+
+.animation-placeholder i {
+    font-size: 4em;
+    margin-bottom: 20px;
+    color: #333;
+}
+
+#animationCanvas,
+#animationPreview {
+    max-width: 100%;
+    max-height: 70vh;
+    width: auto;
+    height: auto;
+    object-fit: contain;
+    border-radius: 8px;
+    display: block;
+    margin: 0 auto 20px auto;
+}
+
+.animation-controls {
+    width: 100%;
+    max-width: 800px;
+    padding: 20px;
+    background-color: #1a1a1a;
+    border-top: 1px solid #2a2a2a;
+    border-radius: 0 0 8px 8px;
+    margin-top: auto;
+}
+
+.control-buttons {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 15px;
+    justify-content: center;
+}
+
+.control-buttons button {
+    background-color: #333;
+    color: #fff;
+    border: 1px solid #555;
+    padding: 12px 16px;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all 0.3s ease;
+}
+
+.control-buttons button:hover {
+    background-color: #444;
+    border-color: #00d4aa;
+}
+
+.control-buttons button.active {
+    background-color: #00d4aa;
+    color: #000;
+}
+
+.progress-container {
+    display: flex;
+    align-items: center;
+    gap: 15px;
+    margin-bottom: 15px;
+}
+
+.progress-container input[type="range"] {
+    flex: 1;
+}
+
+.speed-control {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 15px;
+}
+
+.speed-control input[type="range"] {
+    width: 100px;
+}
+
+.export-controls {
+    text-align: center;
+}
+
+.export-controls button {
+    background-color: #4a90e2;
+    color: #fff;
+    border: none;
+    padding: 12px 24px;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: background-color 0.3s ease;
+}
+
+.export-controls button:hover {
+    background-color: #357abd;
+}
+
+
+/* Custom Scrollbar */
+
+.chat-messages::-webkit-scrollbar {
+    width: 6px;
+}
+
+.chat-messages::-webkit-scrollbar-track {
+    background: #1a1a1a;
+}
+
+.chat-messages::-webkit-scrollbar-thumb {
+    background: #444;
+    border-radius: 3px;
+}
+
+.chat-messages::-webkit-scrollbar-thumb:hover {
+    background: #555;
+}
+
+
+/* Animations */
+
+@keyframes fadeIn {
+    from {
+        opacity: 0;
+        transform: translateY(10px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+@keyframes pulse {
+    0%,
+    100% {
+        opacity: 1;
+    }
+    50% {
+        opacity: 0.5;
+    }
+}
+
+
+/* Input styling */
+
+input[type="range"] {
+    -webkit-appearance: none;
+    appearance: none;
+    height: 6px;
+    background: #333;
+    border-radius: 3px;
+    outline: none;
+}
+
+input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 18px;
+    height: 18px;
+    background: #00d4aa;
+    border-radius: 50%;
+    cursor: pointer;
+}
+
+input[type="range"]::-moz-range-thumb {
+    width: 18px;
+    height: 18px;
+    background: #00d4aa;
+    border-radius: 50%;
+    cursor: pointer;
+    border: none;
+}
+
+
+/* System Logs Section */
+
+.system-logs {
+    position: fixed;
+    bottom: 0;
+    right: 0;
+    width: 60%;
+    /* Match animation panel width - dynamically adjusted via JS */
+    background-color: #1a1a1a;
+    border: 1px solid #2a2a2a;
+    border-bottom: none;
+    border-radius: 8px 8px 0 0;
+    overflow: hidden;
+    height: 250px;
+    min-height: 50px;
+    max-height: 600px;
+    display: flex;
+    flex-direction: column;
+    z-index: 1000;
+    transition: width 0s; /* No transition for width - updated in real-time */
+}
+
+.logs-resize-handle {
+    height: 5px;
+    background-color: #2a2a2a;
+    cursor: row-resize;
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 1001;
+    transition: background-color 0.2s ease;
+}
+
+.logs-resize-handle:hover {
+    background-color: #00d4aa;
+}
+
+.logs-resize-handle.dragging {
+    background-color: #00d4aa;
+    height: 3px;
+}
+
+.system-logs.minimized {
+    height: 50px;
+}
+
+.system-logs.minimized .logs-content {
+    display: none;
+}
+
+.system-logs.minimized .logs-header {
+    padding: 12px 15px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background-color: #3a3a3a;
+    border-bottom: none;
+}
+
+.system-logs.minimized .logs-header h4 {
+    margin: 0;
+    font-size: 14px;
+    color: #fff;
+}
+
+.system-logs.minimized .logs-header h4::after {
+    content: " (minimized - click + to maximize)";
+    font-size: 12px;
+    color: #888;
+    font-weight: normal;
+}
+
+
+/* Pulse effect for minimized logs to indicate activity */
+
+.system-logs.minimized.active {
+    animation: logsPulse 2s ease-in-out infinite;
+}
+
+@keyframes logsPulse {
+    0%,
+    100% {
+        border-color: #2a2a2a;
+    }
+    50% {
+        border-color: #4a9eff;
+    }
+}
+
+.logs-header {
+    padding: 10px 15px;
+    background-color: #2a2a2a;
+    border-bottom: 1px solid #3a3a3a;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.logs-header h4 {
+    color: #00d4aa;
+    font-size: 0.9em;
+    margin: 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.logs-controls {
+    display: flex;
+    gap: 8px;
+}
+
+.logs-controls button {
+    background: none;
+    border: 1px solid #555;
+    color: #ccc;
+    padding: 4px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.8em;
+    transition: all 0.3s ease;
+}
+
+.logs-controls button:hover {
+    background-color: #3a3a3a;
+    border-color: #00d4aa;
+}
+
+.logs-content {
+    flex: 1;
+    overflow-y: auto;
+    padding: 10px;
+    background-color: #0f0f0f;
+    font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+    font-size: 0.8em;
+    line-height: 1.4;
+    max-height: calc(100% - 60px);
+    /* Ensure height constraint for scrolling */
+    min-height: 100px;
+}
+
+.log-placeholder {
+    text-align: center;
+    color: #666;
+    padding: 40px 20px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+}
+
+.log-placeholder i {
+    font-size: 1.5em;
+    color: #444;
+}
+
+.log-entry {
+    margin-bottom: 4px;
+    padding: 2px 0;
+    border-left: 3px solid transparent;
+    padding-left: 8px;
+    word-wrap: break-word;
+    white-space: pre-wrap;
+}
+
+.log-entry.info {
+    color: #00d4aa;
+    border-left-color: #00d4aa;
+}
+
+.log-entry.warning {
+    color: #ffa500;
+    border-left-color: #ffa500;
+}
+
+.log-entry.error {
+    color: #ff6b6b;
+    border-left-color: #ff6b6b;
+}
+
+.log-entry.debug {
+    color: #888;
+    border-left-color: #888;
+}
+
+.log-timestamp {
+    color: #666;
+    font-size: 0.9em;
+    margin-right: 8px;
+}
+
+
+/* Typing animation styles */
+
+.typing-cursor {
+    color: #00d4aa;
+    font-weight: bold;
+    animation: blink 1s infinite;
+}
+
+@keyframes blink {
+    0%,
+    50% {
+        opacity: 1;
+    }
+    51%,
+    100% {
+        opacity: 0;
+    }
+}
+
+.typing-content {
+    margin: 0;
+    min-height: 1em;
+}
+
+
+/* Responsive */
+
+@media (max-width: 768px) {
+    .container {
+        flex-direction: column;
+    }
+    .chat-panel {
+        width: 100%;
+        height: 50vh;
+    }
+    .animation-panel {
+        width: 100%;
+        height: 50vh;
+    }
+    .system-logs {
+        width: 100%;
+        height: 150px;
+        right: 0;
+    }
+    .system-logs.minimized {
+        height: 40px;
+    }
+}

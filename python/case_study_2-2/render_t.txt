@@ -1,0 +1,38 @@
+Start json loading ... 
+
+Reading python/case_study_2-2/GAD_text/case1_script.json
+path: /home/collab/[username]/PhD/codes/vis_user_tool/python/case_study_2-2/GAD_text/
+
+Reading /home/collab/[username]/PhD/codes/vis_user_tool/python/case_study_2-2/GAD_text/case1_script_data_list.json
+
+Reading /home/collab/[username]/PhD/codes/vis_user_tool/python/case_study_2-2/GAD_text/case1_script_kf0.json
+key frame case1_script_kf0.json with data [ 0 ]
+
+Reading /home/collab/[username]/PhD/codes/vis_user_tool/python/case_study_2-2/GAD_text/case1_script_kf1.json
+key frame case1_script_kf1.json with data [ 1 ]
+
+End json loading ... 
+
+-0.0257395 0.023206
+load pos:-10 -2 17
+load dir:0.561659 0.421244 -0.712104
+load up:-0.743462 0.456698 -0.488561
+load scale:77.7
+-0.0257395 0.023206
+load pos:-10 -2 17
+load dir:0.561659 0.421244 -0.712104
+load up:-0.743462 0.456698 -0.488561
+load scale:77.7
+load pos:-10 -2 17
+load dir:0.561659 0.421244 -0.712104
+load up:-0.743462 0.456698 -0.488561
+load scale:77.7
+-0.0295912 0.024569
+load pos:-10 -2 17
+load dir:0.561659 0.421244 -0.712104
+load up:-0.743462 0.456698 -0.488561
+load scale:77.7
+load pos:-10 -2 17
+load dir:0.561659 0.421244 -0.712104
+load up:-0.743462 0.456698 -0.488561
+load scale:77.7

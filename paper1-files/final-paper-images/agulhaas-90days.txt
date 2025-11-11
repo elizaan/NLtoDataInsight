@@ -1,0 +1,276 @@
+Raw data output_dir: /home/collab/[username]/PhD/codes/vis_user_tool/Out_text
+0
+Read Duration: 0:00:02.318178
+Download Duration: 0:00:02.907308
+24
+Read Duration: 0:00:11.997982
+Download Duration: 0:00:02.987667
+48
+Read Duration: 0:00:11.031086
+Download Duration: 0:00:02.942893
+72
+Read Duration: 0:00:12.304469
+Download Duration: 0:00:02.967615
+96
+Read Duration: 0:00:12.151606
+Download Duration: 0:00:03.088544
+120
+Read Duration: 0:00:12.464394
+Download Duration: 0:00:03.004648
+144
+Read Duration: 0:00:11.922755
+Download Duration: 0:00:03.101397
+168
+Read Duration: 0:00:11.376951
+Download Duration: 0:00:02.914746
+192
+Read Duration: 0:00:12.072480
+Download Duration: 0:00:02.967587
+216
+Read Duration: 0:00:11.305086
+Download Duration: 0:00:02.938769
+240
+Read Duration: 0:00:17.031320
+Download Duration: 0:00:02.972645
+264
+Read Duration: 0:00:18.150253
+Download Duration: 0:00:02.923388
+288
+Read Duration: 0:00:16.602421
+Download Duration: 0:00:02.929433
+312
+Read Duration: 0:00:17.330493
+Download Duration: 0:00:02.950051
+336
+Read Duration: 0:00:16.071495
+Download Duration: 0:00:02.938052
+360
+Read Duration: 0:00:16.274225
+Download Duration: 0:00:02.915797
+384
+Read Duration: 0:00:16.591576
+Download Duration: 0:00:02.923732
+408
+Read Duration: 0:00:17.835256
+Download Duration: 0:00:02.916568
+432
+Read Duration: 0:00:16.779787
+Download Duration: 0:00:02.929592
+456
+Read Duration: 0:00:16.252224
+Download Duration: 0:00:02.929714
+480
+Read Duration: 0:00:18.301126
+Download Duration: 0:00:02.900816
+504
+Read Duration: 0:00:16.294503
+Download Duration: 0:00:02.904277
+528
+Read Duration: 0:00:16.448509
+Download Duration: 0:00:02.919541
+552
+Read Duration: 0:00:17.555499
+Download Duration: 0:00:02.913039
+576
+Read Duration: 0:00:17.006941
+Download Duration: 0:00:02.915349
+600
+Read Duration: 0:00:16.573240
+Download Duration: 0:00:02.873467
+624
+Read Duration: 0:00:17.501342
+Download Duration: 0:00:02.911928
+648
+Read Duration: 0:00:16.866475
+Download Duration: 0:00:02.947719
+672
+Read Duration: 0:00:16.587798
+Download Duration: 0:00:02.968905
+696
+Read Duration: 0:00:16.645703
+Download Duration: 0:00:02.910379
+720
+Read Duration: 0:00:05.577849
+Download Duration: 0:00:02.940240
+744
+Read Duration: 0:00:16.655241
+Download Duration: 0:00:02.872433
+768
+Read Duration: 0:00:16.787742
+Download Duration: 0:00:02.885675
+792
+Read Duration: 0:00:16.269865
+Download Duration: 0:00:02.899303
+816
+Read Duration: 0:00:16.914030
+Download Duration: 0:00:02.881882
+840
+Read Duration: 0:00:16.981345
+Download Duration: 0:00:02.901514
+864
+Read Duration: 0:00:16.938756
+Download Duration: 0:00:02.933669
+888
+Read Duration: 0:00:17.048856
+Download Duration: 0:00:03.212856
+912
+Read Duration: 0:00:16.898747
+Download Duration: 0:00:02.957122
+936
+Read Duration: 0:00:16.337781
+Download Duration: 0:00:02.928228
+960
+Read Duration: 0:00:15.083159
+Download Duration: 0:00:02.922020
+984
+Read Duration: 0:00:14.849721
+Download Duration: 0:00:02.986275
+1008
+Read Duration: 0:00:14.864886
+Download Duration: 0:00:02.963393
+1032
+Read Duration: 0:00:14.795273
+Download Duration: 0:00:02.984802
+1056
+Read Duration: 0:00:15.194114
+Download Duration: 0:00:02.887480
+1080
+Read Duration: 0:00:15.346650
+Download Duration: 0:00:02.953389
+1104
+Read Duration: 0:00:14.986890
+Download Duration: 0:00:02.923369
+1128
+Read Duration: 0:00:15.045872
+Download Duration: 0:00:02.936504
+1152
+Read Duration: 0:00:14.758436
+Download Duration: 0:00:02.930439
+1176
+Read Duration: 0:00:15.524729
+Download Duration: 0:00:02.894051
+1200
+Read Duration: 0:00:02.688261
+Download Duration: 0:00:02.876011
+1224
+Read Duration: 0:00:15.210044
+Download Duration: 0:00:02.964529
+1248
+Read Duration: 0:00:15.425816
+Download Duration: 0:00:02.927831
+1272
+Read Duration: 0:00:15.151410
+Download Duration: 0:00:02.896848
+1296
+Read Duration: 0:00:15.346847
+Download Duration: 0:00:02.973786
+1320
+Read Duration: 0:00:15.806997
+Download Duration: 0:00:02.936576
+1344
+Read Duration: 0:00:16.100179
+Download Duration: 0:00:02.928472
+1368
+Read Duration: 0:00:15.184068
+Download Duration: 0:00:02.889283
+1392
+Read Duration: 0:00:15.792565
+Download Duration: 0:00:02.893717
+1416
+Read Duration: 0:00:15.144613
+Download Duration: 0:00:02.936293
+1440
+Read Duration: 0:00:13.126150
+Download Duration: 0:00:02.973296
+1464
+Read Duration: 0:00:19.622391
+Download Duration: 0:00:02.960527
+1488
+Read Duration: 0:00:20.097248
+Download Duration: 0:00:02.955001
+1512
+Read Duration: 0:00:18.659515
+Download Duration: 0:00:02.948125
+1536
+Read Duration: 0:00:20.619811
+Download Duration: 0:00:02.947710
+1560
+Read Duration: 0:00:20.593369
+Download Duration: 0:00:02.884029
+1584
+Read Duration: 0:00:21.189060
+Download Duration: 0:00:02.932368
+1608
+Read Duration: 0:00:21.447202
+Download Duration: 0:00:02.906807
+1632
+Read Duration: 0:00:19.762252
+Download Duration: 0:00:02.947314
+1656
+Read Duration: 0:00:19.020964
+Download Duration: 0:00:03.047105
+1680
+Read Duration: 0:00:20.360442
+Download Duration: 0:00:02.986383
+1704
+Read Duration: 0:00:19.703933
+Download Duration: 0:00:02.952534
+1728
+Read Duration: 0:00:19.239299
+Download Duration: 0:00:02.899565
+1752
+Read Duration: 0:00:20.079556
+Download Duration: 0:00:03.019180
+1776
+Read Duration: 0:00:20.366620
+Download Duration: 0:00:02.956030
+1800
+Read Duration: 0:00:19.526119
+Download Duration: 0:00:03.041042
+1824
+Read Duration: 0:00:20.678897
+Download Duration: 0:00:02.998127
+1848
+Read Duration: 0:00:20.953657
+Download Duration: 0:00:03.008280
+1872
+Read Duration: 0:00:18.977873
+Download Duration: 0:00:02.980111
+1896
+Read Duration: 0:00:20.273821
+Download Duration: 0:00:02.976568
+1920
+Read Duration: 0:00:19.973579
+Download Duration: 0:00:03.039560
+1944
+Read Duration: 0:00:18.713867
+Download Duration: 0:00:02.925287
+1968
+Read Duration: 0:00:19.912646
+Download Duration: 0:00:02.916168
+1992
+Read Duration: 0:00:19.154026
+Download Duration: 0:00:02.980678
+2016
+Read Duration: 0:00:18.734498
+Download Duration: 0:00:03.025588
+2040
+Read Duration: 0:00:21.574541
+Download Duration: 0:00:02.967922
+2064
+Read Duration: 0:00:19.272532
+Download Duration: 0:00:02.997750
+2088
+Read Duration: 0:00:18.397768
+Download Duration: 0:00:03.045469
+2112
+Read Duration: 0:00:20.273389
+Download Duration: 0:00:03.036134
+2136
+Read Duration: 0:00:20.847173
+Download Duration: 0:00:03.051943
+count  0
+Download Duration: 0:29:13.291757
+
+Total render time (milliseconds): 724009
+Total render time (minutes): 12 minutes
