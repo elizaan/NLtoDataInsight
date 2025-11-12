@@ -1,9 +1,9 @@
 """
-Dataset Insight Generator Agent
-Generates insights by querying actual data and creates visualizations
+Dataset Insight Generator - LLM-Driven Intelligence
+LLM decides strategy, aggregation, plots, and self-validates
 """
 from langchain_openai import ChatOpenAI
-from typing import Dict, Any
+from typing import Dict, Any, List
 import json
 import os
 import sys
@@ -13,7 +13,7 @@ import subprocess
 from pathlib import Path
 from datetime import datetime
 
-# [Keep your logging imports as before]
+# [Keep your logging imports - same as before]
 try:
     import importlib.util
     current_script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -47,31 +47,36 @@ class CodeExecutor:
         """Execute Python code from a file path"""
         os.makedirs(os.path.dirname(code_path), exist_ok=True)
         
+        # Basic validation: ensure we actually received code to write
+        if not code or not code.strip():
+            # Still write an empty file for debug, but return an error so caller doesn't try to execute it
+            with open(code_path, "w") as f:
+                f.write(code or "")
+            add_system_log(f"Saved EMPTY code to: {code_path} (LLM returned empty response)", "warning")
+            return {
+                "success": False,
+                "error": "Empty code received from LLM",
+                "code_file": code_path,
+                "stdout": "",
+                "stderr": "Empty code: nothing to execute"
+            }
+
         with open(code_path, "w") as f:
             f.write(code)
 
         add_system_log(f"Saved code to: {code_path}", "info")
-
+        
         try:
-            add_system_log(f"Executing: {code_path} in isolated work_dir={self.work_dir}", "info")
-
-            # Prepare a clean environment to avoid importing the host repo and
-            # other noisy startup logs. Copy current env but remove PYTHONPATH.
-            env = os.environ.copy()
-            if 'PYTHONPATH' in env:
-                env.pop('PYTHONPATH')
-
-            # Ensure execution happens in the executor's temp work_dir to avoid
-            # repository imports that emit logs to stdout/stderr.
+            add_system_log(f"Executing: {code_path}", "info")
+            
             result = subprocess.run(
                 [sys.executable, code_path],
-                cwd=self.work_dir,
-                env=env,
+                cwd=os.path.dirname(code_path),
                 capture_output=True,
                 text=True,
-                timeout=180
+                timeout=300
             )
-
+            
             return {
                 "success": result.returncode == 0,
                 "stdout": result.stdout,
@@ -79,31 +84,34 @@ class CodeExecutor:
                 "return_code": result.returncode,
                 "code_file": code_path
             }
-
+            
         except subprocess.TimeoutExpired:
             return {
                 "success": False,
-                "error": "Execution timed out (180s)",
-                "code_file": code_path
+                "error": "Execution timed out (300s)",
+                "code_file": code_path,
+                "stdout": "",
+                "stderr": "Timeout - code took >5 minutes. Simplify your approach."
             }
         except Exception as e:
             return {
                 "success": False,
                 "error": str(e),
                 "traceback": traceback.format_exc(),
-                "code_file": code_path
+                "code_file": code_path,
+                "stdout": "",
+                "stderr": str(e)
             }
 
 
 class DatasetInsightGenerator:
-    """Generates insights by querying actual dataset data"""
+    """LLM-driven insight generation with full autonomy"""
     
     def __init__(self, api_key: str, base_output_dir: str = None):
         self.llm = ChatOpenAI(
             model="gpt-4o",
             api_key=api_key,
-            # Deterministic code generation is helpful; lower temperature
-            temperature=0.0
+            temperature=0.4  # Higher for creative problem-solving
         )
         
         self.executor = CodeExecutor()
@@ -119,8 +127,9 @@ class DatasetInsightGenerator:
         self.codes_dir = self.base_output_dir / "codes"
         self.insights_dir = self.base_output_dir / "insights"
         self.plots_dir = self.base_output_dir / "plots"
+        self.data_cache_dir = self.base_output_dir / "data_cache"
         
-        for dir_path in [self.codes_dir, self.insights_dir, self.plots_dir]:
+        for dir_path in [self.codes_dir, self.insights_dir, self.plots_dir, self.data_cache_dir]:
             dir_path.mkdir(parents=True, exist_ok=True)
         
         add_system_log(f"Output dirs initialized: {self.base_output_dir}", "info")
@@ -132,7 +141,8 @@ class DatasetInsightGenerator:
         dirs = {
             'codes': self.codes_dir / dataset_id,
             'insights': self.insights_dir / dataset_id,
-            'plots': self.plots_dir / dataset_id
+            'plots': self.plots_dir / dataset_id,
+            'data_cache': self.data_cache_dir / dataset_id
         }
         
         for dir_path in dirs.values():
@@ -140,65 +150,40 @@ class DatasetInsightGenerator:
         
         return dirs
     
-    def _determine_resolution_strategy(
-        self, 
-        dataset_size: str, 
-        query_type: str
-    ) -> Dict[str, Any]:
-        """Determine optimal data resolution"""
-        size_lower = dataset_size.lower()
-        
-        if 'petabyte' in size_lower or 'terabyte' in size_lower:
-            quality = -8
-            sampling = "Very large dataset - use q=-8 (very coarse)"
-        elif 'gigabyte' in size_lower:
-            quality = -4
-            sampling = "Medium dataset - use q=-4 (balanced)"
-        else:
-            quality = -2
-            sampling = "Small dataset - use q=-2 (fine)"
-        
-        # Adjust for query type
-        if query_type in ['max_value', 'min_value', 'average']:
-            quality -= 2
-            sampling += ". Statistical query - coarser OK."
-        elif query_type in ['specific_location', 'time_series']:
-            quality += 1
-            sampling += ". Point query - needs resolution."
-        
-        return {
-            'quality': max(quality, -10),
-            'sampling_strategy': sampling,
-            'reasoning': f"Size: {dataset_size}, Type: {query_type}"
-        }
-    
     def generate_insight(
         self,
         user_query: str,
         intent_result: Dict[str, Any],
-        dataset_info: Dict[str, Any]
+        dataset_info: Dict[str, Any],
+        conversation_context: str = None
     ) -> Dict[str, Any]:
         """
-        Main insight generation function
+        LLM-driven insight generation - LLM decides everything
         
-        Returns complete insight with file paths
+        Args:
+            user_query: The user's question
+            intent_result: Parsed intent from IntentParserAgent
+            dataset_info: Dataset metadata
+            conversation_context: Optional string summary of previous queries and results
         """
         dataset_id = dataset_info.get('id', 'unknown')
         dataset_name = dataset_info.get('name', 'Unknown Dataset')
-        dataset_size = dataset_info.get('size', 'unknown')
         
-        add_system_log(f"Generating insights for: {dataset_id}", "info")
+        add_system_log(f"Starting LLM-driven insight generation for: {dataset_id}", "info")
         
         # Get output directories
         dirs = self._get_dataset_dirs(dataset_id)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         
-        code_file = dirs['codes'] / f"query_{timestamp}.py"
+        # File paths - convert to absolute strings for LLM prompts
+        query_code_file = dirs['codes'] / f"query_{timestamp}.py"
+        plot_code_file = dirs['codes'] / f"plots_{timestamp}.py"
         insight_file = dirs['insights'] / f"insight_{timestamp}.txt"
-        # plot_code_file: the Python script that generates the plot (saved under codes)
-        plot_code_file = dirs['codes'] / f"plot_{timestamp}.py"
-        # plot_png_path: resulting PNG image (saved under plots)
-        plot_png_path = dirs['plots'] / f"plot_{timestamp}.png"
+        data_cache_file = dirs['data_cache'] / f"data_{timestamp}.npz"
+        
+        # Convert to absolute strings for use in LLM prompts (prevents relative path issues)
+        data_cache_file_str = str(data_cache_file.absolute())
+        plot_dir_str = str(dirs['plots'].absolute())
         
         # Extract info
         intent_type = intent_result.get('intent_type', 'UNKNOWN')
@@ -208,253 +193,464 @@ class DatasetInsightGenerator:
         variables = dataset_info.get('variables', [])
         spatial_info = dataset_info.get('spatial_info', {})
         temporal_info = dataset_info.get('temporal_info', {})
+        dataset_size = dataset_info.get('size', 'unknown')
         
-        # Resolution strategy
-        resolution_info = self._determine_resolution_strategy(
-            dataset_size,
-            'max_value' if 'highest' in user_query.lower() else 'general'
-        )
+        # Calculate data scale (for LLM to see)
+        spatial_dims = spatial_info.get('dimensions', {})
+        x = spatial_dims.get('x', 1000)
+        y = spatial_dims.get('y', 1000)
+        z = spatial_dims.get('z', 1)
+        total_timesteps = int(temporal_info.get('total_time_steps', '100'))
+        time_units = temporal_info.get('time_units', 'unknown')
         
-        add_system_log(
-            f"Resolution: q={resolution_info['quality']} - {resolution_info['sampling_strategy']}", 
-            "info"
-        )
+        total_voxels = x * y * z
+        total_data_points = total_voxels * total_timesteps
         
-        # Build system prompt
-        system_prompt = f"""You are a data analysis expert. Answer the user's question by writing Python code to query the actual dataset.
+        # Build system prompt - LLM DECIDES EVERYTHING
+        system_prompt = f"""You are an expert data analyst with full autonomy to solve the user's question.
 
-**User Question:** {user_query}
+**USER QUESTION:** {user_query}
 
-**Intent Analysis:**
+**INTENT ANALYSIS:**
 - Type: {intent_type}
 - Reasoning: {reasoning}
-- Plot hints: {json.dumps(plot_hints, indent=2)}
+- Plot Hints: {json.dumps(plot_hints, indent=2)}
 
-**Dataset Information:**
-- ID: {dataset_id}
-- Name: {dataset_name}
-- Size: {dataset_size}
-- Temporal Range: {temporal_info.get('time_range', {})}
-- Spatial Dimensions: {spatial_info.get('dimensions', {})}
+**CONVERSATION CONTEXT:**
+{conversation_context if conversation_context else "This is the first query in this conversation."}
 
-**Available Variables (with file paths and formats):**
-{json.dumps(variables, indent=2)}
+**DATASET INFORMATION:**
+Name: {dataset_name} ({dataset_size})
+Variables: {json.dumps(variables, indent=2)}
 
-**Resolution Strategy:**
-{resolution_info['reasoning']}
-Recommended quality parameter: {resolution_info['quality']}
-{resolution_info['sampling_strategy']}
+Spatial Dimensions:
+- X: {x:,} points
+- Y: {y:,} points  
+- Z: {z} levels
+- Total spatial points: {total_voxels:,}
 
-**CRITICAL: Multi-Format Support**
-Variables may have different file formats. You MUST:
-1. Check 'file_format' field for each variable
-2. Use appropriate library:
-   - "openvisus idx" or "idx" → OpenVisus
-   - "netcdf" or "nc" or "nc4" → xarray  
-   - "hdf5" or "h5" → h5py
-   - "csv" → pandas
-   - "zarr" → zarr
-3. Load from 'file_path' (URL or local path)
+Geographic Information:
+- Has geographic coordinates: {spatial_info.get('geographic_info', {}).get('has_geographic_info', 'no')}
+- Geographic file: {spatial_info.get('geographic_info', {}).get('geographic_info_file', 'N/A')}
 
+**CRITICAL: Geographic Mapping Intelligence**
+When user mentions LOCATION NAMES (not just x/y indices), you MUST map them to coordinates.
 
-**CODE WRITING GUIDELINES:**
+The dataset has a geographic coordinate file: {spatial_info.get('geographic_info', {}).get('geographic_info_file', 'llc2160_latlon.nc')}
+This file contains latitude[y, x] and longitude[y, x] arrays that map grid indices to real-world coordinates.
 
-For OpenVisus IDX files - USE OPENVISUSPY (the Python wrapper):
+Your geographic knowledge includes:
+- Ocean currents 
+- Seas and oceans 
+- Countries and coastlines 
+- Geographic regions 
+
+**Example of Geographic Mapping:**
+
+Example 3: User asks "currents near Japan"
+You know: Japan location
+Approximate bounds: Lat [30, 45], Lon [130, 145]
+→ Use latlon_to_xy() helper
+
+**Helper Code for Geographic Mapping:**
 ```python
+import xarray as xr
+import numpy as np
+
+# Geographic file path
+geo_file = "{spatial_info.get('geographic_info', {}).get('geographic_info_file', 'llc2160_latlon.nc')}"
+
+def get_dataset_bounds():
+    '''Get actual lat/lon coverage of dataset'''
+    ds = xr.open_dataset(geo_file)
+    lat_center = ds["latitude"].values
+    lon_center = ds["longitude"].values
+    
+    return {{
+        "lat_min": float(lat_center.min()),
+        "lat_max": float(lat_center.max()),
+        "lon_min": float(lon_center.min()),
+        "lon_max": float(lon_center.max())
+    }}
+
+def latlon_to_xy(lat_range, lon_range):
+    '''
+    Convert lat/lon ranges to x/y index ranges
+    
+    Args:
+        lat_range: [min_lat, max_lat] in degrees
+        lon_range: [min_lon, max_lon] in degrees
+    
+    Returns:
+        x_range: [x_min, x_max]
+        y_range: [y_min, y_max]
+    '''
+    ds = xr.open_dataset(geo_file)
+    lat_center = ds["latitude"].values
+    lon_center = ds["longitude"].values
+    
+    # Find indices where coordinates fall within range
+    mask = (
+        (lat_center >= lat_range[0]) & (lat_center <= lat_range[1]) &
+        (lon_center >= lon_range[0]) & (lon_center <= lon_range[1])
+    )
+    
+    y_indices, x_indices = np.where(mask)
+    
+    if len(x_indices) == 0 or len(y_indices) == 0:
+        raise ValueError(f"No data found in lat {{lat_range}}, lon {{lon_range}}")
+    
+    x_min = int(x_indices.min())
+    x_max = int(x_indices.max()) + 1
+    y_min = int(y_indices.min())
+    y_max = int(y_indices.max()) + 1
+    
+    return [x_min, x_max], [y_min, y_max]
+
+def xy_to_latlon(x_range, y_range):
+    '''
+    Convert x/y index ranges to actual lat/lon ranges
+    
+    Args:
+        x_range: [x_min, x_max]
+        y_range: [y_min, y_max]
+    
+    Returns:
+        lat_range: [min_lat, max_lat]
+        lon_range: [min_lon, max_lon]
+    '''
+    ds = xr.open_dataset(geo_file)
+    lat_center = ds["latitude"].values
+    lon_center = ds["longitude"].values
+    
+    # Extract coordinates for the given index range
+    lat = lat_center[y_range[0]:y_range[1], x_range[0]:x_range[1]]
+    lon = lon_center[y_range[0]:y_range[1], x_range[0]:x_range[1]]
+    
+    lat_range = [float(lat.min()), float(lat.max())]
+    lon_range = [float(lon.min()), float(lon.max())]
+    
+    return lat_range, lon_range
+
+# Example usage:
+# bounds = get_dataset_bounds()  # Check what the dataset covers
+# x_range, y_range = latlon_to_xy([-40, -30], [15, 35])  # Agulhas Current
+# lat_range, lon_range = xy_to_latlon([1000, 2000], [500, 1000])  # Reverse lookup
+```
+
+**WORKFLOW for Location Queries:**
+1. User mentions location name (e.g., "Agulhas Current")
+2. You recognize it and recall approximate lat/lon bounds from your knowledge
+3. Optionally check dataset bounds with get_dataset_bounds() to verify coverage
+4. Use latlon_to_xy() helper to convert to x/y indices
+5. Use those indices in your data query
+6. Mention the actual coordinates used in your output
+
+**Important Notes:**
+- These are APPROXIMATE bounds - real features have fuzzy boundaries
+- It's OK to use broad regions (e.g., ±5° buffer is fine)
+- If unsure about exact bounds, estimate conservatively
+- Always mention the lat/lon you used in your output for transparency
+- Check if your requested region is within dataset bounds
+
+
+
+Temporal Information:
+- Total timesteps: {total_timesteps:,}
+- Time units: {time_units}
+- Time range: {temporal_info.get('time_range', {})}
+- Start date: {temporal_info.get('time_range', {}).get('start', 'unknown')}
+- End date: {temporal_info.get('time_range', {}).get('end', 'unknown')}
+- TOTAL DATA POINTS: {total_data_points:,}
+
+**CRITICAL: Temporal Mapping Intelligence**
+The time_range might be in human-readable dates, but your code needs INTEGER timestep indices.
+
+You MUST calculate timestep indices from dates:
+- Dataset starts at: {temporal_info.get('time_range', {}).get('start', '2020-01-20')}
+- Dataset ends at: {temporal_info.get('time_range', {}).get('end', '2021-03-26')}
+- Each timestep = {time_units} (e.g., 1 hour, 1 day)
+- Total timesteps: {total_timesteps:,}
+
+**Examples of Temporal Mapping:**
+
+Example 1: User asks "show me January 2020"
+- Dataset starts: 2020-01-20
+- User wants: 2020-01-01 to 2020-01-31
+- Calculate:
+  * January 1 is 19 days BEFORE dataset start → timestep 0 (clamp to start)
+  * January 31 is 11 days after dataset start → 11 days * 24 hours/day = timestep 264
+- Result: timesteps [0, 264]
+
+Example 2: User asks "February to December 2020"
+- Dataset starts: 2020-01-20
+- User wants: 2020-02-01 to 2020-12-31
+- Calculate:
+  * Feb 1 = 12 days after start = 12 * 24 = timestep 288
+  * Dec 31 = 346 days after start = 346 * 24 = timestep 8304
+- Result: timesteps [288, 8304]
+
+Example 3: User asks "March 15 to March 20, 2020"
+- Dataset starts: 2020-01-20
+- Calculate:
+  * March 15 = 55 days after start = 55 * 24 = timestep 1320
+  * March 20 = 60 days after start = 60 * 24 = timestep 1440
+- Result: timesteps [1320, 1440]
+
+**YOUR TASK:**
+When user mentions dates/months, YOU must:
+1. Parse the user's requested date range
+2. Convert to days/hours relative to dataset start
+3. Multiply by timestep interval ({time_units})
+4. Clamp to [0, {total_timesteps}]
+5. Use these integer indices in your code
+
+**Helper calculation formula:**
+`````python
+from datetime import datetime
+
+# Dataset temporal info
+dataset_start = datetime.strptime("{temporal_info.get('time_range', {}).get('start', '2020-01-20')}", "%Y-%m-%d")
+dataset_end = datetime.strptime("{temporal_info.get('time_range', {}).get('end', '2021-03-26')}", "%Y-%m-%d")
+total_timesteps = {total_timesteps}
+time_unit = "{time_units}"  # e.g., "hours", "days"
+
+# User requested date range
+user_start = datetime.strptime("USER_DATE_HERE", "%Y-%m-%d")
+user_end = datetime.strptime("USER_DATE_HERE", "%Y-%m-%d")
+
+# Calculate timestep indices
+if time_unit == "hours":
+    timestep_start = int((user_start - dataset_start).total_seconds() / 3600)
+    timestep_end = int((user_end - dataset_start).total_seconds() / 3600)
+elif time_unit == "days":
+    timestep_start = (user_start - dataset_start).days
+    timestep_end = (user_end - dataset_start).days
+
+# Clamp to valid range
+timestep_start = max(0, min(timestep_start, total_timesteps - 1))
+timestep_end = max(0, min(timestep_end, total_timesteps - 1))
+
+# Use loop in your code
+for t in range(timestep_start, timestep_end + 1):
+    # Your data reading code
+`````
+
+
+
+**YOUR MISSION:**
+Answer the user's question by intelligently querying and visualizing this dataset.
+
+You have TWO separate code scripts to write:
+1. **Query Code** - Extracts necessary data efficiently
+2. **Plot Code** - Creates meaningful visualizations
+
+---
+
+## PHASE 1: QUERY CODE
+
+**Your Intelligence Required:**
+
+**STEP 1: ANALYZE THE PROBLEM**
+- What does the user actually want to know?
+- What data is needed to answer this?
+- How much computation is this? (Is it {total_data_points:,} points feasible?)
+
+**STEP 2: DECIDE YOUR STRATEGY**
+Consider:
+- If {total_timesteps:,} timesteps is too many → How should you aggregate? (daily? weekly? monthly?)
+- If spatial resolution is too high → What quality level? (q=-2 fine, q=-6 medium, q=-10 coarse)
+- What's the smartest way to sample without losing the answer?
+
+Examples of intelligent strategies:
+- Query asks "highest temperature date" with 10,366 hourly steps
+  → BAD: Check all 10,366 (slow, cluttered)
+  → GOOD: Aggregate by day/week/month, find max in each period, much faster
+  
+- Query asks "temperature at specific location" 
+  → GOOD: Just query that one point at all times, fast
+  
+- Query asks "global average over time"
+  → GOOD: Use coarse spatial resolution (q=-8), compute means
+
+**STEP 3: WRITE SMART QUERY CODE**
+Your code should:
+1. Load data using openvisuspy: `import openvisuspy as ovp`
+2. Apply YOUR intelligent sampling/aggregation strategy
+3. Extract minimal data needed for ALL plot hints
+4. Save intermediate results to: `{data_cache_file_str}`
+5. Print JSON summary to stdout
+
+**Query Code Template (ADAPT THIS):**
+```python
+import openvisuspy as ovp
 import numpy as np
 import json
 
-# Method 1: Use OpenVisusPy (RECOMMENDED - simpler API)
+# YOUR INTELLIGENT STRATEGY HERE
+# Decide: aggregation factor, spatial quality, sampling approach
+
 try:
-    import openvisuspy as ovp
-    
     # Load dataset
-    ds = ovp.LoadDataset("URL_HERE")
+    url = "GET_FROM_VARIABLES"
+    ds = ovp.LoadDataset(url)
     
-    # Read data with quality parameter
-    data = ds.db.read(
-        time=0,  # First timestep
-        x=[0, -1],  # Full x range (-1 means max)
-        y=[0, -1],  # Full y range
-        z=[0, 0],   # Single z slice
-        quality={resolution_info['quality']}  # Use recommended quality (e.g., -8)
+    # YOUR SAMPLING LOGIC
+    # Example: Sample every Nth timestep instead of all
+
+    length_of_timesteps = len(ds.db.getTimesteps())
+    # Extract data
+    results = []
+    for t in YOUR_TIMESTEP_RANGE:
+        data = ds.db.read(
+            time=t,
+            x=[ds.db.getLogicBox()[0][0], ds.db.getLogicBox()[1][0]],  # Full x range (-1 means max)
+            y=[ds.db.getLogicBox()[0][1], ds.db.getLogicBox()[1][1]],  # Full y range (-1 means max)
+            z=[ds.db.getLogicBox()[0][2], ds.db.getLogicBox()[1][2]], 
+            quality=YOUR_CHOSEN_QUALITY  # YOU decide: -2, -6, -8, -10, -20?
+        )
+        
+        # Compute what you need
+        stats = YOUR_COMPUTATION_HERE
+        results.append(stats)
+    
+    # Save for plotting
+    np.savez(
+        '{data_cache_file_str}',
+        **YOUR_DATA_DICT
     )
     
-    # Compute statistics
-    max_value = float(np.max(data))
-    min_value = float(np.min(data))
-    mean_value = float(np.mean(data))
+    # Output summary
+    print(json.dumps({{
+        "status": "success",
+        "strategy": "EXPLAIN YOUR STRATEGY",
+        "data_points_processed": len(results),
+        **YOUR_FINDINGS
+    }}))
     
-    # Find max location
-    max_index = np.unravel_index(np.argmax(data), data.shape)
-    
-    result = {{
-        "max_value": max_value,
-        "min_value": min_value,
-        "mean_value": mean_value,
-        "max_index": list(max_index),
-        "data_shape": list(data.shape)
-    }}
-    
-    print(json.dumps(result))
-    
-except ImportError:
-    # Fallback: Try raw OpenVisus (more complex)
-    import OpenVisus as ov
-    
-    db = ov.LoadDataset("URL_HERE")
-    if not db:
-        print(json.dumps({{"error": "Failed to load dataset"}}))
-        exit(1)
-    
-    access = db.createAccess()
-    query = ov.Query(db, ord('r'))  # Note: ord('r') not 'r'
-    query.position = ov.Position(db.getLogicBox())
-    query.setResolution({resolution_info['quality']})
-    
-    if db.beginQuery(query):
-        db.executeQuery(access, query)
-        if query.buffer:
-            shape = query.getNumberOfSamples()
-            shape_list = [shape[i] for i in range(shape.dim)]
-            data = np.frombuffer(query.buffer.c_ptr(), dtype=np.float32)
-            data = data.reshape(shape_list)
-            
-            result = {{
-                "max_value": float(np.max(data)),
-                "min_value": float(np.min(data)),
-                "data_shape": shape_list
-            }}
-            print(json.dumps(result))
-    else:
-        print(json.dumps({{"error": "Query failed"}}))
-
 except Exception as e:
     print(json.dumps({{"error": str(e)}}))
 ```
 
-**CRITICAL OpenVisusPy Notes:**
-- Import: `import openvisuspy as ovp`
-- Simple API: `ds = ovp.LoadDataset(url)` then `data = ds.db.read(...)`
-- Quality: negative values = coarser (e.g., -8 = very coarse, -1 = fine)
-- Range: Use [0, -1] for full range, -1 means "max"
-- Returns: NumPy array directly
-    # Reshape and analyze...
-```
+**Output query code in <query_code></query_code> tags.**
 
-For NetCDF files:
+---
+
+## PHASE 2: PLOT CODE (After query succeeds)
+
+**Your Intelligence Required:**
+
+**STEP 1: UNDERSTAND PLOT HINTS**
+Plot hints: {plot_hints}
+
+Ask yourself:
+- What visualizations would best answer the user's question?
+- How many distinct plots should I create?
+- What should each plot show?
+
+**STEP 2: DECIDE PLOT STRATEGY**
+Examples:
+- Hint: "plot1 (1D): Temperature" → Time series of temperature
+- Hint: "plot2 (2D): Temperature, Date" → Heatmap or line plot
+- Multiple hints → Create ALL relevant plots (plot_1, plot_2, plot_3, ...)
+
+**STEP 3: WRITE PLOT CODE**
+Your code should:
+1. Load data from `{data_cache_file_str}`
+2. Create meaningful plots based on plot hints and query
+3. Highlight key findings (max values, trends, anomalies)
+4. Save as: `{plot_dir_str}/plot_1_{timestamp}.png`, `plot_2_{timestamp}.png`, etc.
+5. Use matplotlib or plotly
+
+**Plot Code Template (ADAPT THIS):**
 ```python
-import xarray as xr
 import numpy as np
+import matplotlib.pyplot as plt
 import json
 
-# Load dataset
-ds = xr.open_dataset("PATH_OR_URL_HERE")
+# Load cached data
+data = np.load('{data_cache_file_str}')
 
-# Get variable
-var = ds['variable_name']
+# YOUR PLOTTING LOGIC
+# Decide: How many plots? What does each show?
 
-# Compute statistics
-result = {{
-    "max_value": float(var.max()),
-    "min_value": float(var.min()),
-    # ...
-}}
+# Example: Plot 1 - Time series
+plt.figure(figsize=(12, 6))
+# YOUR PLOT CODE
+plt.savefig('{dirs["plots"]}/plot_1_{timestamp}.png', dpi=150, bbox_inches='tight')
+plt.close()
 
-print(json.dumps(result))
+# Example: Plot 2 - Another visualization
+plt.figure(figsize=(10, 6))
+# YOUR PLOT CODE
+plt.savefig('{dirs["plots"]}/plot_2_{timestamp}.png', dpi=150, bbox_inches='tight')
+plt.close()
+
+print(f"Created {{NUM_PLOTS}} plots successfully")
 ```
 
-For CSV files:
-```python
-import pandas as pd
-import json
+**Output plot code in <plot_code></plot_code> tags.**
 
-df = pd.read_csv("PATH_HERE")
-# Analyze...
-```
+---
 
-**YOUR TASK - Generate 3 Separate Outputs:**
+## SELF-VALIDATION & ITERATION
 
-**OUTPUT 1: Data Query Code** (goes to {code_file})
-- Import all necessary libraries at the top
-- Check file_format and use appropriate reader
-- Use quality={resolution_info['quality']} for OpenVisus
-- Compute the answer (max, date, location, etc.)
-- Output results as JSON to stdout:
-  {{"max_value": X, "date": Y, "location": Z}}
-- Handle errors gracefully (print error JSON and exit)
+**If your code fails:**
+1. Read the error message carefully
+2. Understand what went wrong
+3. Modify your approach
+4. Try again (you have 10 attempts for query, 5 for plots)
 
-**OUTPUT 2: Natural Language Insight** (goes to {insight_file})
-After seeing code results, write a clear answer in plain English.
-Example: "The highest temperature is 32.1°C, occurring on August 15, 2020 at coordinates..."
+Common issues:
+- ImportError: Check if openvisuspy available
+- MemoryError: Reduce spatial quality or sampling
+- TimeoutError: Aggregate more aggressively
+- TypeError: Check OpenVisus API syntax
 
-**OUTPUT 3: Visualization Code** (goes to {plot_code_file})
-Standalone Python script that:
-- Imports necessary libraries
-- Loads required data
-- Creates meaningful plot (matplotlib/plotly)
-- Saves plot as PNG/HTML
-- Includes title, labels, legend, colorbar
+**You are in full control.** Make intelligent decisions based on:
+- Data scale
+- User question
+- Plot hints
+- Available resources
 
-**WORKFLOW:**
-1. First, output data query code in <code></code> tags
-2. Wait for execution results
-3. Then output insight in <insight></insight> tags
-4. Then output plot code in <plot_code></plot_code> tags
-5. Finally output JSON summary in <final_answer></final_answer>:
-{{
-    "insight": "Natural language answer",
-    "data_summary": {{...computed values...}},
-    "visualization_description": "Description of plot",
-    "confidence": 0.85
-}}
+---
 
-**ERROR HANDLING:**
-If code fails:
-- Check imports (common: OpenVisus, xarray, numpy)
-- Verify file_format matches library usage
-- Check network connectivity for URLs
-- Try simpler approach or lower resolution
-- Print informative error messages
+## WORKFLOW:
+1. Analyze problem and decide strategy
+2. Write query code → Execute → See result
+3. If fails, debug and retry (up to 10 times)
+4. Once query succeeds, write plot code → Execute → See result
+5. If plot fails, debug and retry (up to 5 times)
+6. Write insight in <insight></insight>
+7. Output final JSON in <final_answer></final_answer>
 
-Begin with OUTPUT 1: Write the data query code in <code></code> tags.
+**Start with PHASE 1: Write your intelligent query code.**
 """
 
         # Initialize conversation
         self.conversation_history = [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": "Write the data query code to answer the user's question."}
+            {"role": "user", "content": "Begin by analyzing the problem and writing your intelligent query code."}
         ]
         
-        max_iterations = 10
-        final_answer = None
-        insight_text = None
-        plot_code = None
-        failed_code_attempts = 0  # Track consecutive failures
-        last_executed_result = None
-        # Lower-level helper to try parsing JSON from stdout (robust to noise)
-        def try_parse_json_from_stdout(text: str):
-            if not text:
-                return None
-            # Heuristics: find first '{' that looks like a JSON object and last matching '}'
-            start = text.find('{')
-            end = text.rfind('}')
-            if start == -1 or end == -1 or end <= start:
-                return None
-            candidate = text[start:end+1]
-            try:
-                return json.loads(candidate)
-            except Exception:
-                # Try to replace single quotes with double and retry (best-effort)
-                try:
-                    candidate2 = candidate.replace("'", '"')
-                    return json.loads(candidate2)
-                except Exception:
-                    return None
-
+        # State tracking
+        current_phase = "query"  # query -> plot -> finalize
+        query_attempts = 0
+        plot_attempts = 0
+        max_query_attempts = 10
+        max_plot_attempts = 5
         
-        for iteration in range(max_iterations):
-            add_system_log(f"=== Iteration {iteration + 1}/{max_iterations} ===", "info")
+        query_success = False
+        plot_success = False
+        query_output = None
+        plot_files = []
+        insight_text = None
+        final_answer = None
+        
+        max_total_iterations = 20
+        
+        for iteration in range(max_total_iterations):
+            add_system_log(f"=== Iteration {iteration + 1}/{max_total_iterations} (Phase: {current_phase}) ===", "info")
             
             try:
                 response = self.llm.invoke(self.conversation_history)
@@ -467,10 +663,12 @@ Begin with OUTPUT 1: Write the data query code in <code></code> tags.
                     "content": assistant_message
                 })
                 
-                # Handle OUTPUT 1: Execute data query code
-                if "<code>" in assistant_message and "</code>" in assistant_message:
-                    code_start = assistant_message.find("<code>") + 6
-                    code_end = assistant_message.find("</code>")
+                # PHASE 1: Query Code
+                if current_phase == "query" and "<query_code>" in assistant_message and "</query_code>" in assistant_message:
+                    query_attempts += 1
+                    
+                    code_start = assistant_message.find("<query_code>") + 12
+                    code_end = assistant_message.find("</query_code>")
                     code = assistant_message[code_start:code_end].strip()
                     
                     # Clean markdown
@@ -482,188 +680,415 @@ Begin with OUTPUT 1: Write the data query code in <code></code> tags.
                         code = code[:-3]
                     code = code.strip()
                     
-                    add_system_log(f"Executing data query code ({len(code)} chars)", "info")
+                    add_system_log(f"Executing query code (attempt {query_attempts}/{max_query_attempts})", "info")
                     
-                    # Execute and save
-                    execution_result = self.executor.execute_code(code, str(code_file))
+                    # Execute query code
+                    execution_result = self.executor.execute_code(code, str(query_code_file))
                     
                     if execution_result["success"]:
-                        stdout = execution_result['stdout']
-                        stderr = execution_result['stderr']
-                        # Try to extract JSON directly from stdout (accept it as data summary)
-                        parsed = try_parse_json_from_stdout(stdout)
-                        if parsed is not None:
-                            last_executed_result = parsed
+                        # Basic success flag from subprocess (exit code == 0)
+                        stdout = execution_result.get('stdout', '') or ''
+                        stderr = execution_result.get('stderr', '') or ''
 
-                        feedback = f"""✓ Data query executed successfully!
+                        # Try to parse stdout as JSON to detect printed error objects
+                        parsed_stdout = None
+                        try:
+                            parsed_stdout = json.loads(stdout.strip()) if stdout.strip() else None
+                        except Exception:
+                            parsed_stdout = None
+
+                        # If the script printed a JSON error or reported failure, treat as failure
+                        if isinstance(parsed_stdout, dict) and (parsed_stdout.get('error') or parsed_stdout.get('status') in ['error', 'failed']):
+                            add_system_log("✗ Query printed error JSON despite exit code 0", "warning")
+                            error_msg = json.dumps(parsed_stdout)
+                        else:
+                            # Ensure data cache file exists (query code must write it)
+                            # Allow short delay for filesystem flush (retry up to 2 seconds)
+                            from pathlib import Path as _P
+                            import time
+                            
+                            file_exists = False
+                            for retry in range(10):
+                                if _P(data_cache_file).exists():
+                                    file_exists = True
+                                    break
+                                time.sleep(0.2)  # Wait 200ms and retry
+                            
+                            if not file_exists:
+                                add_system_log(f"✗ Query did not produce expected data cache: {data_cache_file}", "warning")
+                                error_msg = f"Query finished but did not create data cache: {data_cache_file}. Stdout: {stdout} Stderr: {stderr}"
+                                parsed_stdout = None
+
+                        # If we detected an error-like condition, prompt LLM to fix
+                        if parsed_stdout is None and ('error_msg' in locals()):
+                            query_attempts += 1
+                            if query_attempts >= max_query_attempts:
+                                add_system_log(f"✗ Query failed after {max_query_attempts} attempts", "error")
+                                return {
+                                    'error': f'Query code failed after {max_query_attempts} attempts',
+                                    'last_error': error_msg,
+                                    'confidence': 0.0
+                                }
+
+                            add_system_log(f"✗ Query failed (attempt {query_attempts}/{max_query_attempts})", "warning")
+
+                            # Build targeted hint when known patterns appear
+                            targeted_hint = ""
+                            if "createBoxQuery" in error_msg or "Wrong number or type of arguments" in error_msg:
+                                targeted_hint = (
+                                    "Hint: The OpenVisus C++ binding often expects an integer `time` parameter or specific overloads.\n"
+                                    "Avoid passing Python lists for the `time` argument. Either iterate timesteps (call `ds.db.read(time=t, ...)` per integer t)\n"
+                                    "or use the dataset's `getTimesteps()` to discover available timesteps. Example:\n"
+                                    "````python\nlength = len(ds.db.getTimesteps())\nfor t in range(start, end+1):\n    data = ds.db.read(time=t, x=x_range, y=y_range, z=z_range, quality=-6)\n````\n"
+                                )
+
+                            # Include the last attempted query code for debugging
+                            last_code_snippet = code if len(code) < 2000 else code[:1900] + "\n... (truncated)"
+
+                            feedback = f"""❌ QUERY CODE FAILED (Attempt {query_attempts}/{max_query_attempts})
+
+ERROR/NOTE:
+{error_msg}
+
+TARGETED HINTS:
+{targeted_hint}
+
+LAST QUERY CODE (for reference):
+{last_code_snippet}
+
+**ANALYZE THE ERROR:**
+- What went wrong? (inspect the error above)
+- Is it an import issue, API issue, logic issue, or resource issue?
+
+**DEBUG AND FIX:**
+- Try the targeted hint above if relevant.\n- If it's an API binding error, prefer per-timestep reads or call `ds.db.getTimesteps()` first.\n- Simplify your strategy (smaller region, lower quality) to debug quickly.\n- If you printed JSON for diagnostics, ensure final output prints the result JSON at the end.
+
+Write your corrected query code in <query_code></query_code> tags.
+"""
+
+                            self.conversation_history.append({
+                                "role": "user",
+                                "content": feedback
+                            })
+                        else:
+                            # Consider it a true success
+                            query_output = stdout
+                            query_success = True
+                            current_phase = "plot"
+                            add_system_log("✓ Query code succeeded! Moving to plot phase.", "success")
+                            feedback = f"""✅ QUERY CODE SUCCEEDED!
 
 OUTPUT:
 {stdout}
 
-{f"STDERR/WARNINGS: {stderr}" if stderr else ""}
+{stderr if stderr else ''}
 
+Excellent! Data has been extracted and saved to {data_cache_file_str}.
+
+**Query Output Summary:**
+{stdout}
+
+**Data Structure:** The query code saved data with these keys. When you load the npz file, inspect `data.files` to see all available keys, or check the query code above to see what was saved.
+
+**NOW MOVE TO PHASE 2:**
+Write plot code that:
+1. Loads data from {data_cache_file_str}
+2. Inspects available keys: `data = np.load(...); print("Available keys:", data.files)`
+3. Creates ALL relevant plots based on plot hints: {plot_hints}
+4. Makes visualizations that answer: "{user_query}"
+5. Saves plots as plot_1_{timestamp}.png, plot_2_{timestamp}.png, etc. in {plot_dir_str}
+
+**IMPORTANT:** Check what keys exist in the npz file before accessing them. Use `data.files` or look at the query code above.
+
+Write your intelligent plot code in <plot_code></plot_code> tags.
 """
-
-                        if parsed is not None:
-                            # If the executed code printed JSON, ask the LLM to use that to
-                            # produce insight, plot code, and final_answer. Include the parsed
-                            # JSON explicitly to avoid parsing errors in later iterations.
-                            feedback += "\nI have parsed the following JSON result from the code execution:\n"
-                            feedback += json.dumps(parsed, indent=2)
-                            feedback += (
-                                "\n\nPlease now provide:\n"
-                                "1. Natural language insight in <insight></insight> tags\n"
-                                "2. Visualization code in <plot_code></plot_code> tags (if appropriate)\n"
-                                "3. Final JSON summary in <final_answer></final_answer> tags\n"
-                            )
-                            # Also attach the parsed data to the conversation history as assistant note
                             self.conversation_history.append({
-                                "role": "assistant",
-                                "content": json.dumps({"_executed_result": parsed})
+                                "role": "user",
+                                "content": feedback
                             })
-                        else:
-                            feedback += "\nGood! Now provide:\n1. Natural language insight in <insight></insight> tags\n2. Visualization code in <plot_code></plot_code> tags\n3. Final JSON summary in <final_answer></final_answer> tags\n"
+                    
                     else:
-                        error_msg = execution_result.get('stderr', execution_result.get('error', 'Unknown'))
+                        # Query failed (subprocess returned non-zero or timeout)
+                        error_msg = execution_result.get('stderr', '') or execution_result.get('error', '') or 'Unknown error'
+
+                        # Detect timeout specifically
+                        is_timeout = False
+                        try:
+                            err_lower = error_msg.lower()
+                            if 'timed out' in err_lower or 'timeout' in err_lower or 'took >5' in err_lower:
+                                is_timeout = True
+                        except Exception:
+                            is_timeout = False
+
+                        if is_timeout:
+                            add_system_log(f"✗ Query timed out after allowed runtime (300s). Aborting query and asking LLM for smaller alternatives.", "warning")
+
+                            # Ask LLM to produce intelligent smaller-subset suggestions and a short insight message
+                            prompt = {
+                                "role": "user",
+                                "content": (
+                                    "The data extraction script you generated timed out after 5 minutes while attempting the user's request.\n"
+                                    f"User query: {user_query}\n"
+                                    f"Dataset: {dataset_name} (timesteps={total_timesteps}, time_units={time_units})\n"
+                                    "Please propose 4 concrete, actionable smaller queries the user can ask that are likely to complete quickly.\n"
+                                    "For EACH suggestion provide: id, short_description, why_it_helps, estimated_cost ('low'|'medium'|'high'), and a one-line code hint or parameter change.\n"
+                                    "Return ONLY valid JSON with keys: 'message' (short user-facing string) and 'suggestions' (an array of suggestion objects).\n"
+                                    "Example suggestion object:\n"
+                                    "{\"id\": 1, \"short_description\": \"Monthly averages at coarse LOD\", \"why_it_helps\": \"Reduces temporal resolution and spatial detail\", \"estimated_cost\": \"low\", \"code_hint\": \"use quality=-10 and aggregate by month using a small time window\"}\n"
+                                )
+                            }
+
+                            # Append and call LLM synchronously
+                            self.conversation_history.append(prompt)
+                            try:
+                                response = self.llm.invoke(self.conversation_history)
+                                suggestion_text = response.content
+                            except Exception as e:
+                                suggestion_text = (
+                                    '{"message": "Could not generate suggestions automatically.", "suggestions": []}'
+                                )
+
+                            # Try to parse JSON out of the LLM reply
+                            suggestions_json = None
+                            try:
+                                suggestions_json = json.loads(suggestion_text)
+                            except Exception:
+                                # Attempt to locate a JSON substring
+                                import re
+                                m = re.search(r"\{.*\}", suggestion_text, flags=re.S)
+                                if m:
+                                    try:
+                                        suggestions_json = json.loads(m.group(0))
+                                    except Exception:
+                                        suggestions_json = None
+
+                            # Build insight message
+                            if suggestions_json is None:
+                                insight_msg = (
+                                    "The data extraction timed out after 5 minutes. I couldn't parse structured suggestions from the LLM,\n"
+                                    "but here is the raw LLM output to help you pick a smaller request:\n\n" + suggestion_text
+                                )
+                            else:
+                                insight_msg = suggestions_json.get('message', 'The query timed out. Consider one of the suggested smaller queries.')
+
+                            # Save insight
+                            with open(insight_file, 'w') as f:
+                                f.write(insight_msg + "\n\nSuggestions:\n")
+                                f.write(json.dumps(suggestions_json, indent=2) if suggestions_json else suggestion_text)
+
+                            add_system_log("✓ Timeout insight saved and suggestions generated", "info")
+
+                            # Return a final structured result indicating timeout and suggestions
+                            return {
+                                'status': 'timeout',
+                                'message': insight_msg,
+                                'suggestions': suggestions_json if suggestions_json else suggestion_text,
+                                'query_code_file': str(query_code_file),
+                                'insight_file': str(insight_file),
+                                'confidence': 0.3
+                            }
+
+                        # Non-timeout failures: retry flow
+                        if query_attempts >= max_query_attempts:
+                            add_system_log(f"✗ Query failed after {max_query_attempts} attempts", "error")
+                            return {
+                                'error': f'Query code failed after {max_query_attempts} attempts',
+                                'last_error': error_msg,
+                                'confidence': 0.0
+                            }
+
+                        add_system_log(f"✗ Query failed (attempt {query_attempts}/{max_query_attempts})", "warning")
                         
-                        # Extract key error lines
-                        error_lines = error_msg.split('\n')
-                        main_errors = [line for line in error_lines if 'Error' in line or 'Exception' in line or 'Traceback' in line]
-                        
-                        feedback = f"""✗ Code execution FAILED!
+                        # Detect empty code error and provide specific feedback
+                        if "Empty code" in error_msg or "empty response" in error_msg.lower():
+                            feedback = f"""❌ QUERY CODE FAILED - EMPTY CODE RETURNED (Attempt {query_attempts}/{max_query_attempts})
 
-FULL ERROR:
-{error_msg}
+**PROBLEM:** You returned an empty <query_code></query_code> block or the code extraction failed.
 
-{f"KEY ERROR: {main_errors[-1] if main_errors else 'See full error above'}" if main_errors else ""}
+**REQUIRED:** You MUST write actual Python code inside the <query_code></query_code> tags.
 
-**SPECIFIC FIXES:**
-
-If OpenVisus/TypeError errors:
-❌ WRONG: query = ov.Query(db, 'r')  # This causes TypeError!
-✅ CORRECT: Use OpenVisusPy instead:
+**Example structure:**
 ```python
 import openvisuspy as ovp
 import numpy as np
 import json
 
-ds = ovp.LoadDataset("YOUR_URL")
-data = ds.db.read(time=0, x=[0,-1], y=[0,-1], z=[0,0], quality=-8)
+# YOUR CODE HERE
+# 1. Load dataset
+# 2. Extract data
+# 3. Save to npz file: np.savez('{data_cache_file_str}', your_data=...)
+# 4. Print JSON summary to stdout
 
-result = {{
-    "max_value": float(np.max(data)),
-    "min_value": float(np.min(data)),
-    "mean_value": float(np.mean(data)),
-    "data_shape": list(data.shape)
-}}
-print(json.dumps(result))
+print(json.dumps({{"status": "success", "message": "..."}}}))
 ```
 
-Common fixes:
-- Missing imports? Add: import OpenVisus as ov, import numpy as np, etc.
-- Check file_format field matches library you're using
-- For OpenVisus: Ensure URL is accessible and format is correct
-- For NetCDF: Check if xarray can open the URL/path
-- Network timeout? Try lower resolution or smaller region
-- Wrong variable name? Check variables list
-
-Fix the code and try again in <code></code> tags.
+Write your COMPLETE query code (with actual logic, not empty) in <query_code></query_code> tags NOW.
 """
-                    
-                    self.conversation_history.append({
-                        "role": "user",
-                        "content": feedback
-                    })
+                        else:
+                            feedback = f"""❌ QUERY CODE FAILED (Attempt {query_attempts}/{max_query_attempts})
+
+ERROR:
+{error_msg}
+
+**ANALYZE THE ERROR:**
+- What went wrong?
+- Is it an import issue, API issue, logic issue, or resource issue?
+
+**DEBUG AND FIX:**
+- Try a different approach
+- Simplify your strategy if needed
+- Check API syntax
+- Reduce data scale if memory/timeout
+
+Write your corrected query code in <query_code></query_code> tags.
+"""
+                        self.conversation_history.append({
+                            "role": "user",
+                            "content": feedback
+                        })
                 
-                # Handle OUTPUT 2: Extract insight text
-                elif "<insight>" in assistant_message and "</insight>" in assistant_message:
+                # PHASE 2: Plot Code
+                elif current_phase == "plot" and "<plot_code>" in assistant_message and "</plot_code>" in assistant_message:
+                    plot_attempts += 1
+                    
+                    code_start = assistant_message.find("<plot_code>") + 11
+                    code_end = assistant_message.find("</plot_code>")
+                    code = assistant_message[code_start:code_end].strip()
+                    
+                    # Clean markdown
+                    if code.startswith("```python"):
+                        code = code[9:]
+                    elif code.startswith("```"):
+                        code = code[3:]
+                    if code.endswith("```"):
+                        code = code[:-3]
+                    code = code.strip()
+                    
+                    add_system_log(f"Executing plot code (attempt {plot_attempts}/{max_plot_attempts})", "info")
+                    
+                    # Execute plot code
+                    execution_result = self.executor.execute_code(code, str(plot_code_file))
+                    
+                    if execution_result["success"]:
+                        plot_success = True
+                        current_phase = "finalize"
+                        
+                        # Find generated plots
+                        plot_files = sorted(list(dirs['plots'].glob(f"plot_*_{timestamp}.png")))
+                        
+                        add_system_log(f"✓ Plot code succeeded! Found {len(plot_files)} plots.", "success")
+                        
+                        feedback = f"""✅ PLOT CODE SUCCEEDED!
+
+OUTPUT:
+{execution_result['stdout']}
+
+Generated {len(plot_files)} plots:
+{[f.name for f in plot_files]}
+
+**NOW FINALIZE:**
+1. Write natural language insight in <insight></insight> tags explaining your findings
+2. Write final JSON summary in <final_answer></final_answer> tags with:
+{{
+    "insight": "Your explanation",
+    "data_summary": {{...key findings...}},
+    "visualization_description": "What the plots show",
+    "confidence": 0.85
+}}
+"""
+                        self.conversation_history.append({
+                            "role": "user",
+                            "content": feedback
+                        })
+                    
+                    else:
+                        # Plot failed
+                        error_msg = execution_result['stderr']
+                        
+                        if plot_attempts >= max_plot_attempts:
+                            add_system_log(f"✗ Plot failed after {max_plot_attempts} attempts", "error")
+                            current_phase = "finalize"
+                            feedback = """⚠ Plot code failed multiple times. 
+
+Proceed to write:
+1. Insight based on query results in <insight></insight>
+2. Final answer in <final_answer></final_answer> (mention plot generation failed)
+"""
+                            self.conversation_history.append({
+                                "role": "user",
+                                "content": feedback
+                            })
+                        else:
+                            add_system_log(f"✗ Plot failed (attempt {plot_attempts}/{max_plot_attempts})", "warning")
+                            
+                            # Detect empty code error and provide specific feedback
+                            if "Empty code" in error_msg or "empty response" in error_msg.lower():
+                                feedback = f"""❌ PLOT CODE FAILED - EMPTY CODE RETURNED (Attempt {plot_attempts}/{max_plot_attempts})
+
+**PROBLEM:** You returned an empty <plot_code></plot_code> block or the code extraction failed.
+
+**REQUIRED:** You MUST write actual Python code inside the <plot_code></plot_code> tags.
+
+**Example structure:**
+```python
+import numpy as np
+import matplotlib.pyplot as plt
+
+# Load data
+data = np.load('{data_cache_file_str}')
+print("Available keys:", data.files)
+
+# YOUR PLOTTING LOGIC HERE
+# Create meaningful visualizations
+
+# Save plots
+plt.savefig('{plot_dir_str}/plot_1_{{timestamp}}.png', dpi=150, bbox_inches='tight')
+plt.close()
+```
+
+Write your COMPLETE plot code (with actual logic, not empty) in <plot_code></plot_code> tags NOW.
+"""
+                            else:
+                                feedback = f"""❌ PLOT CODE FAILED (Attempt {plot_attempts}/{max_plot_attempts})
+
+ERROR:
+{error_msg}
+
+**DEBUG AND FIX:**
+- Check if data file exists and loads correctly
+- Verify matplotlib syntax
+- Ensure plot file paths are correct
+- Simplify if needed
+
+Write corrected plot code in <plot_code></plot_code> tags.
+"""
+                            self.conversation_history.append({
+                                "role": "user",
+                                "content": feedback
+                            })
+                
+                # PHASE 3: Insight
+                elif current_phase == "finalize" and "<insight>" in assistant_message and "</insight>" in assistant_message:
                     insight_start = assistant_message.find("<insight>") + 9
                     insight_end = assistant_message.find("</insight>")
                     insight_text = assistant_message[insight_start:insight_end].strip()
                     
-                    # Save insight
                     with open(insight_file, 'w') as f:
                         f.write(insight_text)
                     
-                    add_system_log(f"✓ Insight saved to: {insight_file}", "success")
+                    add_system_log(f"✓ Insight saved", "success")
                     
                     self.conversation_history.append({
                         "role": "user",
-                        "content": "Excellent! Now provide the visualization code in <plot_code></plot_code> tags."
+                        "content": "Now provide final JSON in <final_answer></final_answer> tags."
                     })
                 
-                # Handle OUTPUT 3: Extract plot code
-                elif "<plot_code>" in assistant_message and "</plot_code>" in assistant_message:
-                    plot_start = assistant_message.find("<plot_code>") + 11
-                    plot_end = assistant_message.find("</plot_code>")
-                    plot_code = assistant_message[plot_start:plot_end].strip()
-                    
-                    # Clean markdown
-                    if plot_code.startswith("```python"):
-                        plot_code = plot_code[9:]
-                    elif plot_code.startswith("```"):
-                        plot_code = plot_code[3:]
-                    if plot_code.endswith("```"):
-                        plot_code = plot_code[:-3]
-                    plot_code = plot_code.strip()
-                    
-                    # Save plot code to the codes directory
-                    with open(plot_code_file, 'w') as f:
-                        f.write(plot_code)
-
-                    add_system_log(f"✓ Plot code saved to: {plot_code_file}", "success")
-
-                    # Try executing the plot code to produce an output file (prefer PNG)
-                    try:
-                        exec_result = self.executor.execute_code(plot_code, str(plot_code_file))
-                        if exec_result.get('success'):
-                            add_system_log(f"Plot code executed: stdout len={len(exec_result.get('stdout',''))}", 'info')
-                        else:
-                            add_system_log(f"Plot code execution failed: {exec_result.get('stderr') or exec_result.get('error')}", 'warning')
-
-                        # If the expected PNG was created, great. Otherwise try to find any
-                        # file produced with the same stem (plot_{timestamp}) in the plots dir
-                        found_plot = None
-                        if plot_png_path.exists():
-                            found_plot = plot_png_path
-                        else:
-                            # Accept common output types (png, svg, html)
-                            for ext in ('.png', '.svg', '.html', '.jpeg', '.jpg'):
-                                candidate = dirs['plots'] / f"plot_{timestamp}{ext}"
-                                if candidate.exists():
-                                    found_plot = candidate
-                                    break
-
-                            # As a last resort, scan the plots directory for files starting with the plot stem
-                            if found_plot is None:
-                                stem = f"plot_{timestamp}"
-                                for p in dirs['plots'].iterdir():
-                                    if p.name.startswith(stem):
-                                        found_plot = p
-                                        break
-
-                        if found_plot is not None:
-                            add_system_log(f"✓ Plot output found at: {found_plot}", 'success')
-                            # Update the plot_png_path variable so later code returns the right path
-                            plot_png_path = found_plot
-                        else:
-                            add_system_log(f"Plot output not found for stem plot_{timestamp} in: {dirs['plots']}", 'warning')
-
-                    except Exception as e:
-                        add_system_log(f"Error executing plot code: {str(e)}", 'error')
-
-                    self.conversation_history.append({
-                        "role": "user",
-                        "content": "Perfect! Now provide the final JSON summary in <final_answer></final_answer> tags."
-                    })
-                
-                # Handle OUTPUT 4: Extract final answer
-                elif "<final_answer>" in assistant_message and "</final_answer>" in assistant_message:
+                # PHASE 3: Final Answer
+                elif current_phase == "finalize" and "<final_answer>" in assistant_message and "</final_answer>" in assistant_message:
                     answer_start = assistant_message.find("<final_answer>") + 14
                     answer_end = assistant_message.find("</final_answer>")
                     answer_text = assistant_message[answer_start:answer_end].strip()
                     
-                    # Clean markdown
                     if answer_text.startswith("```json"):
                         answer_text = answer_text[7:]
                     elif answer_text.startswith("```"):
@@ -674,166 +1099,68 @@ Fix the code and try again in <code></code> tags.
                     
                     try:
                         final_answer = json.loads(answer_text)
-                        add_system_log("✓ Final answer parsed", "success")
+                        add_system_log("✓ Final answer parsed successfully!", "success")
                         break
                     except json.JSONDecodeError as e:
-                        add_system_log(f"✗ JSON parse error: {str(e)}", "error")
+                        add_system_log(f"JSON parse error: {str(e)}", "error")
                         self.conversation_history.append({
                             "role": "user",
-                            "content": f"JSON parsing error: {str(e)}. Please provide valid JSON in <final_answer></final_answer> tags."
+                            "content": f"JSON parsing error: {str(e)}. Provide valid JSON in <final_answer></final_answer>."
                         })
-                # If the LLM never emits a <final_answer> but the executed code printed JSON
-                # previously, try to detect that and accept it as final. This is handled at
-                # the end of the loop below by checking conversation_history for _executed_result.
                 
                 else:
-                    # Prompt for next action
+                    # Prompt for appropriate action based on phase
+                    # Ensure prompt is always defined to avoid "possibly using variable before assignment"
+                    prompt = "Please provide your next response."
+                    if current_phase == "query":
+                        prompt = "Write your query code in <query_code></query_code> tags."
+                    elif current_phase == "plot":
+                        prompt = "Write your plot code in <plot_code></plot_code> tags."
+                    elif current_phase == "finalize":
+                        prompt = "Provide <insight></insight> and <final_answer></final_answer>."
+                    
                     self.conversation_history.append({
                         "role": "user",
-                        "content": "Please provide the next output in the appropriate tags: <code>, <insight>, <plot_code>, or <final_answer>."
+                        "content": prompt
                     })
             
             except Exception as e:
-                add_system_log(f"Error in iteration {iteration + 1}: {str(e)}", "error")
+                add_system_log(f"Error in iteration: {str(e)}", "error")
+                traceback.print_exc()
                 self.conversation_history.append({
                     "role": "user",
-                    "content": f"System error: {str(e)}. Try a different approach."
+                    "content": f"System error: {str(e)}. Continue with your current task."
                 })
         
         # Build final result
         if final_answer:
-            # Only set plot_file if the file actually exists. If not, leave it None so
-            # the auto-plot fallback can run using last_executed_result.
-            plot_file_path = None
-            try:
-                if plot_code and plot_png_path and Path(plot_png_path).exists():
-                    plot_file_path = str(plot_png_path)
-            except Exception:
-                plot_file_path = None
-
             final_answer.update({
-                'code_file': str(code_file),
+                'query_code_file': str(query_code_file) if query_success else None,
+                'plot_code_file': str(plot_code_file) if plot_success else None,
                 'insight_file': str(insight_file) if insight_text else None,
-                'plot_code_file': str(plot_code_file) if plot_code else None,
-                'plot_file': plot_file_path,
-                'dataset_id': dataset_id,
-                'timestamp': timestamp
+                'plot_files': [str(f) for f in plot_files],
+                'data_cache_file': str(data_cache_file) if query_success else None,
+                'num_plots': len(plot_files),
+                'query_attempts': query_attempts,
+                'plot_attempts': plot_attempts
             })
-
-            # If no plot code was produced by the LLM, attempt an automatic fallback
-            # plot from the last executed JSON result (if available).
-            if not final_answer.get('plot_file') and last_executed_result is not None:
-                try:
-                    png_path = self._auto_generate_plot(last_executed_result, dirs['plots'], timestamp)
-                    if png_path:
-                        final_answer['plot_file'] = str(png_path)
-                        add_system_log(f"✓ Auto-generated fallback plot: {png_path}", "success")
-                except Exception as e:
-                    add_system_log(f"Auto-plot generation failed: {str(e)}", "warning")
             
             add_system_log(
-                f"✓ Insight generation complete. Confidence: {final_answer.get('confidence', 0)}",
+                f"✓ COMPLETE! Query: {query_attempts} attempts, Plots: {len(plot_files)} generated",
                 "success"
             )
             
+            # Add status field to indicate success
+            final_answer['status'] = 'success'
+            
             return final_answer
         else:
-            add_system_log("✗ Failed to generate complete insight", "error")
+            add_system_log("✗ Failed to complete insight generation", "error")
             return {
-                'error': 'Failed to generate insight within iteration limit',
-                'insight': 'Unable to answer the question with available data. The system may need more time or the query may be too complex.',
-                'code_file': str(code_file) if code_file.exists() else None,
+                'error': 'Failed to complete within iteration limit',
+                'query_success': query_success,
+                'plot_success': plot_success,
+                'query_code_file': str(query_code_file) if query_success else None,
+                'plot_files': [str(f) for f in plot_files],
                 'confidence': 0.0
             }
-    
-    def cleanup(self):
-        """Clean up temporary workspace"""
-        try:
-            import shutil
-            if os.path.exists(self.executor.work_dir):
-                shutil.rmtree(self.executor.work_dir)
-                add_system_log(f"Cleaned up workspace", "info")
-        except Exception as e:
-            add_system_log(f"Cleanup failed: {str(e)}", "warning")
-
-    def _auto_generate_plot(self, result: Dict[str, Any], plots_dir: Path, timestamp: str):
-        """Create a simple PNG plot from a JSON-like result dict.
-
-        Heuristics:
-        - If 'data' key contains nested lists or arrays, display as heatmap
-        - If 'values' is a list of numbers, create a bar plot
-        - If only scalars (max/min/mean) are available, create a small summary bar
-        - Otherwise create a text image with the JSON summary
-        Returns the Path to the PNG or None on failure.
-        """
-        try:
-            try:
-                import matplotlib.pyplot as plt
-                import numpy as np
-            except Exception as e:
-                add_system_log(f"matplotlib/numpy not available for auto-plot: {str(e)}", "warning")
-                return None
-
-            plots_dir = Path(plots_dir)
-            plots_dir.mkdir(parents=True, exist_ok=True)
-            png_path = plots_dir / f"auto_plot_{timestamp}.png"
-
-            # Case 1: 2D data array
-            if 'data' in result:
-                data = result['data']
-                try:
-                    arr = np.array(data)
-                    if arr.ndim == 2:
-                        plt.figure(figsize=(6,4))
-                        plt.imshow(arr, cmap='viridis')
-                        plt.colorbar()
-                        plt.title(result.get('title', 'Auto-generated heatmap'))
-                        plt.tight_layout()
-                        plt.savefig(png_path)
-                        plt.close()
-                        return png_path
-                except Exception:
-                    pass
-
-            # Case 2: 'values' list
-            if 'values' in result and isinstance(result['values'], (list, tuple)):
-                vals = list(result['values'])
-                plt.figure(figsize=(6,4))
-                plt.bar(range(len(vals)), vals)
-                plt.title(result.get('title', 'Auto-generated bar plot'))
-                plt.tight_layout()
-                plt.savefig(png_path)
-                plt.close()
-                return png_path
-
-            # Case 3: numeric summary (max/min/mean)
-            nums = {}
-            for key in ('max_value','min_value','mean_value'):
-                if key in result and isinstance(result[key], (int, float)):
-                    nums[key] = result[key]
-
-            if nums:
-                labels = list(nums.keys())
-                values = [nums[k] for k in labels]
-                plt.figure(figsize=(5,3))
-                plt.bar(labels, values, color=['tab:red','tab:blue','tab:green'][:len(labels)])
-                plt.title(result.get('title', 'Auto-generated summary'))
-                plt.tight_layout()
-                plt.savefig(png_path)
-                plt.close()
-                return png_path
-
-            # Fallback: render text
-            txt = json.dumps(result, indent=2)
-            plt.figure(figsize=(6,4))
-            plt.text(0.01, 0.99, txt, fontsize=8, va='top', family='monospace')
-            plt.axis('off')
-            plt.tight_layout()
-            plt.savefig(png_path)
-            plt.close()
-            return png_path
-
-        except Exception as e:
-            add_system_log(f"_auto_generate_plot error: {str(e)}", 'error')
-            return None
-        

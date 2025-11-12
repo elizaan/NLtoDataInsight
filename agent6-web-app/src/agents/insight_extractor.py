@@ -631,9 +631,11 @@ Rules:
                 'insight': insight_result.get('insight', 'No insight generated'),
                 'data_summary': insight_result.get('data_summary', {}),
                 'visualization': insight_result.get('visualization_description', ''),
-                'code_file': insight_result.get('code_file'),
+                'query_code_file': insight_result.get('query_code_file'),
+                'plot_code_file': insight_result.get('plot_code_file'),
                 'insight_file': insight_result.get('insight_file'),
-                'plot_file': insight_result.get('plot_file'),
+                'plot_files': insight_result.get('plot_files', []),
+                'num_plots': insight_result.get('num_plots', 0),
                 'confidence': insight_result.get('confidence', 0.5)
             }
 

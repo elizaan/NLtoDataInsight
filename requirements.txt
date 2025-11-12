@@ -12,6 +12,7 @@ botocore
 certifi
 cftime
 charset-normalizer
+chromadb
 click
 click-plugins
 cligj

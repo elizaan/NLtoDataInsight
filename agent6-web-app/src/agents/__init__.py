@@ -3,14 +3,13 @@ Multi-agent system for animation generation.
 """
 
 from .core_agent import AnimationAgent
+from .dataset_profiler_agent import DatasetProfilerAgent
+from .dataset_summarizer_agent import DatasetSummarizerAgent
 from .intent_parser import IntentParserAgent
-from .parameter_schema import AnimationParameters
-from .parameter_extractor import ParameterExtractorAgent
+from .dataset_insight_generator import DatasetInsightGenerator
+
 from .tools import (
-    generate_animation_from_params,
-    evaluate_animation_quality,
-    get_dataset_summary,
-    find_existing_animation,
+ 
     
     # # Helper tools
     # find_existing_animation,
@@ -33,12 +32,9 @@ from .tools import (
 __all__ = [
     'AnimationAgent',
     'IntentParserAgent',
-    'ParameterExtractorAgent',
-    'AnimationParameters',
-    'generate_animation_from_params',
-    'evaluate_animation_quality',
-    'get_dataset_summary',
-    'find_existing_animation',
+    'DatasetProfilerAgent',
+    'DatasetSummarizerAgent',
+    'DatasetInsightGenerator',
     'set_agent',
     'get_agent',
     'create_animation_dirs'
