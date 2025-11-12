@@ -127,17 +127,48 @@ def describe_dataset():
         except Exception:
             pass
 
+        # Trigger profiling automatically
+        profiler_result = None
+        try:
+            profile_context = {
+                'id': dataset_id,
+                'data_files': [],  # No uploaded files for describe_dataset
+                'metadata_files': [],
+                'sources': sources
+            }
+
+            agent = get_agent()
+            if not agent:
+                add_system_log('Profile requested but agent not available', 'warning')
+                profiler_result = {'status': 'error', 'message': 'Agent not available'}
+            else:
+                try:
+                    # Ensure agent has dataset context
+                    try:
+                        agent.set_dataset(conversation_state.get('dataset') or {})
+                    except Exception:
+                        pass
+
+                    prompt = 'create a profile of this data as json file'
+                    profiler_result = agent.process_query(prompt, context=profile_context)
+
+                    add_system_log(f"Dataset profiling completed for {dataset_id}", 'info')
+                except Exception as e:
+                    add_system_log(f"Dataset profiling failed: {e}", 'error')
+                    profiler_result = {'status': 'error', 'message': str(e)}
+        except Exception as e:
+            # Non-fatal: profiling is optional, do not block success
+            add_system_log(f"Dataset profiling error: {e}", 'warning')
+            profiler_result = {'status': 'error', 'message': str(e)}
+
         summary = f"Registered dataset {dataset_id} with {len(sources)} source(s)."
-        return jsonify({'status': 'success', 'dataset_id': dataset_id, 'summary': summary})
+        return jsonify({
+            'status': 'success', 
+            'dataset_id': dataset_id, 
+            'summary': summary,
+            'profiler_result': profiler_result
+        })
     except Exception as e:
-        # Simplified action handling: only three client actions are expected
-        # now: 'start', 'select_dataset', and 'continue_conversation'. We no
-        # longer remap into a separate 'phenomenon_selection' flow on the
-        # server — after a dataset is selected the conversation proceeds to
-        # the LLM-driven conversation loop.
-        if action not in ('start', 'select_dataset', 'continue_conversation', ''):
-            add_system_log(f"Received unknown action '{action}', treating as empty action", 'warning')
-            action = ''
         add_system_log(f"describe_dataset error: {e}", 'error')
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
@@ -233,7 +264,7 @@ def upload_dataset_metadata():
         except Exception:
             pass
 
-        # Optional: if the client requests immediate profiling of the uploaded dataset
+    
         profiler_result = None
         try:
             profile_context = {
@@ -264,7 +295,7 @@ def upload_dataset_metadata():
                         profiler_result = {'status': 'error', 'message': str(e)}
         except Exception:
             # Non-fatal: profiling is optional, do not block upload success
-            profiler_result = {'status': 'error', 'message': 'Failed to evaluate profile flag'}
+            pass
 
         return jsonify({'status': 'success', 'dataset_id': dataset_id, 'files': saved, 'sources': sources, 'profiler_result': profiler_result})
     except Exception as e:
@@ -288,6 +319,8 @@ def summarize_dataset_endpoint(dataset_id):
     
     Frontend just sends the complete dataset object it got from /datasets
     """
+    print(f"========== summarize_dataset_endpoint CALLED for dataset_id: {dataset_id} ==========")
+    add_system_log(f"summarize_dataset_endpoint called for dataset_id: {dataset_id}", 'info')
     try:
         data = request.get_json()
         dataset = data.get('dataset', {})
@@ -318,52 +351,13 @@ def summarize_dataset_endpoint(dataset_id):
      
             # LangChain orchestration: let the agent decide how to summarize
         try:
-            # Build a query that the LangChain agent can understand
-            query = f"Summarize this dataset: {dataset}"
+            # Build a simple query - the dataset context is passed separately
+            query = "Summarize this dataset"
 
-            # LangChain agent will call get_dataset_summary tool automatically
-            result = agent.process_query(query)
+            # LangChain agent will call dataset_summarizer with the context
+            result = agent.process_query(query, context=dataset)
 
-            # Extract the response from LangChain result
-            # The structure depends on how LangChain returns results
-            if isinstance(result, dict):
-                # If result has 'messages' key (typical LangChain response)
-                if 'messages' in result:
-                    last_message = result['messages'][-1]
-                    if hasattr(last_message, 'content'):
-                        summary_result = last_message.content
-                    else:
-                        summary_result = str(last_message)
-                else:
-                    summary_result = result
-            else:
-                summary_result = str(result)
-
-            # Parse the summary result
-            if isinstance(summary_result, dict):
-                raw_summary_text = summary_result.get('summary', str(summary_result))
-                summary_struct = {
-                    'llm_text': summary_result.get('summary', ''),
-                    'dataset_knowledge': summary_result.get('dataset_knowledge', ''),
-                    'visualization_suggestions': summary_result.get('visualization_suggestions', ''),
-                    'heuristic': summary_result.get('heuristic', {})
-                }
-            else:
-                raw_summary_text = str(summary_result)
-                summary_struct = {
-                    'llm_text': raw_summary_text
-                }
-
-            # Append a short prompt (bold Markdown) to encourage the user to pick an animation
-            prompt = "\n\n**What do you want to see animation of?**"
-            try:
-                if isinstance(raw_summary_text, str):
-                    raw_summary_text = raw_summary_text + prompt
-                if isinstance(summary_struct, dict):
-                    summary_struct['llm_text'] = (summary_struct.get('llm_text', '') or '') + prompt
-            except Exception:
-                # non-critical: continue even if concatenation fails
-                pass
+            
 
         except Exception as e:
             return jsonify({
@@ -375,10 +369,7 @@ def summarize_dataset_endpoint(dataset_id):
         return jsonify({
             'status': 'success',
             'dataset_id': dataset_id,
-            # Top-level 'summary' remains the raw string for existing consumers
-            'summary': raw_summary_text,
-            # Provide a structured object for new frontend code to parse
-            'summary_struct': summary_struct
+            'summary': result['summary'] if isinstance(result, dict) and 'summary' in result else str(result)
         })
         
     except Exception as e:
@@ -596,6 +587,8 @@ def chat():
         user_message = data.get('message', '')
         action = data.get('action', '')  # 'start', 'select_dataset', 'continue_conversation'
 
+        print(f"========== /api/chat called with action: '{action}' ==========")
+        add_system_log(f"/api/chat received action: '{action}', dataset_id: {data.get('dataset_id')}, dataset_index: {data.get('dataset_index')}", 'info')
         
         response = None
         agent = get_agent()
@@ -681,39 +674,32 @@ def chat():
             # internally (no external HTTP required).
             summary = None
             try:
+                add_system_log(f"Calling internal summarize endpoint for {dataset_id}...", 'info')
                 with current_app.test_client() as c:
                     # payload = {'dataset': dataset_obj}
                     payload = {
                         'dataset': dataset_obj
                     }
+                    add_system_log(f"Posting to /api/datasets/{dataset_id}/summarize", 'debug')
                     resp = c.post(f'/api/datasets/{dataset_id}/summarize', json=payload)
+                    add_system_log(f"Summarize endpoint returned status: {resp.status_code}", 'debug')
                     if resp.status_code == 200:
                         data_resp = resp.get_json()
                         # Prefer the structured summary if the summarize endpoint provided it
-                        structured = data_resp.get('summary_struct')
-                        raw_summary = data_resp.get('summary')
-                        summary = {}
-                        if structured and isinstance(structured, dict):
-                            llm_text = structured.get('llm_text') or structured.get('dataset_knowledge') or structured.get('visualization_suggestions') or raw_summary or ''
-                            summary['llm'] = {
-                                'title': structured.get('dataset_info', {}).get('name', 'Dataset Summary') if isinstance(structured.get('dataset_info'), dict) else structured.get('dataset_info', {}).get('name', 'Dataset Summary'),
-                                'summary': llm_text
-                            }
-                            summary['heuristic'] = structured.get('heuristic', {})
-                            summary['llm_text'] = llm_text
-                        else:
-                            # Fallback: use raw text summary
-                            llm_text = raw_summary or ''
-                            summary['llm'] = {'title': dataset_id or 'Dataset Summary', 'summary': llm_text}
-                            summary['heuristic'] = {}
-                            summary['llm_text'] = llm_text
+                        summary = data_resp.get('summary')
+                        add_system_log(f"Summary retrieved successfully", 'info')
+                       
                     else:
                         add_system_log(f"Summarize endpoint returned {resp.status_code}: {resp.get_data(as_text=True)}", 'warning')
                         # Fallback
+                        add_system_log("Falling back to agent.summarize_dataset", 'info')
                         summary = agent.summarize_dataset(dataset_obj, use_llm=True)
             except Exception as e:
                 add_system_log(f"Dataset summarization failed (internal call): {e}", 'error')
+                import traceback
+                add_system_log(f"Traceback: {traceback.format_exc()}", 'error')
                 try:
+                    add_system_log("Attempting fallback to agent.summarize_dataset", 'info')
                     summary = agent.summarize_dataset(dataset_obj, use_llm=True)
                 except Exception as e2:
                     add_system_log(f"Dataset summarization fallback failed: {e2}", 'error')

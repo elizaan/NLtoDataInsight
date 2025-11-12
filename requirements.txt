@@ -49,8 +49,12 @@ jupyter_client
 jupyter_core
 kiwisolver
 langchain
+langchain-community
 langchain-core
 langchain-openai
+langchain-text-splitters
+faiss-cpu
+pypdf
 langgraph
 langgraph-checkpoint
 langgraph-prebuilt

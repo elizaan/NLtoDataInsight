@@ -1,11 +1,15 @@
 // Feature: Fetch and display dataset summary
-export async function fetchDatasetSummary(datasetId) {
-    // The backend /api/chat expects 'dataset_id' for the select_dataset action
+export async function fetchDatasetSummary(datasetId, datasetIndex) {
+    // The backend /api/chat expects 'dataset_id' and 'dataset_index' for the select_dataset action
 
     const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'select_dataset', dataset_id: datasetId, use_langchain: use_langchain })
+        body: JSON.stringify({ 
+            action: 'select_dataset', 
+            dataset_id: datasetId,
+            dataset_index: datasetIndex || '1'  // Default to '1' if not provided
+        })
     });
     if (!response.ok) throw new Error('Failed to fetch dataset summary');
     return await response.json();

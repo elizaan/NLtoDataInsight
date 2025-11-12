@@ -137,7 +137,20 @@ document.addEventListener('DOMContentLoaded', function() {
                                     const resp = await fetch('/api/upload_dataset_metadata', { method: 'POST', body: fd });
                                     const j = await resp.json();
                                     if (resp.ok) {
-                                        addBotMessage(`Dataset registered: <strong>${j.dataset_id}</strong>. You can now continue the conversation.`);
+                                        addBotMessage(`✓ Dataset registered: <strong>${j.dataset_id}</strong>. Profile created successfully.`);
+                                        
+                                        // Automatically show dataset list after successful upload
+                                        setTimeout(() => {
+                                            fetchDatasets().then(result => {
+                                                renderDatasetList(result.datasets, datasetListContainerId, function(dataset) {
+                                                    document.getElementById(datasetSelectionId).style.display = 'none';
+                                                    onDatasetSelect(dataset);
+                                                });
+                                            }).catch(err => {
+                                                console.error('Failed to fetch datasets after upload:', err);
+                                                addBotMessage('Dataset uploaded but failed to load list. Please click "Use Available Dataset" to continue.');
+                                            });
+                                        }, 800);
                                     } else {
                                         addBotMessage(`Upload failed: ${j.message || 'unknown error'}`);
                                     }
@@ -147,7 +160,20 @@ document.addEventListener('DOMContentLoaded', function() {
                                     const resp = await fetch('/api/describe_dataset', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
                                     const j = await resp.json();
                                     if (resp.ok) {
-                                        addBotMessage(`Dataset registered: <strong>${j.dataset_id}</strong>. ${j.summary || ''}`);
+                                        addBotMessage(`✓ Dataset registered: <strong>${j.dataset_id}</strong>. ${j.summary || ''}`);
+                                        
+                                        // Automatically show dataset list after successful describe
+                                        setTimeout(() => {
+                                            fetchDatasets().then(result => {
+                                                renderDatasetList(result.datasets, datasetListContainerId, function(dataset) {
+                                                    document.getElementById(datasetSelectionId).style.display = 'none';
+                                                    onDatasetSelect(dataset);
+                                                });
+                                            }).catch(err => {
+                                                console.error('Failed to fetch datasets after describe:', err);
+                                                addBotMessage('Dataset described but failed to load list. Please click "Use Available Dataset" to continue.');
+                                            });
+                                        }, 800);
                                     } else {
                                         addBotMessage(`Describe failed: ${j.message || 'unknown error'}`);
                                     }
@@ -203,30 +229,53 @@ document.addEventListener('DOMContentLoaded', function() {
                         loadingDots.textContent = '.'.repeat(dotCount);
                     }, 500);
 
-                    fetchDatasetSummary(dataset.id).then(async result => {
+                    fetchDatasetSummary(dataset.id, dataset.index).then(async resp => {
                         const md = await getMdToHtml();
-                        // Use LLM summary if available, fallback to heuristic
+                        // Backend returns: { type, message, dataset_id, summary, status }
+                        // Normalize to a `summary` payload whether it's a string or an object
+                        const result = (resp && resp.summary) ? resp.summary : resp;
+
                         let summaryText = '';
-                        if (result.summary && result.summary.llm) {
-                            const llm = result.summary.llm;
-                            summaryText = `<h4>${md(llm.title || 'Dataset Summary')}</h4>`;
-                            if (llm.summary) summaryText += md(llm.summary);
-                            if (llm.visualizations && Array.isArray(llm.visualizations) && llm.visualizations.length) {
-                                summaryText += '<h5>Suggested Visualizations</h5><ul>' +
-                                    llm.visualizations.map(v => `<li>${md(v)}</li>`).join('') +
-                                    '</ul>';
+
+                        // If the backend returned a structured summary object
+                        if (result && typeof result === 'object') {
+                            // Preferred structured LLM response
+                            if (result.llm) {
+                                const llm = result.llm;
+                                summaryText = `<h4>${md(llm.title || 'Dataset Summary')}</h4>`;
+                                if (llm.summary) summaryText += md(llm.summary);
+                                if (llm.visualizations && Array.isArray(llm.visualizations) && llm.visualizations.length) {
+                                    summaryText += '<h5>Suggested Visualizations</h5><ul>' +
+                                        llm.visualizations.map(v => `<li>${md(v)}</li>`).join('') +
+                                        '</ul>';
+                                }
+                                if (llm.recommended_camera) {
+                                    summaryText += `<p><strong>Recommended Camera:</strong> ${md(llm.recommended_camera)}</p>`;
+                                }
+                                if (llm.tf_notes) {
+                                    summaryText += `<p><strong>Transfer Function Notes:</strong> ${md(llm.tf_notes)}</p>`;
+                                }
                             }
-                            if (llm.recommended_camera) {
-                                summaryText += `<p><strong>Recommended Camera:</strong> ${md(llm.recommended_camera)}</p>`;
+                            // Heuristic fallback structure
+                            else if (result.heuristic) {
+                                summaryText = `<h4>Dataset Summary</h4><pre>${md(JSON.stringify(result.heuristic, null, 2))}</pre>`;
                             }
-                            if (llm.tf_notes) {
-                                summaryText += `<p><strong>Transfer Function Notes:</strong> ${md(llm.tf_notes)}</p>`;
+                            // Raw LLM text field
+                            else if (result.llm_text) {
+                                summaryText = `<h4>Dataset Summary</h4>${md(result.llm_text)}`;
                             }
-                        } else if (result.summary && result.summary.heuristic) {
-                            summaryText = `<h4>Dataset Summary</h4><pre>${JSON.stringify(result.summary.heuristic, null, 2)}</pre>`;
-                        } else if (result.summary && result.summary.llm_text) {
-                            // Show raw LLM text if JSON parsing failed but text exists. Render minimal markdown.
-                            summaryText = `<h4>Dataset Summary</h4>${md(result.summary.llm_text)}`;
+                            // If object has plain text fields
+                            else if (result.text) {
+                                summaryText = `<h4>Dataset Summary</h4>${md(result.text)}`;
+                            }
+                            else {
+                                // Generic pretty-print of object
+                                summaryText = `<h4>Dataset Summary</h4><pre>${md(JSON.stringify(result, null, 2))}</pre>`;
+                            }
+                        }
+                        // If result is a plain string, render as markdown
+                        else if (result && typeof result === 'string') {
+                            summaryText = `<h4>Dataset Summary</h4>${md(result)}`;
                         } else {
                             summaryText = '<h4>Dataset Summary</h4><p>No summary available.</p>';
                         }

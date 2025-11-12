@@ -15,6 +15,8 @@ from .tools import create_animation_dirs, create_animation_dirs_impl
 from .intent_parser import IntentParserAgent
 from .parameter_extractor import ParameterExtractorAgent
 from .dataset_profiler_agent import DatasetProfilerAgent
+from .dataset_summarizer_agent import DatasetSummarizerAgent
+
 import os
 import sys
 import numpy as np
@@ -89,6 +91,8 @@ class AnimationAgent:
         # Initialize specialized agents
         self.dataset_profiler = DatasetProfilerAgent(api_key=api_key)
         print("[Agent] Initialized Dataset Profiler Agent")
+        self.dataset_summarizer = DatasetSummarizerAgent(api_key=api_key)
+        print("[Agent] Initialized Dataset Summarizer Agent")
         self.intent_parser = IntentParserAgent(api_key=api_key)
         print("[Agent] Initialized Intent Parser")
         self.parameter_extractor = ParameterExtractorAgent(api_key=api_key)
@@ -104,12 +108,8 @@ class AnimationAgent:
 
 
 
-        system_prompt = """You are an animation generation assistant for scientific visualization.
+        system_prompt = """You are an agent.
 
-        WORKFLOW:
-        When user asks "Summarize this dataset...":
-        - Call get_dataset_summary(dataset)
-        
         IMPORTANT RULES:
         - Be concise and helpful
         - Report progress at each step
@@ -232,8 +232,9 @@ class AnimationAgent:
         if 'summarize this dataset' in lower or lower.startswith('summarize dataset') or 'provide visualization suggestions' in lower:
             print(f"[Agent] Processing summary request with LangChain: {text[:80]}...")
             try:
-                result = self.agent.invoke({
-                    "messages": [("human", user_message)]
+                result = self.dataset_summarizer.dataset_summarize({
+                    "user_query": user_message,
+                    "context": context
                 })
                 return result
             except Exception as e:
