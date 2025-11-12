@@ -450,7 +450,7 @@ create_animation_from_frames(output_frames_dir, animation_name, format="gif")
 ```json
 {
     "message": "User input text",
-    "action": "start|select_phenomenon|continue_conversation|provide_guidance"
+    "action": "start|continue_conversation|provide_guidance"
 }
 ```
 
@@ -471,24 +471,24 @@ create_animation_from_frames(output_frames_dir, animation_name, format="gif")
    }
    ```
 
-2. **action: "select_phenomenon"** → Animation generation pipeline
+2. **action: "continue_conversation"** → Animation generation pipeline
    ```python
-   # Step 1: Convert selection to parameters
-    # The API now sends the phenomenon as free-text; no numeric 'choice' param.
-    region_params = agent.get_region_from_description(phenomenon)
-   
+   # Step 1: Convert free-text description to parameters
+   # The API expects the phenomenon or custom description as free-text.
+   region_params = agent.get_region_from_description(phenomenon_text)
+
    # Step 2: Check for existing animation
    existing_animation = agent.find_existing_animation(region_params)
-   
+
    # Step 3A: Reuse existing animation
    if existing_animation["exists"]:
        print(f"Found existing animation. Reusing: {existing_animation['output_base']}")
        animation_info = existing_animation
-       
+
    # Step 3B: Generate new animation
    else:
-       animation_info = agent.generate_animation(region_params, phenomenon)
-   
+       animation_info = agent.generate_animation(region_params, phenomenon_text)
+   ```
    # Step 4: Evaluate animation quality
    evaluation = agent.evaluate_animation(animation_info, phenomenon, region_params)
    ```

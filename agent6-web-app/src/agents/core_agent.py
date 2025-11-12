@@ -13,7 +13,7 @@ from .tools import (
 )
 from .tools import create_animation_dirs, create_animation_dirs_impl
 from .intent_parser import IntentParserAgent
-from .parameter_extractor import ParameterExtractorAgent
+from .insight_extractor import InsightExtractorAgent
 from .dataset_profiler_agent import DatasetProfilerAgent
 from .dataset_summarizer_agent import DatasetSummarizerAgent
 
@@ -95,8 +95,8 @@ class AnimationAgent:
         print("[Agent] Initialized Dataset Summarizer Agent")
         self.intent_parser = IntentParserAgent(api_key=api_key)
         print("[Agent] Initialized Intent Parser")
-        self.parameter_extractor = ParameterExtractorAgent(api_key=api_key)
-        print("[Agent] Initialized Parameter Extractor Agent")
+        self.insight_extractor = InsightExtractorAgent(api_key=api_key)
+        print("[Agent] Initialized Insight Extractor Agent")
 
         self.tools = [
             get_dataset_summary,
@@ -163,23 +163,27 @@ class AnimationAgent:
         intent_result = self.intent_parser.parse_intent(user_message, context)
         
         print(f"[Agent] Intent: {intent_result['intent_type']} (confidence: {intent_result['confidence']:.2f})")
+        print("full intent result:", intent_result)
         
         # STEP 2: Route based on intent
         intent_type = intent_result['intent_type']
         
-        if intent_type == 'GENERATE_NEW':
+        if intent_type == 'PARTICULAR':
             # Generate new animation
-            return self._handle_generate_new(user_message, intent_result, context)
+            return self._handle_particular_exploration(user_message, intent_result, context)
         
-        elif intent_type == 'MODIFY_EXISTING':
-            # Modify existing animation
-            return self._handle_modify_existing(user_message, intent_result, context)
-        
-        elif intent_type == 'SHOW_EXAMPLE':
-            # Show example animation
-            return self._handle_show_example(intent_result, context)
-        
-        elif intent_type == 'REQUEST_HELP':
+        elif intent_type == 'NOT_PARTICULAR':
+            # General exploration - no specific question
+            return self._handle_general_exploration(user_message, intent_result, context)
+
+        elif intent_type == 'UNRELATED':
+            # Handle unrelated queries
+            return {
+                'status': 'unrelated',
+                'message': "I'm here to help you explore and analyze this dataset. Could you ask a data-related question?"
+            }
+            
+        elif intent_type == 'HELP':
             # Provide help information
             return self._handle_request_help(user_message, context)
         
@@ -260,254 +264,9 @@ class AnimationAgent:
         # callers don't need to call process_query_with_intent explicitly.
         return self.process_query_with_intent(user_message, context)
     
-    def _handle_generate_new(self, query: str, intent_result: dict, context: dict) -> dict:
-        """Handle GENERATE_NEW: extract params, check existing, generate if needed."""
-        # Step 1: Extract parameters via ParameterExtractorAgent
-        dataset = context.get('dataset') if context else None
-        dataset_id = dataset.get('id') if dataset else None
-        
-        extraction_result = self.parameter_extractor.extract_parameters(
-            user_query=query,
-            intent_hints=intent_result,
-            dataset=dataset
-        )
-
-        # Support both legacy 'status' style and direct-params style
-        if isinstance(extraction_result, dict) and extraction_result.get('status') == 'needs_clarification':
-            return {
-                'status': 'needs_clarification',
-                'message': extraction_result.get('clarification_question'),
-                'missing_fields': extraction_result.get('missing_fields', []),
-                'partial_params': extraction_result.get('partial_params', {})
-            }
-
-        # If extractor returned an explicit error
-        if isinstance(extraction_result, dict) and extraction_result.get('error'):
-            # Mirror Agent.get_region_from_description behavior for invalid queries
-            if extraction_result.get('error') == 'invalid_query':
-                return {
-                    'status': 'error',
-                    'message': extraction_result.get('message', 'Invalid query'),
-                    'suggestion': extraction_result.get('suggestion', '')
-                }
-            # Otherwise fall through to default/fallback handling
-
-        
-        params = extraction_result['parameters']
-        print(f"[Agent] Extracted params: {params}")
-
-        # STEP 3: Prepare data files using EXISTING function
-        print("[Agent] Preparing data files...")
-        # animation_handler = renderInterface3.AnimationHandler(params['url']['active_scalar_url'])
     
-        # # Pass user_query and dataset_id for registry handling
-        # gad_path, rendered_frames_dir, vtk_data_dir = self._prepare_files(
-        #     animation_handler, 
-        #     params, 
-        #     context['dataset'],
-        #     user_query=query,
-        #     dataset_id=dataset_id,
-        #     skip_data_download=context.get('is_modification', False)
-        # )
-        # add_system_log("Data download completed")
-        
-        # # STEP 5: Render using EXISTING renderTaskOfflineVTK
-        # add_system_log("Animation generation started")
-        # output_dir = self._render_with_existing_function(animation_handler, gad_path, rendered_frames_dir)
-        # add_system_log("Animation generation completed")
-        
-        # # Return the parent directory (animation base), not the Rendered_frames subfolder
-        # # Frontend will append /Rendered_frames/ to construct frame paths
-        # animation_base = os.path.dirname(output_dir)
-        
-        # return {
-        #     'status': 'success',
-        #     'action': 'generated_new',
-        #     'intent_type': 'GENERATE_NEW',  # For frontend multi-panel logic
-        #     'animation_path': animation_base,
-        #     'output_base': animation_base,
-        #     'num_frames': params['time_range']['num_frames'],
-        #     'parameters': params,
-        #     'vtk_data_dir': vtk_data_dir  # Store for future modifications
-        # }
-
-    # ========================================
-    # ANIMATION REGISTRY METHODS
-    # Track generated animations to avoid redundant rendering
-    # ========================================
     
-    def _hash_parameters(self, params: dict) -> str:
-        """Deterministic hash for parameter dicts used to detect existing animations.
-
-        Uses a stable JSON representation (sorted keys) and returns a hex sha1.
-        """
-        try:
-            # Make a deep copy and remove ephemeral fields that shouldn't affect cache
-            try:
-                import copy
-                params_copy = copy.deepcopy(params)
-            except Exception:
-                params_copy = dict(params) if isinstance(params, dict) else params
-
-            # Exclude confidence (ephemeral) from hash
-            if isinstance(params_copy, dict) and 'confidence' in params_copy:
-                try:
-                    params_copy.pop('confidence', None)
-                except Exception:
-                    pass
-
-            # As a safety, round camera floats to 2 decimals to avoid hash churn from tiny FP differences
-            try:
-                cam = params_copy.get('camera') if isinstance(params_copy, dict) else None
-                if isinstance(cam, dict):
-                    for k in ('position', 'focal_point', 'up'):
-                        if k in cam and isinstance(cam[k], list):
-                            cam[k] = [round(float(v), 2) for v in cam[k]]
-                    params_copy['camera'] = cam
-            except Exception:
-                pass
-
-            # Ensure params is JSON-serializable; coerce to a stable representation
-            stable = json.dumps(params_copy, sort_keys=True, separators=(',', ':'), default=str)
-            return hashlib.sha1(stable.encode('utf-8')).hexdigest()
-        except Exception:
-            # Fallback: use str() if serialization fails
-            return hashlib.sha1(str(params).encode('utf-8')).hexdigest()
     
-    def _get_animations_registry_path(self, dataset_id: str = None) -> str:
-        """Get path to animations registry file for a dataset.
-        
-        Args:
-            dataset_id: Dataset identifier (defaults to current dataset)
-            
-        Returns:
-            Absolute path to animations_list.json
-        """
-        if not dataset_id and self.dataset:
-            dataset_id = self.dataset.get('id', 'default')
-        elif not dataset_id:
-            dataset_id = 'default'
-        
-        # Path: ai_data/knowledge_base/datasets/{dataset_id}/animations_list.json
-        registry_dir = os.path.join(
-            self.ai_dir or 'ai_data',
-            'knowledge_base',
-            'datasets',
-            dataset_id
-        )
-        os.makedirs(registry_dir, exist_ok=True)
-        return os.path.join(registry_dir, 'animations_list.json')
-    
-    def _load_animations_registry(self, dataset_id: str = None) -> dict:
-        """Load animations registry from disk.
-        
-        Returns:
-            {
-                "animations": [
-                    {
-                        "id": "anim_123456",
-                        "hash": "abc123...",
-                        "user_query": "Show temperature in Agulhas",
-                        "parameters": {...},
-                        "animation_path": "/path/to/animation",
-                        "vtk_data_dir": "/path/to/vtk",
-                        "created_at": "2025-11-01T12:00:00Z"
-                    }
-                ]
-            }
-        """
-        registry_path = self._get_animations_registry_path(dataset_id)
-        
-        if os.path.exists(registry_path):
-            try:
-                with open(registry_path, 'r', encoding='utf-8') as f:
-                    return json.load(f)
-            except Exception as e:
-                print(f"[Agent] Warning: Failed to load registry: {e}")
-        
-        return {"animations": []}
-    
-    def _save_animation_to_registry(self, user_query: str, params: dict, animation_path: str, 
-                                   vtk_data_dir: str, dataset_id: str = None) -> None:
-        """Save animation metadata to registry.
-        
-        Args:
-            user_query: Original user query
-            params: Animation parameters
-            animation_path: Path to animation directory
-            vtk_data_dir: Path to VTK data directory
-            dataset_id: Dataset identifier
-        """
-        registry_path = self._get_animations_registry_path(dataset_id)
-        registry = self._load_animations_registry(dataset_id)
-        
-        # Generate unique ID and hash
-        param_hash = self._hash_parameters(params)
-        animation_id = f"anim_{int(time.time())}_{param_hash[:8]}"
-        
-        # Create animation entry
-        animation_entry = {
-            "id": animation_id,
-            "hash": param_hash,
-            "user_query": user_query,
-            "parameters": params,
-            "animation_path": animation_path,
-            "vtk_data_dir": vtk_data_dir,
-            "created_at": datetime.now().isoformat()
-        }
-        
-        # Add to registry
-        registry["animations"].append(animation_entry)
-        
-        # Save to disk
-        try:
-            with open(registry_path, 'w') as f:
-                json.dump(registry, f, indent=2, default=str)
-            print(f"[Agent] Saved animation to registry: {animation_id}")
-        except Exception as e:
-            print(f"[Agent] Warning: Failed to save to registry: {e}")
-    
-    def _find_existing_animation(self, params: dict, dataset_id: str = None) -> dict:
-        """Check if animation with matching parameters already exists.
-        
-        Args:
-            params: Animation parameters to check
-            dataset_id: Dataset identifier
-            
-        Returns:
-            {
-                "exists": True/False,
-                "animation_path": str (if exists),
-                "vtk_data_dir": str (if exists),
-                "entry": dict (full registry entry if exists)
-            }
-        """
-        param_hash = self._hash_parameters(params)
-        registry = self._load_animations_registry(dataset_id)
-        print(f"[Agent][CACHE] Checking for existing animation with hash: {param_hash}")
-        found_hashes = []
-        for entry in registry.get("animations", []):
-            found_hashes.append(entry.get("hash"))
-            if entry.get("hash") == param_hash:
-                animation_path = entry.get("animation_path")
-                vtk_data_dir = entry.get("vtk_data_dir")
-                if animation_path and os.path.exists(animation_path):
-                    rendered_frames_dir = os.path.join(animation_path, "Rendered_frames")
-                    if os.path.exists(rendered_frames_dir) and os.listdir(rendered_frames_dir):
-                        print(f"[Agent] Found existing animation: {entry.get('id')}")
-                        return {
-                            "exists": True,
-                            "animation_path": animation_path,
-                            "vtk_data_dir": vtk_data_dir,
-                            "entry": entry
-                        }
-                    else:
-                        print(f"[Agent][CACHE] Rendered frames missing or empty for animation: {entry.get('id')}")
-                else:
-                    print(f"[Agent][CACHE] Animation path missing or does not exist for hash: {param_hash}")
-        print(f"[Agent][CACHE] No cache hit. Registry hashes: {found_hashes}")
-        print(f"[Agent][CACHE] Current parameters: {json.dumps(params, sort_keys=True, default=str)[:500]}...")
-        return {"exists": False}
 
     def _compute_global_data_range(self, animation_handler, params, timesteps):
         """Sample data across all timesteps to get global statistics including histogram.
@@ -754,499 +513,173 @@ Do not include any explanations or markdown formatting."""
         except Exception as e:
             print(f"[Agent] Failed to generate/execute plot code: {e}")
     
-    def _prepare_files(self, animation_handler, params, dataset, user_query: str, dataset_id: str = None, 
-                      skip_data_download=False, reuse_vtk_dir=None):
-        """Prepare files using existing AnimationHandler.saveVTKFilesByVisusRead
-        
-        Args:
-            animation_handler: AnimationHandler instance
-            params: Animation parameters
-            dataset: Dataset metadata
-            user_query: Original user query (for registry)
-            dataset_id: Dataset identifier (for registry)
-            skip_data_download: If True, skip VTK data download (for modifications)
-            reuse_vtk_dir: If provided, use this directory for VTK files instead of creating new one (for modifications)
-        """
-        
-        # Check if identical animation already exists in registry
-        stats = None
-        stats_path = None
-        statistics_dir = None
-        if not skip_data_download and not reuse_vtk_dir:
-            print(f"[Agent][CACHE] Checking cache before preparing files...")
-            existing = self._find_existing_animation(params, dataset_id)
-            if existing.get("exists"):
-                print(f"[Agent] Found existing animation in registry!")
-                animation_dir = existing["animation_path"]
-                statistics_dir = os.path.join(animation_dir, "Statistics")
-                stats_path = os.path.join(statistics_dir, "stats.json")
-                try:
-                    if os.path.exists(stats_path):
-                        with open(stats_path, "r") as f:
-                            stats = json.load(f)
-                        print(f"[Agent][CACHE] Loaded cached stats.json")
-                except Exception as e:
-                    print(f"[Agent][CACHE] Failed to load cached stats: {e}")
-                return (
-                    os.path.join(existing["animation_path"], "GAD_text"),
-                    os.path.join(existing["animation_path"], "Rendered_frames"),
-                    existing["vtk_data_dir"]
-                )
-            else:
-                print(f"[Agent][CACHE] Cache miss. Will download and generate new data.")
-        
-        
-        print("[Agent] Creating directory structure...")
-        try:
-            dirs = create_animation_dirs_impl(params)
-        except Exception:
-            dirs = create_animation_dirs(params)
+    # def _prepare_files(self, animation_handler, params, dataset, user_query: str, dataset_id: str = None, 
+    #                   skip_data_download=False, reuse_vtk_dir=None):
+      
 
-        statistics_dir = dirs.get('statistics')
-
-        print(f"[Agent] Preparing files (skip_download={skip_data_download})...")
-        # Read data dimensions (always needed for GAD generation)
-        print("[Agent] Reading data dimensions...")
-        data = animation_handler.readData(
-            params['time_range']['start_timestep'], 
-            params['region']['x_range'], 
-            params['region']['y_range'], 
-            params['region']['z_range'], 
-            params['quality']
-        )
-        print("[Agent] Calculating timesteps...")
-        timesteps = np.linspace(
-            params['time_range']['start_timestep'], 
-            params['time_range']['end_timestep'], 
-            num=params['time_range']['num_frames'], 
-            endpoint=False
-        )
-        # ADAPTIVE OPACITY: Compute global data statistics and generate LLM-based opacity
-        try:
-            # If not loaded from cache, compute and save
-            if not stats:
-                data_stats = self._compute_global_data_range(animation_handler, params, timesteps)
-                stats = data_stats
-            else:
-                data_stats = stats
-            # Save stats to animation folder if new animation
-            save_stats = None
-            if not skip_data_download and not reuse_vtk_dir:
-                save_stats = stats
-            # Generate adaptive opacity using LLM
-            opacity_values = self._generate_adaptive_opacity_with_llm(params, data_stats)
-            if opacity_values:
-                print(f"[Agent] Using LLM-generated adaptive opacity: {opacity_values}")
-                params['transfer_function']['opacity_values'] = opacity_values
-            else:
-                print("[Agent] Using default opacity from parameter extractor (LLM generation failed)")
-            tf_range = [data_stats['min'], data_stats['max']]
-            print(f"[Agent] Updated transfer function range: {tf_range}")
-        except Exception as e:
-            print(f"[Agent] Warning: Adaptive opacity generation failed: {e}")
-            print("[Agent] Using default opacity values")
-            save_stats = None
-    
-        
-        print("[Agent] Generating VTK filenames...")
-        file_names = animation_handler.getVTKFileNames(
-            data.shape[2], data.shape[1], data.shape[0], timesteps
-        )
-        print(f"[Agent] Generated VTK filenames: {file_names}")
-
-        # Create the hierarchical animation directories based on params
-       
-        if reuse_vtk_dir:
-            print(f"[Agent] Reusing VTK directory from previous animation: {reuse_vtk_dir}")
-            output_dir = reuse_vtk_dir
-            if not os.path.exists(output_dir):
-                raise FileNotFoundError(
-                    f"Cannot reuse VTK directory: {output_dir} does not exist. "
-                    "Please generate the base animation first."
-                )
-            if not any(f.endswith('.vtk') for f in os.listdir(output_dir)):
-                raise FileNotFoundError(
-                    f"Cannot reuse VTK directory: No VTK files found in {output_dir}. "
-                    "Please generate the base animation first."
-                )
-        else:
-            output_dir = dirs.get('out_text')
-            os.makedirs(output_dir, exist_ok=True)
-        file_names = [os.path.join(output_dir, f) for f in file_names]
-        print(f"[Agent] Final VTK filenames: {file_names}")
-        rendered_frames_dir = dirs.get('rendered_frames')
-        os.makedirs(rendered_frames_dir, exist_ok=True)
-        print(f"[Agent] Rendered frames dir: {rendered_frames_dir}")
-        print(f"[Agent] VTK data dir: {output_dir}")
-        # Save stats to animation folder if new animation
-        if not skip_data_download and not reuse_vtk_dir and dirs.get('base'):
-            stats_path = os.path.join(statistics_dir, "stats.json")
-            try:
-                if save_stats:
-                    with open(stats_path, "w") as f:
-                        json.dump(save_stats, f, indent=2)
-                    print(f"[Agent] Saved stats.json to {stats_path}")
-
-                self._generate_and_save_stats_plots(save_stats, statistics_dir)
-            except Exception as e:
-                print(f"[Agent] Failed to save stats: {e}")
-        
-
-        # CONDITIONAL: Only download VTK data if this is a NEW animation
-        # if not skip_data_download:
-        #     print("[Agent] Downloading VTK data from OpenVisus...")
-        #     animation_handler.saveVTKFilesByVisusRead(
-        #     v0=params['url'].get('url_u'),
-        #     v1=params['url'].get('url_v'),
-        #     v2=params['url'].get('url_w'),
-        #     active_scalar=params['url'].get('active_scalar_url'),
-        #     scalar2=params['url'].get('scalar_2_url'),
-        #     active_scalar_name=params['variable'],
-        #     x_range=params['region']['x_range'],
-        #     y_range=params['region']['y_range'],
-        #     z_range=params['region']['z_range'],
-        #     q=params['quality'],
-        #     t_list=timesteps,
-        #     flip_axis=2,
-        #     transpose=False,
-        #     output_dir=output_dir
-        #     )
-        #     print(f"[Agent] VTK data downloaded to: {output_dir}")
-        # else:
-        #     print(f"[Agent] Skipping VTK download (reusing existing data from: {output_dir})")
-            # VTK files should already exist in output_dir (verified earlier)
-        
-        # Generate GAD using EXISTING generateScriptStreamline
-        dims = [data.shape[2], data.shape[1], data.shape[0]]  # x, y, zs
-        camera = [
-            params['camera']['position'],
-            params['camera']['focal_point'],
-            params['camera']['up']
-        ]
-
-        # Transfer function
-        tf_colors = params['transfer_function']['RGBPoints']
-        tf_opacities = params['transfer_function']['opacity_values']
-
-        # Data range: Use global statistics if available (from adaptive opacity computation)
-        # Otherwise fallback to single timestep range
-        if 'tf_range' in locals():
-            # tf_range was set during adaptive opacity computation
-            print(f"[Agent] Using global data range for transfer function: {tf_range}")
-        else:
-            # Fallback: single timestep range
-            tf_range = [np.max(data), np.min(data)]
-            print(f"[Agent] Using single-timestep data range: {tf_range}")
-        
-        # Representation configs - KEY PART!
-        volume_config = self._build_volume_config(params)
-        scalar_range = [data_stats['percentile_90'], data_stats['max']]
-        streamline_config = self._build_streamline_config(params, scalar_range=scalar_range)
-        isosurface_config = self._build_isosurface_config(params, dataset)
-        
-        # File sizes (approximate)
-        file_sizes_mb = []
-        for i in range(len(timesteps)):
-            num_points = dims[0] * dims[1] * dims[2]
-            bytes_per_point = 4
-            size_mbcords = (num_points * 3 * bytes_per_point) / (1024 * 1024)
-            size_mbdata = (num_points * 4 * bytes_per_point) / (1024 * 1024)
-            file_sizes_mb.append(size_mbcords + size_mbdata)
-
-        # Output GAD path
-        gad_output_dir = dirs.get('gad_text')
-        os.makedirs(gad_output_dir, exist_ok=True)
-        animation_name = dirs.get('animation_name')
-        gad_base_name = os.path.join(gad_output_dir, f"{animation_name}_script")
-        print("[Agent] Generating GAD...")
-        animation_handler.generateScriptStreamline(
-            input_names=file_names,
-            kf_interval=1,
-            dims=dims,
-            meshType="streamline",
-            world_bbx_len=10,
-            cam=camera,
-            tf_range=tf_range,
-            tf_colors=tf_colors,
-            tf_opacities=tf_opacities,
-            scalar_field=params['variable'],
-            frame_rate=30.0,
-            required_modules=[
-                "vtkRenderingVolume",
-                "vtkFiltersFlowPaths",
-                "vtkRenderingCore",
-                "vtkFiltersCore",
-                "vtkCommonCore",
-                "vtkIOXML"
-            ],
-            file_sizes_mb=file_sizes_mb,
-            grid_type="structured",
-            spacing=[1.0, 1.0, 1.0],
-            origin=[0.0, 0.0, 0.0],
-            view_angle=30.0,
-            rendering_backend="vtk",
-            volume_representation_config=volume_config,
-            streamline_representation_config=streamline_config,
-            isosurface_representation_config=isosurface_config,
-            outfile=gad_base_name
-        )
-
-        print("[Agent] GAD generation complete.")
-        
-        # Save to registry (only for brand new animations, not modifications)
-        if not skip_data_download and not reuse_vtk_dir:
-            animation_path = dirs.get('base')  # The main animation directory
-            self._save_animation_to_registry(
-                user_query=user_query,
-                params=params,
-                animation_path=animation_path,
-                vtk_data_dir=output_dir,
-                dataset_id=dataset_id
-            )
-        
-        # Return GAD path, rendered frames dir, and VTK data dir
-        return f"{gad_base_name}.json", rendered_frames_dir, output_dir
-        
-
-    def _build_volume_config(self, params):
-        """Build volume representation config based on params"""
-        
-        enabled = params['representations']['volume']
-        
-        return {
-            "enabled": enabled,  # ← KEY: Controls if volume shows!
-            "volumeProperties": {
-                "shadeOn": True,
-                "interpolationType": "linear",
-                "ambient": 0.2,
-                "diffuse": 0.7,
-                "specular": 0.1,
-                "specularPower": 10.0,
-                "scalarOpacityUnitDistance": 1.0,
-                "independentComponents": True
-            },
-            "mapperProperties": {
-                "type": "FixedPointVolumeRayCastMapper",
-                "blendMode": "composite",
-                "sampleDistance": 1.0,
-                "autoAdjustSampleDistances": True,
-                "imageSampleDistance": 1.0,
-                "maximumImageSampleDistance": 10.0
-            }
-        }
-
-    def _build_streamline_config(self, params, scalar_range=None):
-        """Build streamline representation config based on params.
-        
-        The streamline_config is already fully populated by parameter_extractor
-        with defaults + user hints applied. Just return it directly!
-        """
-        # Get the pre-built config (already has defaults + hints applied)
-        streamline_config = params.get('streamline_config', {})
-        
-        # Ensure enabled flag matches representation setting
-        streamline_config['enabled'] = params['representations']['streamline']
-        if scalar_range and 'colorMapping' in streamline_config:
-            streamline_config['colorMapping']['scalarRange'] = scalar_range
-        
-        return streamline_config
-
-    def _build_isosurface_config(self, params, dataset=None):
-        """Build isosurface representation config based on params.
-        
-        For datasets with geographic info (e.g., dyamond_llc2160), automatically:
-        - Enable isosurface representation
-        - Use land_mask as texture if available
-        
-        The isosurface_config is already populated by parameter_extractor
-        with defaults. This method enhances it with dataset-specific features.
-        """
-        # Get the pre-built config (already has defaults applied)
-        isosurface_config = params.get('isosurface_config', {})
-        
-        # Check if dataset has geographic info
-        has_geographic_info = False
-        dataset_id = None
-        if dataset:
-            dataset_id = dataset.get('id', '')
-            spatial_info = dataset.get('spatial_info', {})
-            geographic_info = spatial_info.get('geographic_info', {})
-            has_geographic_info = geographic_info.get('has_geographic_info', 'no') == 'yes'
-        
-        # Auto-enable isosurface for geographic datasets (to show land boundaries)
-        if has_geographic_info:
-            if not params['representations'].get('isosurface'):
-                add_system_log("Auto-enabling isosurface for geographic dataset (land boundaries)", 'info')
-                params['representations']['isosurface'] = True
-                # Initialize default isosurface config if not present
-                if not isosurface_config:
-                    from .parameter_schema import IsosurfaceConfigDict
-                    isosurface_config = IsosurfaceConfigDict().dict()
-        
-        # Ensure enabled flag matches representation setting
-        isosurface_config['enabled'] = params['representations']['isosurface']
-        
-        # Attach land mask texture if available (for dyamond_llc2160 dataset)
-        if params.get('land_mask') and isosurface_config.get('enabled') and dataset_id == 'dyamond_llc2160':
-            # Ensure texture config exists and is a dict
-            if not isinstance(isosurface_config.get('texture'), dict):
-                from .parameter_schema import TextureConfig
-                isosurface_config['texture'] = TextureConfig().dict()
-            
-            # Update the textureFile path
-            isosurface_config['texture']['textureFile'] = params['land_mask']
-            isosurface_config['texture']['enabled'] = True
-            add_system_log(f"✓ Using land mask texture: {params['land_mask']}", 'info')
-        
-        return isosurface_config
-
-    def _render_with_existing_function(self, animation_handler, gad_header_path, rendered_frames_dir):
-        """Render using EXISTING renderTaskOfflineVTK"""
-        # Set environment variable for output directory
-        os.environ['RENDER_OUTPUT_DIR'] = rendered_frames_dir
-
-        # IMPORTANT: renderTaskOfflineVTK needs the FILE PATH, not the JSON content!
-        # It will read the file and resolve relative paths for kf_list files
-        # Pass the absolute path to the header JSON file
-        abs_gad_path = os.path.abspath(gad_header_path)
-        
-        print(f"[Agent] Rendering from GAD header: {abs_gad_path}")
-        print(f"[Agent] Output directory: {rendered_frames_dir}")
-        
-        # Call with file path (the function reads it internally)
-        animation_handler.renderTaskOfflineVTK(abs_gad_path)
-
-        return rendered_frames_dir
-    
-    def _detect_parameter_changes(self, old_params: dict, new_params: dict) -> list:
-        """Detect what parameters changed between old and new.
-        
-        Returns:
-            List of change descriptions, e.g.:
-            ['colormap: viridis -> plasma', 'opacity: modified', 'camera_position: changed']
-        """
-        changes = []
-        
-        # Check transfer function changes
-        if old_params.get('transfer_function', {}).get('colormap') != new_params.get('transfer_function', {}).get('colormap'):
-            old_cm = old_params.get('transfer_function', {}).get('colormap', 'unknown')
-            new_cm = new_params.get('transfer_function', {}).get('colormap', 'unknown')
-            changes.append(f'colormap: {old_cm} → {new_cm}')
-        
-        if old_params.get('transfer_function', {}).get('opacity_values') != new_params.get('transfer_function', {}).get('opacity_values'):
-            changes.append('opacity_function: modified')
-        
-        # Check camera changes
-        if old_params.get('camera') != new_params.get('camera'):
-            changes.append('camera: modified')
-        
-        # Check representation changes
-        old_reps = old_params.get('representations', {})
-        new_reps = new_params.get('representations', {})
-        for rep_type in ['volume', 'streamline', 'isosurface']:
-            if old_reps.get(rep_type) != new_reps.get(rep_type):
-                changes.append(f'{rep_type}: {"enabled" if new_reps.get(rep_type) else "disabled"}')
-        
-        # Check streamline config changes
-        if new_reps.get('streamline') and old_params.get('streamline_config') != new_params.get('streamline_config'):
-            changes.append('streamline_settings: modified')
-        
-        # Check isosurface config changes
-        if new_reps.get('isosurface') and old_params.get('isosurface_config') != new_params.get('isosurface_config'):
-            changes.append('isosurface_settings: modified')
-        
-        # Check time range changes
-        if old_params.get('time_range') != new_params.get('time_range'):
-            changes.append('time_range: modified')
-        
-        return changes if changes else ['no_significant_changes_detected']
-
-    def _handle_modify_existing(self, query: str, intent_result: dict, context: dict) -> dict:
-        """Handle MODIFY_EXISTING: extract modified params, regenerate GAD, re-render."""
-        print(f"[Agent] Handling MODIFY_EXISTING intent")
-        
-        # Check if there's a current animation to modify
-        if not context or not context.get('current_animation'):
-            return {
-                'status': 'error',
-                'intent': intent_result,
-                'message': 'No current animation to modify. Please generate an animation first.'
-            }
-        
-        # Step 1: Extract MODIFIED parameters via ParameterExtractorAgent
-        # Pass the current animation's params as base_params for modification
-        dataset = context.get('dataset') if context else None
-        dataset_id = dataset.get('id') if dataset else None
-        current_params = context['current_animation'].get('parameters', {})
-        
-        print(f"[Agent] Extracting modified parameters from: {query}")
-        extraction_result = self.parameter_extractor.extract_parameters(
-            user_query=query,
-            intent_hints=intent_result,
-            dataset=dataset,
-            base_params=current_params  # NEW: Provide base params for modification
-        )
-        
-        # Handle clarification requests
-        if isinstance(extraction_result, dict) and extraction_result.get('status') == 'needs_clarification':
-            return {
-                'status': 'needs_clarification',
-                'message': extraction_result.get('clarification_question'),
-                'missing_fields': extraction_result.get('missing_fields', []),
-                'partial_params': extraction_result.get('partial_params', {})
-            }
-        
-        modified_params = extraction_result['parameters']
-        print(f"[Agent] Modified params: {modified_params}")
-        
-        # Step 2: Get the VTK data directory from the previous animation
-        # This allows us to reuse the same downloaded VTK files
-        previous_vtk_dir = context['current_animation'].get('vtk_data_dir')
-        if not previous_vtk_dir:
-            # Fallback: try to construct from animation_path (legacy support)
-            prev_anim_path = context['current_animation'].get('animation_path')
-            if prev_anim_path:
-                previous_vtk_dir = os.path.join(prev_anim_path, 'Out_text')
-                print(f"[Agent] VTK dir not in context, using fallback: {previous_vtk_dir}")
-        
-        print(f"[Agent] Reusing VTK data from: {previous_vtk_dir}")
-        
-        # Step 3: Prepare files WITHOUT downloading data (reuse existing VTK files)
-        # Note: context['is_modification'] was already set by IntentParser
-        print("[Agent] Preparing modified animation files...")
-        # animation_handler = renderInterface3.AnimationHandler(modified_params['url']['active_scalar_url'])
-        
-        # gad_path, rendered_frames_dir, vtk_data_dir = self._prepare_files(
-        #     animation_handler, 
-        #     modified_params, 
-        #     context['dataset'],
-        #     user_query=query,
-        #     dataset_id=dataset_id,
-        #     skip_data_download=True,  # KEY: Skip data download for modifications
-        #     reuse_vtk_dir=previous_vtk_dir  # KEY: Reuse VTK files from previous animation
+        # print(f"[Agent] Preparing files (skip_download={skip_data_download})...")
+        # # Read data dimensions (always needed for GAD generation)
+        # print("[Agent] Reading data dimensions...")
+        # data = animation_handler.readData(
+        #     params['time_range']['start_timestep'], 
+        #     params['region']['x_range'], 
+        #     params['region']['y_range'], 
+        #     params['region']['z_range'], 
+        #     params['quality']
         # )
+        # print("[Agent] Calculating timesteps...")
+        # timesteps = np.linspace(
+        #     params['time_range']['start_timestep'], 
+        #     params['time_range']['end_timestep'], 
+        #     num=params['time_range']['num_frames'], 
+        #     endpoint=False
+        # )
+        # # ADAPTIVE OPACITY: Compute global data statistics and generate LLM-based opacity
+        # try:
+        #     # If not loaded from cache, compute and save
+        #     if not stats:
+        #         data_stats = self._compute_global_data_range(animation_handler, params, timesteps)
+        #         stats = data_stats
+        #     else:
+        #         data_stats = stats
+        #     # Save stats to animation folder if new animation
+        #     save_stats = None
+        #     if not skip_data_download and not reuse_vtk_dir:
+        #         save_stats = stats
+        #     # Generate adaptive opacity using LLM
+        #     opacity_values = self._generate_adaptive_opacity_with_llm(params, data_stats)
+        #     if opacity_values:
+        #         print(f"[Agent] Using LLM-generated adaptive opacity: {opacity_values}")
+        #         params['transfer_function']['opacity_values'] = opacity_values
+        #     else:
+        #         print("[Agent] Using default opacity from parameter extractor (LLM generation failed)")
+        #     tf_range = [data_stats['min'], data_stats['max']]
+        #     print(f"[Agent] Updated transfer function range: {tf_range}")
+        # except Exception as e:
+        #     print(f"[Agent] Warning: Adaptive opacity generation failed: {e}")
+        #     print("[Agent] Using default opacity values")
+        #     save_stats = None
+    
         
-        # # Step 4: Re-render with new GAD parameters
-        # print(f"[Agent] Re-rendering with modified parameters...")
-        # output_dir = self._render_with_existing_function(animation_handler, gad_path, rendered_frames_dir)
+        # print("[Agent] Generating VTK filenames...")
+        # file_names = animation_handler.getVTKFileNames(
+        #     data.shape[2], data.shape[1], data.shape[0], timesteps
+        # )
+        # print(f"[Agent] Generated VTK filenames: {file_names}")
+
+        # # Create the hierarchical animation directories based on params
+       
+        # if reuse_vtk_dir:
+        #     print(f"[Agent] Reusing VTK directory from previous animation: {reuse_vtk_dir}")
+        #     output_dir = reuse_vtk_dir
+        #     if not os.path.exists(output_dir):
+        #         raise FileNotFoundError(
+        #             f"Cannot reuse VTK directory: {output_dir} does not exist. "
+        #             "Please generate the base animation first."
+        #         )
+        #     if not any(f.endswith('.vtk') for f in os.listdir(output_dir)):
+        #         raise FileNotFoundError(
+        #             f"Cannot reuse VTK directory: No VTK files found in {output_dir}. "
+        #             "Please generate the base animation first."
+        #         )
+        # else:
+        #     output_dir = dirs.get('out_text')
+        #     os.makedirs(output_dir, exist_ok=True)
+        # file_names = [os.path.join(output_dir, f) for f in file_names]
+        # print(f"[Agent] Final VTK filenames: {file_names}")
+        # rendered_frames_dir = dirs.get('rendered_frames')
+        # os.makedirs(rendered_frames_dir, exist_ok=True)
+        # print(f"[Agent] Rendered frames dir: {rendered_frames_dir}")
+        # print(f"[Agent] VTK data dir: {output_dir}")
+        # # Save stats to animation folder if new animation
+        # if not skip_data_download and not reuse_vtk_dir and dirs.get('base'):
+        #     stats_path = os.path.join(statistics_dir, "stats.json")
+        #     try:
+        #         if save_stats:
+        #             with open(stats_path, "w") as f:
+        #                 json.dump(save_stats, f, indent=2)
+        #             print(f"[Agent] Saved stats.json to {stats_path}")
+
+        #         self._generate_and_save_stats_plots(save_stats, statistics_dir)
+        #     except Exception as e:
+        #         print(f"[Agent] Failed to save stats: {e}")
         
-        # # Return the parent directory (animation base)
-        # animation_base = os.path.dirname(output_dir)
+
+       
+        # dims = [data.shape[2], data.shape[1], data.shape[0]]  # x, y, zs
+        # camera = [
+        #     params['camera']['position'],
+        #     params['camera']['focal_point'],
+        #     params['camera']['up']
+        # ]
+
+        # # Transfer function
+        # tf_colors = params['transfer_function']['RGBPoints']
+        # tf_opacities = params['transfer_function']['opacity_values']
+
+        # # Data range: Use global statistics if available (from adaptive opacity computation)
+        # # Otherwise fallback to single timestep range
+        # if 'tf_range' in locals():
+        #     # tf_range was set during adaptive opacity computation
+        #     print(f"[Agent] Using global data range for transfer function: {tf_range}")
+        # else:
+        #     # Fallback: single timestep range
+        #     tf_range = [np.max(data), np.min(data)]
+        #     print(f"[Agent] Using single-timestep data range: {tf_range}")
         
-        # return {
-        #     'status': 'success',
-        #     'action': 'modified_existing',
-        #     'intent_type': 'MODIFY_EXISTING',  # For frontend multi-panel logic
-        #     'animation_path': animation_base,
-        #     'output_base': animation_base,
-        #     'num_frames': modified_params['time_range']['num_frames'],
-        #     'parameters': modified_params,
-        #     'vtk_data_dir': vtk_data_dir,  # Preserve VTK dir for future modifications (chains)
-        #     'modifications': {
-        #         'query': query,
-        #         'changes_detected': self._detect_parameter_changes(current_params, modified_params)
-        #     }
-        # }
+        # # Representation configs - KEY PART!
+        # volume_config = self._build_volume_config(params)
+        # scalar_range = [data_stats['percentile_90'], data_stats['max']]
+        # streamline_config = self._build_streamline_config(params, scalar_range=scalar_range)
+        # isosurface_config = self._build_isosurface_config(params, dataset)
+        
+        # # File sizes (approximate)
+        # file_sizes_mb = []
+        # for i in range(len(timesteps)):
+        #     num_points = dims[0] * dims[1] * dims[2]
+        #     bytes_per_point = 4
+        #     size_mbcords = (num_points * 3 * bytes_per_point) / (1024 * 1024)
+        #     size_mbdata = (num_points * 4 * bytes_per_point) / (1024 * 1024)
+        #     file_sizes_mb.append(size_mbcords + size_mbdata)
+
+       
+    
+    def _handle_particular_exploration(self, query: str, intent_result: dict, context: dict) -> dict:
+        """
+        Handle PARTICULAR intent - user asked a specific question about the dataset.
+
+        This stub returns a placeholder 'answer' and a short message. Replace
+        with actual data-querying logic (or call to a dedicated QA/summarizer
+        agent) to provide real answers.
+        """
+        insight_result = self.insight_extractor.extract_insights(
+                    user_query=query,
+                    intent_hints=intent_result,
+                    dataset=context.get('dataset')
+                )
+
+        print(f"insight result: {insight_result}")
+                
+        if insight_result.get('status') == 'success':
+            return {
+                        'type': 'particular_insight',
+                        'intent': intent_result,
+                        'insight': insight_result.get('insight'),
+                        'data_summary': insight_result.get('data_summary', {}),
+                        'visualization': insight_result.get('visualization', ''),
+                        'code_file': insight_result.get('code_file'),
+                        'insight_file': insight_result.get('insight_file'),
+                        'plot_file': insight_result.get('plot_file'),
+                        'confidence': insight_result.get('confidence', 0)
+                    }
+        else:
+            return {
+                        'type': 'error',
+                        'message': insight_result.get('message', 'Failed to generate insight'),
+                        'error': insight_result.get('error')
+                    }
+
+     
     
     def _handle_show_example(self, intent_result: dict, context: dict) -> dict:
         """Handle SHOW_EXAMPLE intent."""
@@ -1258,6 +691,41 @@ Do not include any explanations or markdown formatting."""
             'action': 'show_example',
             'message': 'Ready to show example animation'
         }
+    
+    def _handle_general_exploration(self, query: str, intent_result: dict, context: dict) -> dict:
+        """
+        Handle NOT_PARTICULAR intent - user wants general exploration/insights.
+        
+        This is where we'll generate interesting insights, patterns, or visualizations
+        without a specific question.
+        """
+        print(f"[Agent] Handling NOT_PARTICULAR (general exploration) intent")
+        insight_result = self.insight_extractor.extract_insights(
+                    user_query=query,
+                    intent_hints=intent_result,
+                    dataset=context.get('dataset')
+                )
+
+        print(f"insight result: {insight_result}")
+                
+        if insight_result.get('status') == 'success':
+            return {
+                        'type': 'particular_insight',
+                        'intent': intent_result,
+                        'insight': insight_result.get('insight'),
+                        'data_summary': insight_result.get('data_summary', {}),
+                        'visualization': insight_result.get('visualization', ''),
+                        'code_file': insight_result.get('code_file'),
+                        'insight_file': insight_result.get('insight_file'),
+                        'plot_file': insight_result.get('plot_file'),
+                        'confidence': insight_result.get('confidence', 0)
+                    }
+        else:
+            return {
+                        'type': 'error',
+                        'message': insight_result.get('message', 'Failed to generate insight'),
+                        'error': insight_result.get('error')
+                    }
     
     def _handle_request_help(self, query: str, context: dict) -> dict:
         """Handle REQUEST_HELP intent."""

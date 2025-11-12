@@ -11,15 +11,18 @@ class VariableComponent(BaseModel):
     id: str = Field(..., description="Component id (e.g., eastwest_velocity)")
     name: Optional[str] = Field(None, description="Human readable name")
     description: Optional[str] = Field(None, description="Short description")
-    url: Optional[str] = Field(None, description="Data URL or index file for the component")
+    file_path: Optional[str] = Field(None, description="Data file path or index file for the component")
+    file_format: Optional[str] = Field(None, description="Data file format (e.g., 'openvisus idx')")
+
 
 
 class Variable(BaseModel):
     id: str = Field(..., description="Variable id (e.g., temperature)")
     name: Optional[str] = Field(None, description="Human readable name")
     description: Optional[str] = Field(None, description="Short description")
-    url: Optional[str] = Field(None, description="Primary data URL (if scalar) or index file")
-    field_type: Optional[str] = Field(None, description="'scalar' or 'vector'")
+    file_path: str = Field(..., description="Primary data file path (if scalar) or index file")
+    file_format: str = Field(..., description="Data file format (e.g., 'openvisus idx')")
+    field_type: str = Field(..., description="'scalar' or 'vector'")
     unit: Optional[str] = Field(None, description="Units (e.g., degrees Celsius)")
     components: Optional[Dict[str, VariableComponent]] = Field(None, description="Subcomponents for vector variables")
 
@@ -74,7 +77,7 @@ class DatasetSchema(BaseModel):
                         "id": "temperature",
                         "name": "Sea-surface Temperature",
                         "description": "Temperature field from DYAMOND LLC2160",
-                        "url": "https://nsdf-climate3-origin.nationalresearchplatform.org:50098/nasa/nsdf/climate3/dyamond/mit_output/llc2160_theta/llc2160_theta.idx",
+                        "file_path": "https://nsdf-climate3-origin.nationalresearchplatform.org:50098/nasa/nsdf/climate3/dyamond/mit_output/llc2160_theta/llc2160_theta.idx",
                         "field_type": "scalar",
                         "unit": "degrees Celsius"
                     },
@@ -82,7 +85,7 @@ class DatasetSchema(BaseModel):
                         "id": "salinity",
                         "name": "Sea Water Salinity",
                         "description": "Salinity field from DYAMOND LLC2160",
-                        "url": "https://nsdf-climate3-origin.nationalresearchplatform.org:50098/nasa/nsdf/climate3/dyamond/mit_output/llc2160_salt/salt_llc2160_x_y_depth.idx",
+                        "file_path": "https://nsdf-climate3-origin.nationalresearchplatform.org:50098/nasa/nsdf/climate3/dyamond/mit_output/llc2160_salt/salt_llc2160_x_y_depth.idx",
                         "field_type": "scalar",
                         "unit": "g kg-1"
                     },
@@ -96,19 +99,19 @@ class DatasetSchema(BaseModel):
                                 "id": "eastwest_velocity",
                                 "name": "Sea-surface east-west velocity",
                                 "description": "Eastwest velocity (u) field from DYAMOND LLC2160",
-                                "url": "https://nsdf-climate3-origin.nationalresearchplatform.org:50098/nasa/nsdf/climate3/dyamond/mit_output/llc2160_arco/visus.idx"
+                                "file_path": "https://nsdf-climate3-origin.nationalresearchplatform.org:50098/nasa/nsdf/climate3/dyamond/mit_output/llc2160_arco/visus.idx"
                             },
                             "northsouth_velocity": {
                                 "id": "northsouth_velocity",
                                 "name": "Sea-surface north-south velocity",
                                 "description": "Northsouth velocity (v) field from DYAMOND LLC2160",
-                                "url": "https://nsdf-climate3-origin.nationalresearchplatform.org:50098/nasa/nsdf/climate3/dyamond/mit_output/llc2160_v/v_llc2160_x_y_depth.idx"
+                                "file_path": "https://nsdf-climate3-origin.nationalresearchplatform.org:50098/nasa/nsdf/climate3/dyamond/mit_output/llc2160_v/v_llc2160_x_y_depth.idx"
                             },
                             "vertical_velocity": {
                                 "id": "vertical_velocity",
                                 "name": "Sea-surface vertical velocity",
                                 "description": "Vertical velocity (w) field from DYAMOND LLC2160",
-                                "url": "https://nsdf-climate3-origin.nationalresearchplatform.org:50098/nasa/nsdf/climate3/dyamond/mit_output/llc2160_w/llc2160_w.idx"
+                                "file_path": "https://nsdf-climate3-origin.nationalresearchplatform.org:50098/nasa/nsdf/climate3/dyamond/mit_output/llc2160_w/llc2160_w.idx"
                             }
                         }
                     }

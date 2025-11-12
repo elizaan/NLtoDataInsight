@@ -46,11 +46,16 @@ class IntentParserAgent:
     Parses natural language queries to determine user intent.
     
     Intent Types:
-    - GENERATE_NEW: Create new animation
-    - MODIFY_EXISTING: Modify current animation
-    - SHOW_EXAMPLE: Show example animation
-    - REQUEST_HELP: Ask for help/info
-    - EXIT: End conversation
+    - NOT_PARTICULAR: No particular data insight asked by user
+      Example: "show me interesting things about this data"
+    - PARTICULAR: User requests specific data insight
+      Example: "in which time step is the temperature lowest"
+    - UNRELATED: User query is unrelated to data
+      Example: "hi, how are you"
+    - HELP: User requests help or information
+      Example: "help me find interesting insights about this data"
+    - EXIT: User wants to end the conversation
+      Example: "quit", "end", "bye"
     """
     
     def __init__(self, api_key: str):
@@ -67,45 +72,68 @@ class IntentParserAgent:
         )
         
         # Define the system prompt
-        self.system_prompt = """You are an intent classification expert for scientific data animation queries.
+        self.system_prompt = """You are an intent classification expert for scientific data insight queries.
 
 Your job is to classify user queries into one of these intent types:
 
-1. 1. **GENERATE_NEW**: User wants to create a NEW animation.
-   - Typical queries start with: "show", "animate", "visualize", "display", "plot".
-   - Usually mention a specific region of interest, time frame, or resolution that is different from previous animations.
-   - Examples: "show ...... in the .....", "animate ...... for 20 to 50 timestamps", "visualize eddies at .....".
+1. **NOT_PARTICULAR**: User wants to explore interesting patterns but has NO specific question.
+   - User is asking for general exploration, interesting findings, or open-ended insights.
+   - Typical queries: "show me interesting things about this data", "what's interesting here?", "explore this dataset", "find patterns"
+   - Examples: 
+     * "show me interesting things about this data"
+     * "what can you tell me about this dataset?"
+     * "explore interesting patterns"
 
-   
-2. **MODIFY_EXISTING**: User wants to MODIFY the current animation.
-   - Typical queries start with: "change", "add", "make", "zoom in", "zoom out", "adjust", "update", "remove".
-   - Usually request a change to an existing animation (variable, camera, opacity, representations, etc.).
-   - Examples: "change to ....", "make it faster", "zoom in", "add ....", "update color map".
+2. **PARTICULAR**: User has a SPECIFIC data insight question.
+   - User asks a precise, answerable question about the data (min/max values, trends, correlations, specific features, etc.).
+   - Typical queries start with: "what", "where", "when", "which", "how many", "find the..."
+   - Examples:
+     * "in which time step is the temperature lowest"
+     * "what is the maximum salinity value?"
+     * "where do we see the highest velocity?"
+     * "show me temperature values above 25 degrees"
 
-3. **SHOW_EXAMPLE**: User wants to see an example animation.
-   - Examples: "show me an example", "what can this do?", "suggest something".
+3. **UNRELATED**: User query is completely unrelated to data or scientific analysis.
+   - Social chat, greetings, personal questions, off-topic queries.
+   - Examples:
+     * "hi, how are you"
+     * "what's the weather like?"
+     * "tell me a joke"
 
-4. **REQUEST_HELP**: User needs help or information.
-   - Examples: "what variables are available?", "help", "how do I specify a region?"
+4. **HELP**: User requests help, guidance, or information about the system/data.
+   - Asking for assistance, capabilities, how to use the system, what's available, etc.
+   - Examples:
+     * "help me find interesting insights about this data"
+     * "what variables are available?"
+     * "how can I query this data?"
+     * "what can this system do?"
 
 5. **EXIT**: User wants to end the conversation.
-   - Examples: "quit", "exit", "done", "bye", "that's all"
+   - Explicit termination commands.
+   - Examples: "quit", "exit", "end", "bye", "done", "that's all"
 
-IMPORTANT RULES:
-- If query mentions specific phenomenon/variable/region → GENERATE_NEW
-- If query mentions modifying current animation → MODIFY_EXISTING
-- Only classify as EXIT if user explicitly says quit/exit/done
-- Be confident in your classification (confidence ≥ 0.8)
-- Extract any mentioned phenomenon, variable, or region as hints
+IMPORTANT CLASSIFICATION RULES:
+- If user asks a specific, answerable question → **PARTICULAR**
+- If user wants general exploration without specifics → **NOT_PARTICULAR**
+- If user asks for help/guidance → **HELP**
+- If user chats socially or off-topic → **UNRELATED**
+- Only classify as EXIT if user explicitly says quit/exit/bye/done
+Be confident in your classification (aim for confidence ≥ 0.8)
+
+Return as many plot suggestions as are relevant for the query and dataset — do NOT limit the number or force a fixed mix of 1D/2D/3D. Multiple 1D plots are allowed when appropriate.
 
 Output ONLY valid JSON with this structure:
 {{
-    "intent_type": "GENERATE_NEW|MODIFY_EXISTING|SHOW_EXAMPLE|REQUEST_HELP|EXIT",
+    "intent_type": "NOT_PARTICULAR|PARTICULAR|UNRELATED|HELP|EXIT",
     "confidence": 0.0-1.0,
-    "phenomenon_hint": "extracted phenomenon or null",
-    "variable_hint": "extracted variable or null",
-    "region_hint": "extracted region or null",
-    "reasoning": "brief explanation"
+    "plot_hints": [
+        "plot1 (1D): variables: <comma-separated variable ids>",
+        "plot2 (1D): variables: <comma-separated variable ids>",
+        "plot3 (2D): variables: <comma-separated variable ids>",
+        "plot4 (3D): variables: <comma-separated variable ids>"
+    ],
+    "user_query": "original user query",
+    "reasoning": "brief explanation of why this classification was chosen"
 }}
 
 Do NOT include markdown formatting, just raw JSON."""
@@ -141,10 +169,12 @@ Do NOT include markdown formatting, just raw JSON."""
         context_str = ""
         # print("printing context:", context)
         if context:
-            if context.get('has_current_animation'):
-                context_str += "User has an existing animation. "
+            
             if context.get('dataset'):
                 context_str += f"Dataset: {context['dataset'].get('name', 'unknown')}. "
+
+            if context.get('dataset_summary'):
+                context_str += f"Dataset Summary: {context['dataset_summary']}. "
         
         if not context_str:
             context_str = "No prior context."
@@ -156,15 +186,35 @@ Do NOT include markdown formatting, just raw JSON."""
                 "context": context_str
             })
 
-            add_system_log(f"[IntentParser] Classified as: {result} (confidence: {result.get('confidence', 0):.2f})")
+            add_system_log(f"[IntentParser] Classified as: {result.get('intent_type')} (confidence: {result.get('confidence', 0):.2f})")
 
-            # Set context flag if this is a modification intent
-            if result.get('intent_type') == 'MODIFY_EXISTING' and context is not None:
-                context['is_modification'] = True
-                add_system_log("[IntentParser] Set context['is_modification'] = True")
-            else:
-                context['is_modification'] = False
-                add_system_log("[IntentParser] Set context['is_modification'] = False")
+            # Set context flags based on intent type to guide frontend/backend flow
+            intent_type = result.get('intent_type', 'NOT_PARTICULAR')
+            
+            if context is not None:
+                # Clear all flags first
+                context['is_particular'] = False
+                context['is_not_particular'] = False
+                context['is_unrelated'] = False
+                context['is_help'] = False
+                context['is_exit'] = False
+                
+                # Set appropriate flag based on intent
+                if intent_type == 'PARTICULAR':
+                    context['is_particular'] = True
+                    add_system_log("[IntentParser] Set context['is_particular'] = True")
+                elif intent_type == 'NOT_PARTICULAR':
+                    context['is_not_particular'] = True
+                    add_system_log("[IntentParser] Set context['is_not_particular'] = True")
+                elif intent_type == 'UNRELATED':
+                    context['is_unrelated'] = True
+                    add_system_log("[IntentParser] Set context['is_unrelated'] = True")
+                elif intent_type == 'HELP':
+                    context['is_help'] = True
+                    add_system_log("[IntentParser] Set context['is_help'] = True")
+                elif intent_type == 'EXIT':
+                    context['is_exit'] = True
+                    add_system_log("[IntentParser] Set context['is_exit'] = True")
 
             return result
             
@@ -172,11 +222,9 @@ Do NOT include markdown formatting, just raw JSON."""
             add_system_log(f"[IntentParser] Error: {e}")
             # Fallback: return low-confidence result
             return {
-                "intent_type": "GENERATE_NEW",  # Safe default
+                "intent_type": "NOT_PARTICULAR",  # Safe default for data exploration
                 "confidence": 0.5,
-                "phenomenon_hint": None,
-                "variable_hint": None,
-                "region_hint": None,
+                "user_query": user_query,
                 "reasoning": f"Error during classification: {str(e)}"
             }
     
@@ -206,13 +254,8 @@ Do NOT include markdown formatting, just raw JSON."""
         if result['confidence'] < 0.7:
             return True
         
-        # If GENERATE_NEW but no hints extracted, might need clarification
-        if result['intent_type'] == 'GENERATE_NEW':
-            if not any([
-                result.get('phenomenon_hint'),
-                result.get('variable_hint'),
-                result.get('region_hint')
-            ]):
-                return True
+        # Queries classified as UNRELATED or EXIT typically don't need data clarification
+        if result.get('intent_type') in ['UNRELATED', 'EXIT']:
+            return False
         
         return False

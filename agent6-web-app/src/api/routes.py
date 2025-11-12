@@ -599,19 +599,72 @@ def chat():
                 'status': 'error'
             }), 500
         # If the client explicitly sends a 'continue_conversation' action,
-        # forward the message to the agent immediately and return the result.
-        # This avoids the old remapping flow that expected a separate
-        # 'phenomenon_selection' step.
+        # forward the message to the agent with full context (dataset + summary).
+        # The agent will use IntentParser to classify intent and route accordingly.
         if action == 'continue_conversation':
             try:
+                # Build context with dataset and summary from conversation_state
                 context = {
                     'dataset': conversation_state.get('dataset'),
+                    'dataset_summary': conversation_state.get('dataset_summary'),
                     'animation_info': conversation_state.get('animation_info')
                 }
+                
+                add_system_log(f"[continue_conversation] Calling agent.process_query with context", 'info')
+                add_system_log(f"[continue_conversation] User message: {user_message[:100]}", 'debug')
+                
+                # Agent will internally call IntentParser, set flags, and route
                 result = agent.process_query(user_message, context=context)
-                return jsonify({'type': 'agent_response', 'result': result, 'status': 'success'})
+                
+                add_system_log(f"[continue_conversation] Agent returned result type: {result.get('status')}", 'info')
+                
+                # Check intent flags set by IntentParser in context to determine response
+                if context.get('is_exit'):
+                    return jsonify({
+                        'type': 'conversation_end',
+                        'message': result.get('message', 'Goodbye!'),
+                        'status': 'success'
+                    })
+                elif context.get('is_unrelated'):
+                    return jsonify({
+                        'type': 'clarification',
+                        'message': result.get('message', 'That seems unrelated to data analysis. How can I help you explore this dataset?'),
+                        'status': 'success'
+                    })
+                elif context.get('is_help'):
+                    return jsonify({
+                        'type': 'help_response',
+                        'message': result.get('message'),
+                        'status': 'success'
+                    })
+                elif context.get('is_particular'):
+                    # User asked a specific question
+                    return jsonify({
+                        'type': 'particular_response',
+                        'message': result.get('message'),
+                        'answer': result.get('answer'),
+                        'status': 'success'
+                    })
+                elif context.get('is_not_particular'):
+                    # User wants general exploration
+                    return jsonify({
+                        'type': 'exploration_response',
+                        'message': result.get('message'),
+                        'insights': result.get('insights'),
+                        'status': 'success'
+                    })
+                else:
+                    # Generic agent response
+                    return jsonify({
+                        'type': 'agent_response',
+                        'result': result,
+                        'status': 'success'
+                    })
+                    
             except Exception as e:
                 add_system_log(f'Agent processing failed: {e}', 'error')
+                import traceback
+                add_system_log(f"Traceback: {traceback.format_exc()}", 'error')
                 return jsonify({'type': 'error', 'message': str(e), 'status': 'error'}), 500
         
         # Simplified action handling: only accept 'start', 'select_dataset',
@@ -712,23 +765,17 @@ def chat():
                 'summary': summary,
                 'status': 'success'
             }
-            add_system_log(f"Provided dataset summary for {dataset_id}", 'info')
+            
+            # Set conversation state with dataset and summary for next user query
             conversation_state['step'] = 'continue_conversation'
+            conversation_state['dataset'] = dataset_obj
+            conversation_state['dataset_summary'] = summary
+            
+            add_system_log(f"Provided dataset summary for {dataset_id}", 'info')
+            add_system_log(f"Conversation state updated - ready for user queries", 'info')
 
             
-        elif action == 'continue_conversation':
-            # Handle y/g/n/quit responses (exactly like run_conversation loop)
-            user_response = user_message.lower().strip()
-
-            if user_response == "quit":
-                response = {
-                    'type': 'conversation_end',
-                    'message': 'Exiting the conversation. Goodbye!',
-                    'status': 'success'
-                }
-                # Reset conversation state (no 'choice' field)
-                conversation_state = {'step': 'start', 'phenomenon': None, 'region_params': None, 'animation_info': None}
-            
+        # No more duplicate 'continue_conversation' handler - all handled above
         
         else:
             response = {

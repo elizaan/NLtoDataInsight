@@ -326,15 +326,18 @@ class ChatInterface {
             } else {
                 // Treat as a custom phenomenon description
                 // send the phenomenon as the message; no 'choice' field required
-                await this.sendApiMessage(message, 'select_phenomenon');
+                // Use continue_conversation to keep the protocol simple and
+                // avoid the deprecated legacy action.
+                await this.sendApiMessage(message, 'continue_conversation');
             }
         } else if (this.conversationState === 'custom_description' || this.conversationState === 'phenomenon_selection') {
             // Directly post the custom phenomenon as the message
-            await this.sendApiMessage(message, 'select_phenomenon');
+            // Use continue_conversation instead of the deprecated legacy action
+            await this.sendApiMessage(message, 'continue_conversation');
         } else {
             // Fallback: if conversation state is unexpected, still attempt to send
             // as a custom description so UI input doesn't get ignored.
-            await this.sendApiMessage(message, 'select_phenomenon');
+            await this.sendApiMessage(message, 'continue_conversation');
         }
     }
 
@@ -386,6 +389,88 @@ class ChatInterface {
                     // Show the exact same options as run_conversation
                     this.addTypingMessage(data.message, 'bot');
                     this.conversationState = 'phenomenon_selection';
+                    break;
+
+                case 'dataset_summary':
+                    // Server returned a dataset summary (e.g., after select_dataset)
+                    console.log('Processing dataset_summary response');
+                    try {
+                        // Short headline or status message
+                        if (data.message) this.addMessage(data.message, 'bot');
+
+                        // The summary may be a string or a structured object
+                        const summary = data.summary || data.result || data.summary_text;
+                        if (summary) {
+                            if (typeof summary === 'string') {
+                                this.addMessage(summary, 'bot');
+                            } else if (typeof summary === 'object') {
+                                // Try common fields first
+                                if (summary.text) {
+                                    this.addMessage(summary.text, 'bot');
+                                } else if (summary.summary) {
+                                    this.addMessage(summary.summary, 'bot');
+                                } else {
+                                    // Fallback to pretty JSON
+                                    this.addMessage(JSON.stringify(summary, null, 2), 'bot');
+                                }
+                            } else {
+                                this.addMessage(String(summary), 'bot');
+                            }
+                        }
+
+                        // Advance conversation state so follow-ups work normally
+                        this.conversationState = 'continue_conversation';
+                        this.updateStatus('Summary Ready', 'success');
+                    } catch (err) {
+                        console.error('Error rendering dataset_summary:', err);
+                        this.addMessage(data.message || 'Dataset summary received', 'bot');
+                    }
+                    break;
+
+                case 'particular_response':
+                    // User asked a specific question - show the answer
+                    console.log('Processing particular_response (specific question)');
+                    if (data.message) this.addMessage(data.message, 'bot');
+                    if (data.answer) this.addMessage(data.answer, 'bot');
+                    this.updateStatus('Answer Provided', 'success');
+                    break;
+
+                case 'exploration_response':
+                    // User wants general exploration - show insights
+                    console.log('Processing exploration_response (general exploration)');
+                    if (data.message) this.addMessage(data.message, 'bot');
+                    if (data.insights) {
+                        if (typeof data.insights === 'string') {
+                            this.addMessage(data.insights, 'bot');
+                        } else if (Array.isArray(data.insights)) {
+                            data.insights.forEach(insight => this.addMessage(`• ${insight}`, 'bot'));
+                        } else {
+                            this.addMessage(JSON.stringify(data.insights, null, 2), 'bot');
+                        }
+                    }
+                    this.updateStatus('Insights Ready', 'success');
+                    break;
+
+                case 'help_response':
+                    // User requested help
+                    console.log('Processing help_response');
+                    if (data.message) this.addMessage(data.message, 'bot');
+                    this.updateStatus('Help Provided', 'success');
+                    break;
+
+                case 'clarification':
+                    // Query was unrelated or needs clarification
+                    console.log('Processing clarification response');
+                    this.addMessage(data.message || 'Could you rephrase that in terms of data exploration?', 'bot');
+                    this.updateStatus('Awaiting Input', 'info');
+                    break;
+
+                case 'agent_response':
+                    // Generic agent response (fallback)
+                    console.log('Processing generic agent_response');
+                    const result = data.result || {};
+                    this.addMessage(result.message || data.message || 'Processing complete', 'bot');
+                    this.updateStatus('Ready', 'success');
                     break;
 
                 case 'animation_generated':
@@ -576,7 +661,8 @@ class ChatInterface {
             // Send the phenomenon id/name as the message so backend receives
             // a textual description and does not rely on numeric 'choice'.
             const desc = name || id;
-            this.sendApiMessage(desc, 'select_phenomenon');
+            // Use continue_conversation to replace the deprecated action
+            this.sendApiMessage(desc, 'continue_conversation');
         }
     }
 
@@ -2269,7 +2355,8 @@ function submitCustomDescription() {
     chatInterface.addMessage(description, 'user');
     // Send the custom description as the phenomenon message. Do not send
     // the legacy numeric 'choice' field — backend expects free-text.
-    chatInterface.sendApiMessage(description, 'select_phenomenon');
+    // Use continue_conversation instead of the deprecated legacy action
+    chatInterface.sendApiMessage(description, 'continue_conversation');
         document.getElementById('customDescription').value = '';
 
         // Hide custom input UI
