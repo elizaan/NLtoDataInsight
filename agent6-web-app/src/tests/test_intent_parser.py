@@ -1,4 +1,4 @@
-# PYTHONPATH=/home/eliza89/PhD/codes/vis_user_tool/agent6-web-app python3 /home/eliza89/PhD/codes/vis_user_tool/agent6-web-app/src/tests/test_intent_parser.py
+# PYTHONPATH=/home/eliza89/PhD/codes/vis_user_tool/agents python3 /home/eliza89/PhD/codes/vis_user_tool/agents/src/tests/test_intent_parser.py
 
 """
 Test Intent Parser Agent
@@ -19,7 +19,7 @@ def test_intent_parser():
     api_key = os.getenv('OPENAI_API_KEY')
     if not api_key:
         # Try reading from common locations under the web-app folder.
-        # Prefer agent6-web-app/ai_data/openai_api_key.txt (two levels up from tests)
+        # Prefer agents/ai_data/openai_api_key.txt (two levels up from tests)
         candidate_paths = [
             os.path.join(os.path.dirname(__file__), '..', 'ai_data', 'openai_api_key.txt'),
             os.path.join(os.path.dirname(__file__), '..', '..', 'ai_data', 'openai_api_key.txt'),

@@ -347,15 +347,7 @@ class ChatInterface {
                 action: action,
                 ...extraData
             };
-            // Respect the frontend LangChain toggle if present so tests can opt-in
-            try {
-                const lcToggle = document.getElementById('useLangChainToggle');
-                if (lcToggle) {
-                    requestData.use_langchain = !!lcToggle.checked;
-                }
-            } catch (e) {
-                console.warn('Could not read useLangChainToggle state', e);
-            }
+            
 
             const response = await fetch('/api/chat', {
                 method: 'POST',
@@ -2248,7 +2240,8 @@ function selectDataset(type) {
         console.log('Starting conversation...');
         chatInterface.startConversation();
     } else if (type === 'upload') {
-        chatInterface.addMessage('Dataset upload feature is not yet implemented. Please use the available dataset.', 'bot');
+      console.log('Starting conversation...');
+        chatInterface.startConversation();
     }
 }
 

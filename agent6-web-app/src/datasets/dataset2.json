@@ -1,0 +1,78 @@
+{
+  "name": "LLC2160 Mosaic Grid Dataset",
+  "id": "user_upload_956d1086",
+  "index": "2",
+  "size": "448MB",
+  "variables": [
+    {
+      "id": "u",
+      "name": "Eastward Velocity",
+      "description": "Eastward component of velocity",
+      "url": "https://nsdf-climate3-origin.nationalresearchplatform.org:50098/nasa/nsdf/climate3/dyamond/mit_output/llc2160_arco/visus.idx",
+      "field_type": "scalar",
+      "unit": "m/s",
+      "components": null
+    },
+    {
+      "id": "v",
+      "name": "Northward Velocity",
+      "description": "Northward component of velocity",
+      "url": "https://nsdf-climate3-origin.nationalresearchplatform.org:50098/nasa/nsdf/climate3/dyamond/mit_output/llc2160_v/v_llc2160_x_y_depth.idx",
+      "field_type": "scalar",
+      "unit": "m/s",
+      "components": null
+    },
+    {
+      "id": "w",
+      "name": "Vertical Velocity",
+      "description": "Vertical component of velocity",
+      "url": "https://nsdf-climate3-origin.nationalresearchplatform.org:50098/nasa/nsdf/climate3/dyamond/mit_output/llc2160_w/llc2160_w.idx",
+      "field_type": "scalar",
+      "unit": "m/s",
+      "components": null
+    },
+    {
+      "id": "theta",
+      "name": "Potential Temperature",
+      "description": "Potential temperature of the ocean",
+      "url": "https://nsdf-climate3-origin.nationalresearchplatform.org:50098/nasa/nsdf/climate3/dyamond/mit_output/llc2160_theta/llc2160_theta.idx",
+      "field_type": "scalar",
+      "unit": "degrees Celsius",
+      "components": null
+    },
+    {
+      "id": "salt",
+      "name": "Salinity",
+      "description": "Salinity of the ocean",
+      "url": "https://nsdf-climate3-origin.nationalresearchplatform.org:50098/nasa/nsdf/climate3/dyamond/mit_output/llc2160_salt/salt_llc2160_x_y_depth.idx",
+      "field_type": "scalar",
+      "unit": "psu",
+      "components": null
+    }
+  ],
+  "spatial_info": {
+    "dimensions": {
+      "x": 8640,
+      "y": 6480,
+      "z": 90
+    },
+    "geographic_info": [
+      {
+        "has_geographic_info": "yes",
+        "geographic_info_file": "llc2160_latlon.nc"
+      }
+    ]
+  },
+  "description": "Latitude and Longitude mosaic from LLC2160 faces 0, 1, 3, 4",
+  "type": "oceanographic data",
+  "Resolution": "High resolution",
+  "temporal_info": {
+    "has_temporal_info": "yes",
+    "time_range": {
+      "start": "0",
+      "end": "10365"
+    },
+    "total_time_steps": "10366",
+    "time_units": "days"
+  }
+}

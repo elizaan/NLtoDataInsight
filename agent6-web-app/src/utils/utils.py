@@ -14,7 +14,7 @@ def setup_environment():
     # print("Current script directory:", current_script_dir)
 
     # Compute the base path (go up to the main project directory)
-    # From src/utils/ -> src/ -> agent6-web-app/ -> vis_user_tool/
+    # From src/utils/ -> src/ -> agents/ -> vis_user_tool/
     base_path = os.path.dirname(os.path.dirname(os.path.dirname(current_script_dir)))
     # print("Base path:", base_path)
 

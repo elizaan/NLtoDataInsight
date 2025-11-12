@@ -1,15 +1,6 @@
 // Feature: Fetch and display dataset summary
 export async function fetchDatasetSummary(datasetId) {
     // The backend /api/chat expects 'dataset_id' for the select_dataset action
-    // Respect the frontend LangChain toggle so the summarize endpoint can
-    // opt into LangChain orchestration when the user enables it.
-    let use_langchain = false;
-    try {
-        const lcToggle = document.getElementById('useLangChainToggle');
-        if (lcToggle) use_langchain = !!lcToggle.checked;
-    } catch (e) {
-        console.warn('Could not read useLangChainToggle state', e);
-    }
 
     const response = await fetch('/api/chat', {
         method: 'POST',

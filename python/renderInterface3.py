@@ -6,9 +6,9 @@ from threading import Thread
 
 from OpenVisus import *
 import openvisuspy as ovp
-import vistool_py3
-import vistool_py_osp
-import vistool_py_vtk3
+# import vistool_py3
+# import vistool_py_osp
+# import vistool_py_vtk3
 import vtk
 from vtk.util import numpy_support
 
@@ -216,109 +216,109 @@ class AnimationHandler:
         end_time = time.monotonic()
         print('Download Duration: {}'.format(timedelta(seconds=end_time - start_time)))
             
-    # generate scripts by templates
-    def generateScript(self, input_names, kf_interval, dims, meshType, world_bbx_len, cam, tf_range, template="fixedCam", s=0, e=0, dist=0, outfile="script", bgImg=""):
-        if (template == "fixedCam"):
-            # print("generating fixed camera script to: ", outfile, "\n")
-            # convert to strict data types
-            dims = np.array(dims)
-            cam = np.float32(cam)
-            tf_range = np.float32(tf_range)
-            vistool_py3.generateScriptFixedCam(outfile, input_names, kf_interval, dims, meshType, world_bbx_len, cam, tf_range, bgImg);
-        elif (template == "rotate"):
-            # print("generating rotating camera script to: ", outfile, "\n")
-            # convert to strict data types
-            dims = np.array(dims)
-            tf_range = np.float32(tf_range)
-            vistool_py3.generateScriptRotate(outfile, input_names, kf_interval, dims, meshType, world_bbx_len, s, e, dist, tf_range, bgImg);
+    # # generate scripts by templates
+    # def generateScript(self, input_names, kf_interval, dims, meshType, world_bbx_len, cam, tf_range, template="fixedCam", s=0, e=0, dist=0, outfile="script", bgImg=""):
+    #     if (template == "fixedCam"):
+    #         # print("generating fixed camera script to: ", outfile, "\n")
+    #         # convert to strict data types
+    #         dims = np.array(dims)
+    #         cam = np.float32(cam)
+    #         tf_range = np.float32(tf_range)
+    #         vistool_py3.generateScriptFixedCam(outfile, input_names, kf_interval, dims, meshType, world_bbx_len, cam, tf_range, bgImg);
+    #     elif (template == "rotate"):
+    #         # print("generating rotating camera script to: ", outfile, "\n")
+    #         # convert to strict data types
+    #         dims = np.array(dims)
+    #         tf_range = np.float32(tf_range)
+    #         vistool_py3.generateScriptRotate(outfile, input_names, kf_interval, dims, meshType, world_bbx_len, s, e, dist, tf_range, bgImg);
             
-    def generateScriptStreamline(self, input_names, kf_interval, dims, meshType, world_bbx_len, cam, tf_range, tf_colors, tf_opacities, scalar_field,frame_rate,
-        required_modules,
-        file_sizes_mb,
-        grid_type,
-        spacing,
-        origin,
-        view_angle,
-        rendering_backend,
-        volume_representation_config,
-        streamline_representation_config,
-        isosurface_representation_config,outfile="script", template="fixedCam", bgImg=""):
-        if (template == "fixedCam"):
-            # print("generating fixed camera streamline script to: ", outfile, "\n")
-            # convert to strict data types
-            dims = np.array(dims)
-            cam = np.float32(cam)
-            tf_range = np.float32(tf_range)
-            tf_colors = np.float32(tf_colors)
-            tf_opacities = np.float32(tf_opacities)
-            vistool_py3.generateScriptFixedCamStreamline(outfile, input_names, kf_interval, dims, meshType, world_bbx_len, cam, tf_range, tf_colors, tf_opacities, scalar_field, bgImg, frame_rate,
-                required_modules,
-                file_sizes_mb,
-                grid_type,
-                spacing,
-                origin,
-                view_angle,
-                rendering_backend,
-                volume_representation_config,
-                streamline_representation_config,
-                isosurface_representation_config);
+    # def generateScriptStreamline(self, input_names, kf_interval, dims, meshType, world_bbx_len, cam, tf_range, tf_colors, tf_opacities, scalar_field,frame_rate,
+    #     required_modules,
+    #     file_sizes_mb,
+    #     grid_type,
+    #     spacing,
+    #     origin,
+    #     view_angle,
+    #     rendering_backend,
+    #     volume_representation_config,
+    #     streamline_representation_config,
+    #     isosurface_representation_config,outfile="script", template="fixedCam", bgImg=""):
+    #     if (template == "fixedCam"):
+    #         # print("generating fixed camera streamline script to: ", outfile, "\n")
+    #         # convert to strict data types
+    #         dims = np.array(dims)
+    #         cam = np.float32(cam)
+    #         tf_range = np.float32(tf_range)
+    #         tf_colors = np.float32(tf_colors)
+    #         tf_opacities = np.float32(tf_opacities)
+    #         vistool_py3.generateScriptFixedCamStreamline(outfile, input_names, kf_interval, dims, meshType, world_bbx_len, cam, tf_range, tf_colors, tf_opacities, scalar_field, bgImg, frame_rate,
+    #             required_modules,
+    #             file_sizes_mb,
+    #             grid_type,
+    #             spacing,
+    #             origin,
+    #             view_angle,
+    #             rendering_backend,
+    #             volume_representation_config,
+    #             streamline_representation_config,
+    #             isosurface_representation_config);
 
 
-    # read scripts by file path
-    def readScript(self, p):
-        return vistool_py_osp.readScript(p);
+    # # read scripts by file path
+    # def readScript(self, p):
+    #     return vistool_py_osp.readScript(p);
     
-    # launch rendering
-    def renderTask(self, x_range=[0,0], y_range=[0,0], z_range=[0,0], q=-6, t_list=[0], flip_axis=2, transpose=False, mode=0, bgImg="", outputName="viewer_script"):
-        dims = [100, 100, 100]
-        total_data = []
-        t_names = []
-        counter = 0;
-        print("generating script to: ", outputName, "\n")
-        for t in t_list:
-            print(t)
-            start_time = time.monotonic()
-            data = self.readData(t=t, x_range=x_range, y_range=y_range, z_range=z_range, q=q, flip_axis=flip_axis, transpose=transpose)
-            end_time = time.monotonic()
-            print('Read Duration: {}'.format(timedelta(seconds=end_time - start_time)))
+    # # launch rendering
+    # def renderTask(self, x_range=[0,0], y_range=[0,0], z_range=[0,0], q=-6, t_list=[0], flip_axis=2, transpose=False, mode=0, bgImg="", outputName="viewer_script"):
+    #     dims = [100, 100, 100]
+    #     total_data = []
+    #     t_names = []
+    #     counter = 0;
+    #     print("generating script to: ", outputName, "\n")
+    #     for t in t_list:
+    #         print(t)
+    #         start_time = time.monotonic()
+    #         data = self.readData(t=t, x_range=x_range, y_range=y_range, z_range=z_range, q=q, flip_axis=flip_axis, transpose=transpose)
+    #         end_time = time.monotonic()
+    #         print('Read Duration: {}'.format(timedelta(seconds=end_time - start_time)))
             
-            # concate all timesteps
-            dims = data.shape
-            total_data = np.concatenate((total_data, data.ravel()), axis=None)
-            t_names.append(getRawFileName(data.shape[2], data.shape[1], data.shape[0], t))
-            counter += 1
+    #         # concate all timesteps
+    #         dims = data.shape
+    #         total_data = np.concatenate((total_data, data.ravel()), axis=None)
+    #         t_names.append(getRawFileName(data.shape[2], data.shape[1], data.shape[0], t))
+    #         counter += 1
 
-            # save a copy of the data if needed
-            if (0):
-                saveFile(getRawFileName(data.shape[2], data.shape[1], data.shape[0], t))
+    #         # save a copy of the data if needed
+    #         if (0):
+    #             saveFile(getRawFileName(data.shape[2], data.shape[1], data.shape[0], t))
                 
-        print(dims)
-        print("count ", counter)
-        print(t_names)
-        #print(total_data.shape)
+    #     print(dims)
+    #     print("count ", counter)
+    #     print(t_names)
+    #     #print(total_data.shape)
 
-        vistool_py_osp.init_app(sys.argv)
-        vistool_py_osp.run_app(total_data, t_names, dims[2], dims[1], dims[0], counter, mode, bgImg, outputName)
-        #return dims
+    #     vistool_py_osp.init_app(sys.argv)
+    #     vistool_py_osp.run_app(total_data, t_names, dims[2], dims[1], dims[0], counter, mode, bgImg, outputName)
+    #     #return dims
 
 
-    # launch rendering
-    def renderTaskOffline(self, jsonStr):
-        vistool_py_osp.init_app(sys.argv)
+    # # launch rendering
+    # def renderTaskOffline(self, jsonStr):
+    #     vistool_py_osp.init_app(sys.argv)
 
-        output_dir = os.environ.get("RENDER_OUTPUT_DIR", "")
-        if output_dir:
-            print(f"Using output directory: {output_dir}")
+    #     output_dir = os.environ.get("RENDER_OUTPUT_DIR", "")
+    #     if output_dir:
+    #         print(f"Using output directory: {output_dir}")
 
-        # vistool_py_osp.run_offline_app(jsonStr, "", -2)
-        vistool_py_osp.run_offline_app(jsonStr, output_dir, -2)
+    #     # vistool_py_osp.run_offline_app(jsonStr, "", -2)
+    #     vistool_py_osp.run_offline_app(jsonStr, output_dir, -2)
 
-    # launch vtk rendering
-    def renderTaskOfflineVTK(self, jsonStr):
-        output_dir = os.environ.get("RENDER_OUTPUT_DIR", "")
-        if output_dir:
-            print(f"Using output directory for VTK rendering: {output_dir}")
-        vistool_py_vtk3.run_offline_app_improved(jsonStr, output_dir, -2)
-        # vistool_py_vtk.run_offline_app(jsonStr, output_dir, -2)
+    # # launch vtk rendering
+    # def renderTaskOfflineVTK(self, jsonStr):
+    #     output_dir = os.environ.get("RENDER_OUTPUT_DIR", "")
+    #     if output_dir:
+    #         print(f"Using output directory for VTK rendering: {output_dir}")
+    #     vistool_py_vtk3.run_offline_app_improved(jsonStr, output_dir, -2)
+    #     # vistool_py_vtk.run_offline_app(jsonStr, output_dir, -2)
 
     

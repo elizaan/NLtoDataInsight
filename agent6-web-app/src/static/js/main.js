@@ -62,6 +62,124 @@ document.addEventListener('DOMContentLoaded', function() {
                                 onDatasetSelect(dataset);
                             });
                         });
+                    } else if (type === 'upload') {
+                        // Show a small upload/describe UI inside the chat area so the
+                        // user can paste links/text and optionally attach a metadata file.
+                        const chatMessages = document.getElementById('chatMessages');
+                        const botMsg = document.createElement('div');
+                        botMsg.className = 'message bot-message';
+                        botMsg.innerHTML = `
+                            <div class='message-avatar'><i class='fas fa-robot'></i></div>
+                            <div class='message-content'>
+                                <p><strong>Remote Data Sources</strong> (comma-separated URLs only):</p>
+                                <textarea id="uploadSources" style="width:100%;height:90px" placeholder="https://example.com/data1.nc, https://example.com/data2.idx, https://remote-server.org/dataset.nc"></textarea>
+                                <p style="margin-top:12px"><strong>Local Data Files</strong> (upload one or more files):</p>
+                                <input type="file" id="uploadDataFiles" multiple />
+                                <p style="margin-top:12px"><strong>Metadata Files</strong> (optional, any type, multiple allowed):</p>
+                                <input type="file" id="uploadMetadataFiles" multiple />
+                                <div style="margin-top:8px">
+                                    <button id="describeUploadBtn">Describe dataset</button>
+                                    <button id="cancelUploadBtn">Cancel</button>
+                                </div>
+                            </div>`;
+                        chatMessages.appendChild(botMsg);
+
+                        // Wire up actions
+                        const describeBtn = botMsg.querySelector('#describeUploadBtn');
+                        const cancelBtn = botMsg.querySelector('#cancelUploadBtn');
+                        const sourcesEl = botMsg.querySelector('#uploadSources');
+                        const dataFilesEl = botMsg.querySelector('#uploadDataFiles');
+                        const metadataFilesEl = botMsg.querySelector('#uploadMetadataFiles');
+
+                        cancelBtn.onclick = () => {
+                            // Remove the bot message and show the base UI again
+                            if (botMsg && botMsg.parentNode) botMsg.parentNode.removeChild(botMsg);
+                        };
+
+                        describeBtn.onclick = async () => {
+                            // Parse comma-separated remote URLs
+                            const raw = (sourcesEl.value || '')
+                                .split(',')
+                                .map(s => s.trim())
+                                .map(s => s.replace(/^["']|["']$/g, ''))  // Remove leading/trailing quotes
+                                .map(s => s.trim())  // Trim again after quote removal
+                                .filter(s => s.length > 0);
+                            
+                            // Validate that sources are URLs (simple check)
+                            const invalidSources = raw.filter(s => !s.match(/^https?:\/\/.+/i));
+                            if (invalidSources.length > 0) {
+                                addBotMessage(`⚠️ Please provide only remote URLs (starting with http:// or https://). Invalid entries: ${invalidSources.join(', ')}`);
+                                return;
+                            }
+                            
+                            const dataFiles = dataFilesEl.files;
+                            const metadataFiles = metadataFilesEl.files;
+
+                            try {
+                                if ((dataFiles && dataFiles.length > 0) || (metadataFiles && metadataFiles.length > 0)) {
+                                    // Multipart upload: send data and metadata files plus sources list
+                                    const fd = new FormData();
+                                    // Use repeated 'sources' fields (sources=...) so Flask
+                                    // can read them with request.form.getlist('sources')
+                                    raw.forEach(s => fd.append('sources', s));
+                                    // Attach data files
+                                    if (dataFiles && dataFiles.length > 0) {
+                                        for (let i = 0; i < dataFiles.length; ++i) {
+                                            fd.append('data_files', dataFiles[i]);
+                                        }
+                                    }
+                                    // Attach metadata files
+                                    if (metadataFiles && metadataFiles.length > 0) {
+                                        for (let i = 0; i < metadataFiles.length; ++i) {
+                                            fd.append('metadata_files', metadataFiles[i]);
+                                        }
+                                    }
+                                    const resp = await fetch('/api/upload_dataset_metadata', { method: 'POST', body: fd });
+                                    const j = await resp.json();
+                                    if (resp.ok) {
+                                        addBotMessage(`Dataset registered: <strong>${j.dataset_id}</strong>. You can now continue the conversation.`);
+                                    } else {
+                                        addBotMessage(`Upload failed: ${j.message || 'unknown error'}`);
+                                    }
+                                } else {
+                                    // JSON describe: send sources and optional empty metadata
+                                    const payload = { sources: raw, metadata: {} };
+                                    const resp = await fetch('/api/describe_dataset', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+                                    const j = await resp.json();
+                                    if (resp.ok) {
+                                        addBotMessage(`Dataset registered: <strong>${j.dataset_id}</strong>. ${j.summary || ''}`);
+                                    } else {
+                                        addBotMessage(`Describe failed: ${j.message || 'unknown error'}`);
+                                    }
+                                }
+
+                                // Set conversation state so the next user message is treated as the phenomenon description
+                                if (window.chatInterface && typeof window.chatInterface === 'object') {
+                                    try { window.chatInterface.conversationState = 'custom_description'; } catch (e) { console.warn('Unable to set chatInterface state', e); }
+                                } else {
+                                    window.pendingConversationState = 'custom_description';
+                                }
+
+                                // Reveal chat input area
+                                const chatInputContainer = document.getElementById('chatInputContainer');
+                                if (chatInputContainer) chatInputContainer.style.display = 'block';
+
+                                // Remove the form message after a short delay so the user sees success
+                                setTimeout(() => { try { if (botMsg && botMsg.parentNode) botMsg.parentNode.removeChild(botMsg); } catch (e) {} }, 1200);
+
+                            } catch (e) {
+                                console.error('Describe/upload error', e);
+                                addBotMessage('Error while describing/uploading dataset: ' + (e.message || e));
+                            }
+                        };
+
+                        // Helper to insert a bot message into the chat
+                        function addBotMessage(html) {
+                            const msg = document.createElement('div');
+                            msg.className = 'message bot-message';
+                            msg.innerHTML = `<div class='message-avatar'><i class='fas fa-robot'></i></div><div class='message-content'>${html}</div>`;
+                            chatMessages.appendChild(msg);
+                        }
                     }
                 };
                 // Step 2: Show dataset summary after selection

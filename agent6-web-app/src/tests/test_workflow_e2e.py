@@ -1,4 +1,4 @@
-# PYTHONPATH=/home/eliza89/PhD/codes/vis_user_tool/agent6-web-app python3 /home/eliza89/PhD/codes/vis_user_tool/agent6-web-app/src/tests/test_workflow_e2e.py
+# PYTHONPATH=/home/eliza89/PhD/codes/vis_user_tool/agents python3 /home/eliza89/PhD/codes/vis_user_tool/agents/src/tests/test_workflow_e2e.py
 
 """
 End-to-End Workflow Tests with Caching and Data Reuse

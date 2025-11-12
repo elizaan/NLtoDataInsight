@@ -1,6 +1,5 @@
 
 from flask import Blueprint, request, jsonify, current_app, send_from_directory
-from threading import Thread
 import sys
 import os
 import json
@@ -14,23 +13,13 @@ utils_path = os.path.join(os.path.dirname(__file__), '..', 'utils')
 if utils_path not in sys.path:
     sys.path.insert(0, utils_path)
 
-try:
-    from Agent import PGAAgent
-except ImportError as e:
-    print(f"Error importing Agent: {e}")
-    PGAAgent = None
 
-# Try to import the new orchestration agent. Fail gracefully if LangChain or the file
-# is not available so the old code path continues to work.
-try:
-    from src.agents.core_agent import AnimationAgent
-except Exception as e:
-    # The import may fail if the package root is not on sys.path (for example when
-    # running from the web-app directory). Defer and attempt a dynamic import later
-    print(f"AnimationAgent top-level import failed (optional): {e}")
-    AnimationAgent = None
 
 api_bp = Blueprint('api', __name__)
+
+# Global agent instance placeholders (initialized eagerly below)
+agent_instance = None
+animation_agent_instance = None
 
 # List available PNG frames for a given animation (polling endpoint)
 @api_bp.route('/animations/<animation_id>/frames', methods=['GET'])
@@ -102,15 +91,185 @@ def list_datasets():
     # can show an appropriate message or UI when the list is empty.
     return jsonify({'datasets': datasets, 'status': 'success'})
 
-@api_bp.route('/backend/capabilities', methods=['GET'])
-def get_backend_capabilities():
-    """Return what visualization methods the backend actually supports."""
-    from backend_capabilities import BACKEND_CAPABILITIES
-    
-    return jsonify({
-        'status': 'success',
-        'capabilities': BACKEND_CAPABILITIES
-    })
+
+@api_bp.route('/describe_dataset', methods=['POST'])
+def describe_dataset():
+    """Accept a JSON payload of user-provided sources and optional metadata.
+
+    Expected JSON: { "sources": ["url1", "path2", ...], "metadata": {...} }
+    The endpoint registers a lightweight dataset object in conversation_state
+    and returns a generated dataset_id and a short summary.
+    """
+    try:
+        data = request.get_json() or {}
+        sources = data.get('sources', []) or []
+        metadata = data.get('metadata', {}) or {}
+
+        # Create a reproducible but unique ID for this user-provided dataset
+        dataset_id = f'user_provided_{uuid.uuid4().hex[:8]}'
+
+        # Register into conversation state so downstream flows can access it
+        try:
+            conversation_state['dataset'] = {
+                'id': dataset_id,
+                'sources': sources,
+                'metadata': metadata
+            }
+            conversation_state['step'] = 'conversation_loop'
+        except Exception:
+            # Non-fatal: continue even if setting state fails
+            pass
+
+        # Log sources for visibility (will also print to server stdout)
+        try:
+            add_system_log(f"describe_dataset: registered dataset {dataset_id} with sources: {sources}", 'info')
+            print(f"describe_dataset sources: {sources}")
+        except Exception:
+            pass
+
+        summary = f"Registered dataset {dataset_id} with {len(sources)} source(s)."
+        return jsonify({'status': 'success', 'dataset_id': dataset_id, 'summary': summary})
+    except Exception as e:
+        # Simplified action handling: only three client actions are expected
+        # now: 'start', 'select_dataset', and 'continue_conversation'. We no
+        # longer remap into a separate 'phenomenon_selection' flow on the
+        # server — after a dataset is selected the conversation proceeds to
+        # the LLM-driven conversation loop.
+        if action not in ('start', 'select_dataset', 'continue_conversation', ''):
+            add_system_log(f"Received unknown action '{action}', treating as empty action", 'warning')
+            action = ''
+        add_system_log(f"describe_dataset error: {e}", 'error')
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@api_bp.route('/upload_dataset_metadata', methods=['POST'])
+def upload_dataset_metadata():
+    """Accept multipart uploads of metadata files and optional form fields 'sources[]'.
+
+    Saves uploaded files under ai_data/uploads and registers a dataset referencing
+    the saved files. Returns dataset_id and saved file paths.
+    """
+    try:
+        # Determine upload directory
+        default_dir = os.path.normpath(os.path.join(os.path.dirname(__file__), '..', '..', 'src'))
+        dataset_dir = os.path.join(default_dir, 'datasets')
+        dataset_dir = os.path.join(dataset_dir, 'uploads')
+        os.makedirs(dataset_dir, exist_ok=True)
+
+        saved = {
+            'data_files': [],
+            'metadata_files': []
+        }
+
+        # Collect textual source fields (support sources, sources[] and sources[0], sources[1], ...)
+        sources = []
+        # request.form.getlist works for repeated fields like 'sources'
+        try:
+            sources += request.form.getlist('sources')
+        except Exception:
+            pass
+        # Fallback: inspect all form items for keys starting with 'sources'
+        for k, v in request.form.items():
+            if k.startswith('sources') and isinstance(v, str):
+                sources.append(v)
+        
+        # Clean and validate sources (should be remote URLs only)
+        cleaned_sources = []
+        for src in sources:
+            # Strip whitespace and remove leading/trailing quotes
+            src = src.strip().strip('"').strip("'").strip()
+            # Remove trailing commas
+            src = src.rstrip(',').strip()
+            
+            if src and src.startswith(('http://', 'https://')):
+                cleaned_sources.append(src)
+            elif src:
+                add_system_log(f"Skipping invalid source (not a URL): {src}", 'warning')
+        
+        sources = cleaned_sources
+
+        # Save data files (field name: data_files)
+        data_file_list = request.files.getlist('data_files') if hasattr(request.files, 'getlist') else []
+        for f in data_file_list:
+            if f and f.filename:
+                safe_name = f"{uuid.uuid4().hex}_{os.path.basename(f.filename)}"
+                save_path = os.path.join(dataset_dir, safe_name)
+                try:
+                    f.save(save_path)
+                    saved['data_files'].append(convert_to_web_path(save_path))
+                except Exception as e:
+                    add_system_log(f"Failed to save data file {f.filename}: {e}", 'warning')
+
+        # Save metadata files (field name: metadata_files)
+        metadata_file_list = request.files.getlist('metadata_files') if hasattr(request.files, 'getlist') else []
+        for f in metadata_file_list:
+            if f and f.filename:
+                safe_name = f"{uuid.uuid4().hex}_{os.path.basename(f.filename)}"
+                save_path = os.path.join(dataset_dir, safe_name)
+                try:
+                    f.save(save_path)
+                    saved['metadata_files'].append(convert_to_web_path(save_path))
+                except Exception as e:
+                    add_system_log(f"Failed to save metadata file {f.filename}: {e}", 'warning')
+
+        dataset_id = f'user_upload_{uuid.uuid4().hex[:8]}'
+        try:
+            conversation_state['dataset'] = {
+                'id': dataset_id,
+                'uploaded_files': saved,
+                'sources': sources
+            }
+            conversation_state['step'] = 'conversation_loop'
+        except Exception:
+            pass
+
+        # Log what was saved and the user-provided sources so operator can inspect
+        try:
+            add_system_log(f"upload_dataset_metadata: saved files for {dataset_id} -> data_files: {saved.get('data_files', [])}, metadata_files: {saved.get('metadata_files', [])}", 'info')
+            add_system_log(f"upload_dataset_metadata: received sources: {sources}", 'info')
+            print(f"upload_dataset_metadata saved data_files: {saved.get('data_files', [])}")
+            print(f"upload_dataset_metadata saved metadata_files: {saved.get('metadata_files', [])}")
+            print(f"upload_dataset_metadata sources: {sources}")
+        except Exception:
+            pass
+
+        # Optional: if the client requests immediate profiling of the uploaded dataset
+        profiler_result = None
+        try:
+            profile_context = {
+                    'id': dataset_id,
+                    'data_files': saved.get('data_files', []),
+                    'metadata_files': saved.get('metadata_files', []),
+                    'sources': sources
+                }
+
+            agent = get_agent()
+            if not agent:
+                    add_system_log('Profile requested but agent not available', 'warning')
+                    profiler_result = {'status': 'error', 'message': 'Agent not available'}
+            else:
+                try:
+                        # Ensure agent has dataset context
+                    try:
+                            agent.set_dataset(conversation_state.get('dataset') or {})
+                    except Exception:
+                            pass
+
+                    prompt = 'create a profile of this data as json file'
+                    profiler_result = agent.process_query(prompt, context=profile_context)
+
+                    add_system_log(f"Dataset profiling completed for {dataset_id}", 'info')
+                except Exception as e:
+                        add_system_log(f"Dataset profiling failed: {e}", 'error')
+                        profiler_result = {'status': 'error', 'message': str(e)}
+        except Exception:
+            # Non-fatal: profiling is optional, do not block upload success
+            profiler_result = {'status': 'error', 'message': 'Failed to evaluate profile flag'}
+
+        return jsonify({'status': 'success', 'dataset_id': dataset_id, 'files': saved, 'sources': sources, 'profiler_result': profiler_result})
+    except Exception as e:
+        add_system_log(f"upload_dataset_metadata error: {e}", 'error')
+        return jsonify({'status': 'error', 'message': str(e)}), 500
 
 @api_bp.route('/datasets/<dataset_id>/summarize', methods=['POST'])
 def summarize_dataset_endpoint(dataset_id):
@@ -124,8 +283,7 @@ def summarize_dataset_endpoint(dataset_id):
             "id": "dyamond_llc2160",
             "type": "oceanographic",
             "fields": [ ... ]
-        },
-        "use_langchain": false  // optional, defaults to false
+        }
     }
     
     Frontend just sends the complete dataset object it got from /datasets
@@ -133,7 +291,7 @@ def summarize_dataset_endpoint(dataset_id):
     try:
         data = request.get_json()
         dataset = data.get('dataset', {})
-        use_langchain = data.get('use_langchain', False)
+       
 
         if not dataset:
             return jsonify({
@@ -141,8 +299,8 @@ def summarize_dataset_endpoint(dataset_id):
                 'message': 'No dataset information provided'
             }), 400
         
-        # Initialize agent based on use_langchain flag
-        agent = get_agent(use_langchain=use_langchain)
+
+        agent = get_agent()
         if not agent:
             return jsonify({
                 'status': 'error', 
@@ -157,63 +315,61 @@ def summarize_dataset_endpoint(dataset_id):
                 'message': 'Failed to set dataset on agent. Check dataset metadata format.'
             }), 400
 
-        if use_langchain:
+     
             # LangChain orchestration: let the agent decide how to summarize
-            try:
-                # Build a query that the LangChain agent can understand
-                query = f"Summarize this dataset: {dataset}"
-                
-                # LangChain agent will call get_dataset_summary tool automatically
-                result = agent.process_query(query)
-                
-                # Extract the response from LangChain result
-                # The structure depends on how LangChain returns results
-                if isinstance(result, dict):
-                    # If result has 'messages' key (typical LangChain response)
-                    if 'messages' in result:
-                        last_message = result['messages'][-1]
-                        if hasattr(last_message, 'content'):
-                            summary_result = last_message.content
-                        else:
-                            summary_result = str(last_message)
-                    else:
-                        summary_result = result
-                else:
-                    summary_result = str(result)
-                
-                # Parse the summary result
-                if isinstance(summary_result, dict):
-                    raw_summary_text = summary_result.get('summary', str(summary_result))
-                    summary_struct = {
-                        'llm_text': summary_result.get('summary', ''),
-                        'dataset_knowledge': summary_result.get('dataset_knowledge', ''),
-                        'visualization_suggestions': summary_result.get('visualization_suggestions', ''),
-                        'heuristic': summary_result.get('heuristic', {}),
-                        'method': 'langchain'
-                    }
-                else:
-                    raw_summary_text = str(summary_result)
-                    summary_struct = {
-                        'llm_text': raw_summary_text,
-                        'method': 'langchain'
-                    }
+        try:
+            # Build a query that the LangChain agent can understand
+            query = f"Summarize this dataset: {dataset}"
 
-                # Append a short prompt (bold Markdown) to encourage the user to pick an animation
-                prompt = "\n\n**What do you want to see animation of?**"
-                try:
-                    if isinstance(raw_summary_text, str):
-                        raw_summary_text = raw_summary_text + prompt
-                    if isinstance(summary_struct, dict):
-                        summary_struct['llm_text'] = (summary_struct.get('llm_text', '') or '') + prompt
-                except Exception:
-                    # non-critical: continue even if concatenation fails
-                    pass
-                
-            except Exception as e:
-                return jsonify({
-                    'status': 'error',
-                    'message': f'LangChain processing failed: {str(e)}'
-                }), 500
+            # LangChain agent will call get_dataset_summary tool automatically
+            result = agent.process_query(query)
+
+            # Extract the response from LangChain result
+            # The structure depends on how LangChain returns results
+            if isinstance(result, dict):
+                # If result has 'messages' key (typical LangChain response)
+                if 'messages' in result:
+                    last_message = result['messages'][-1]
+                    if hasattr(last_message, 'content'):
+                        summary_result = last_message.content
+                    else:
+                        summary_result = str(last_message)
+                else:
+                    summary_result = result
+            else:
+                summary_result = str(result)
+
+            # Parse the summary result
+            if isinstance(summary_result, dict):
+                raw_summary_text = summary_result.get('summary', str(summary_result))
+                summary_struct = {
+                    'llm_text': summary_result.get('summary', ''),
+                    'dataset_knowledge': summary_result.get('dataset_knowledge', ''),
+                    'visualization_suggestions': summary_result.get('visualization_suggestions', ''),
+                    'heuristic': summary_result.get('heuristic', {})
+                }
+            else:
+                raw_summary_text = str(summary_result)
+                summary_struct = {
+                    'llm_text': raw_summary_text
+                }
+
+            # Append a short prompt (bold Markdown) to encourage the user to pick an animation
+            prompt = "\n\n**What do you want to see animation of?**"
+            try:
+                if isinstance(raw_summary_text, str):
+                    raw_summary_text = raw_summary_text + prompt
+                if isinstance(summary_struct, dict):
+                    summary_struct['llm_text'] = (summary_struct.get('llm_text', '') or '') + prompt
+            except Exception:
+                # non-critical: continue even if concatenation fails
+                pass
+
+        except Exception as e:
+            return jsonify({
+                'status': 'error',
+                'message': f'LangChain processing failed: {str(e)}'
+            }), 500
         
 
         return jsonify({
@@ -232,8 +388,7 @@ def summarize_dataset_endpoint(dataset_id):
         }), 500
 
 
-# Global agent instance and conversation state
-agent_instance = None
+# Global conversation state
 conversation_state = {
     'step': 'start',  # start, dataset_selected, phenomenon_selected, conversation_loop
     'phenomenon': None,
@@ -254,7 +409,6 @@ log_file_monitor = {
 
 def add_system_log(message, log_type='info'):
     """Add a log entry to the system logs"""
-    global system_logs
     import datetime
     
     log_entry = {
@@ -282,17 +436,10 @@ def add_system_log(message, log_type='info'):
     # Return the new log entry for callers that might use it
     return log_entry
 
-    
-    # Keep only the last max_logs entries
-    if len(system_logs) > max_logs:
-        system_logs = system_logs[-max_logs:]
-    
-    print(f"[SYSTEM LOG] {message}")  # Also print to console
 
 def start_log_file_monitoring(log_file_path):
     """Start monitoring an animation log file for new entries"""
-    global log_file_monitor
-    import os
+    # Mutate the existing log_file_monitor dict; no need for `global` here
     
     if os.path.exists(log_file_path):
         log_file_monitor['active_log_file'] = log_file_path
@@ -304,8 +451,7 @@ def start_log_file_monitoring(log_file_path):
 
 def check_log_file_updates():
     """Check for new lines in the monitored log file"""
-    global log_file_monitor
-    import os
+    # Mutate the existing log_file_monitor dict; no need for `global` here
     
     if not log_file_monitor['monitoring'] or not log_file_monitor['active_log_file']:
         return
@@ -314,7 +460,8 @@ def check_log_file_updates():
     
     if os.path.exists(log_file_path):
         try:
-            with open(log_file_path, 'r') as f:
+            # Open with explicit encoding and replace errors to avoid decode issues
+            with open(log_file_path, 'r', encoding='utf-8', errors='replace') as f:
                 f.seek(log_file_monitor['last_position'])
                 new_lines = f.readlines()
                 log_file_monitor['last_position'] = f.tell()
@@ -336,71 +483,107 @@ def check_log_file_updates():
         except Exception as e:
             add_system_log(f"Error reading log file: {str(e)}", 'error')
 
-def get_agent(use_langchain=False):
+def get_agent():
     """
     Get or create an agent instance.
-    
-    Args:
-        use_langchain: If True, returns AnimationAgent (LangChain-based).
-                      If False, returns PGAAgent (default).
+
     
     Returns:
         Agent instance (either PGAAgent or AnimationAgent)
     """
     global agent_instance
     global animation_agent_instance
-    
-    if use_langchain:
-        # LangChain-based AnimationAgent logic
-        global AnimationAgent
-        
-        print("Getting LangChain AnimationAgent instance...")
-        
-        # If the top-level import failed earlier, attempt a dynamic import now.
-        if AnimationAgent is None:
-            try:
-                # Ensure the repository root is on sys.path so the 'src' package is importable.
-                repo_root = os.path.normpath(os.path.join(os.path.dirname(__file__), '..', '..'))
-                if repo_root not in sys.path:
-                    sys.path.insert(0, repo_root)
-                # Try importing again
-                from src.agents.core_agent import AnimationAgent as _AnimationAgent
-                AnimationAgent = _AnimationAgent
-                print("Dynamically imported AnimationAgent successfully")
-            except Exception as e:
-                print(f"Dynamic import of AnimationAgent failed: {e}")
-                AnimationAgent = None
-        
-        if animation_agent_instance is None and AnimationAgent is not None:
-            try:
-                # Determine default ai_dir and api key
-                default_ai_dir = os.path.normpath(os.path.join(os.path.dirname(__file__), '..', '..', 'ai_data'))
-                ai_dir = os.getenv('AI_DIR', default_ai_dir)
-                api_key_file = os.getenv('API_KEY_FILE', os.path.join(ai_dir, 'openai_api_key.txt'))
-                
-                if os.path.exists(api_key_file):
-                    with open(api_key_file, 'r') as f:
-                        api_key = f.read().strip()
-                else:
-                    api_key = os.getenv('OPENAI_API_KEY')
-                
-                if not api_key:
-                    raise ValueError("API key not found in file or environment")
-                
-                animation_agent_instance = AnimationAgent(api_key=api_key)
-                print("AnimationAgent initialized successfully")
-            
-            except Exception as e:
-                print(f"Failed to initialize AnimationAgent: {e}")
-                animation_agent_instance = None
-        
-        return animation_agent_instance
-    
-    
 
-# Lazy initializer for the LangChain-based AnimationAgent (optional)
-animation_agent_instance = None
+    # Return existing instance if already initialized
+    try:
+        if animation_agent_instance is not None:
+            return animation_agent_instance
 
+        # Determine default ai_dir and API key file path
+        default_ai_dir = os.path.normpath(os.path.join(os.path.dirname(__file__), '..', '..', 'ai_data'))
+        ai_dir = os.getenv('AI_DIR', default_ai_dir)
+        api_key_file = os.getenv('API_KEY_FILE', os.path.join(ai_dir, 'openai_api_key.txt'))
+
+        api_key = None
+        if os.path.exists(api_key_file):
+            try:
+                with open(api_key_file, 'r', encoding='utf-8') as f:
+                    api_key = f.read().strip()
+            except Exception as e:
+                add_system_log(f"Unable to read API key file {api_key_file}: {e}", 'warning')
+        else:
+            api_key = os.getenv('OPENAI_API_KEY')
+
+        if not api_key:
+            add_system_log("API key not found in file or environment; AnimationAgent cannot be initialized", 'error')
+            return None
+
+        # Dynamically import the AnimationAgent class to avoid import-time failures
+        AnimationAgentCls = None
+        try:
+            import importlib
+            # Try the project-style package first (works when project root is sys.path)
+            try:
+                mod = importlib.import_module('src.agents.core_agent')
+                AnimationAgentCls = getattr(mod, 'AnimationAgent', None)
+            except ModuleNotFoundError:
+                # Try alternate package name (if src is on sys.path directly)
+                try:
+                    mod = importlib.import_module('agents.core_agent')
+                    AnimationAgentCls = getattr(mod, 'AnimationAgent', None)
+                except ModuleNotFoundError:
+                    # Final fallback: import by file path so we don't rely on sys.path
+                    try:
+                        import importlib.util
+                        core_path = os.path.normpath(os.path.join(os.path.dirname(__file__), '..', 'agents', 'core_agent.py'))
+                        if os.path.exists(core_path):
+                            spec = importlib.util.spec_from_file_location('agents.core_agent', core_path)
+                            mod = importlib.util.module_from_spec(spec)
+                            spec.loader.exec_module(mod)
+                            AnimationAgentCls = getattr(mod, 'AnimationAgent', None)
+                        else:
+                            raise ModuleNotFoundError(f"core_agent.py not found at {core_path}")
+                    except Exception as e:
+                        add_system_log(f"Unable to load core_agent by path: {e}", 'error')
+                        AnimationAgentCls = None
+
+            # If module imported but class not present, log its attributes for debugging
+            if AnimationAgentCls is None and 'mod' in locals() and mod is not None:
+                try:
+                    attrs = [a for a in dir(mod) if not a.startswith('__')]
+                    add_system_log(f"Imported module 'core_agent' but AnimationAgent missing. module attrs: {attrs}", 'warning')
+                except Exception:
+                    pass
+
+        except Exception as e:
+            add_system_log(f"Unable to import AnimationAgent class: {e}", 'error')
+            AnimationAgentCls = None
+
+        if not AnimationAgentCls:
+            add_system_log("AnimationAgent class not available; skipping initialization", 'error')
+            return None
+
+        # Instantiate the AnimationAgent
+        try:
+            animation_agent_instance = AnimationAgentCls(api_key=api_key)
+            add_system_log("AnimationAgent initialized successfully", 'info')
+        except Exception as e:
+            add_system_log(f"Failed to initialize AnimationAgent: {e}", 'error')
+            animation_agent_instance = None
+
+    except Exception as e:
+        add_system_log(f"Unexpected error in get_agent: {e}", 'error')
+        animation_agent_instance = None
+
+    return animation_agent_instance
+
+# Eagerly initialize AnimationAgent so it's available to all API endpoints
+try:
+    _agent = get_agent()
+    if _agent is None:
+        add_system_log("Eager agent initialization returned None", 'warning')
+except Exception as e:
+    add_system_log(f"Eager agent initialization failed: {e}", 'error')
 
 
 @api_bp.route('/chat', methods=['POST'])
@@ -411,101 +594,47 @@ def chat():
     try:
         data = request.get_json()
         user_message = data.get('message', '')
-        action = data.get('action', '')  # 'start', 'select_dataset', 'select_phenomenon', 'continue_conversation'
-        
-        # Check if caller wants to use the new LangChain-based orchestration
-        use_langchain = False
-        # Opt-in via query string: ?use_langchain=true
-        if request.args.get('use_langchain', '').lower() in ('1', 'true', 'yes'):
-            use_langchain = True
-        # Or via JSON body: { "use_langchain": true }
-        if isinstance(data, dict) and data.get('use_langchain') is True:
-            use_langchain = True
+        action = data.get('action', '')  # 'start', 'select_dataset', 'continue_conversation'
 
         
-
-        # Default (legacy) PGAAgent path
-        agent = get_agent(use_langchain=use_langchain)
+        response = None
+        agent = get_agent()
         if not agent:
             return jsonify({
                 'type': 'error',
                 'message': 'Agent not available. Please check configuration.',
                 'status': 'error'
             }), 500
+        # If the client explicitly sends a 'continue_conversation' action,
+        # forward the message to the agent immediately and return the result.
+        # This avoids the old remapping flow that expected a separate
+        # 'phenomenon_selection' step.
+        if action == 'continue_conversation':
+            try:
+                context = {
+                    'dataset': conversation_state.get('dataset'),
+                    'animation_info': conversation_state.get('animation_info')
+                }
+                result = agent.process_query(user_message, context=context)
+                return jsonify({'type': 'agent_response', 'result': result, 'status': 'success'})
+            except Exception as e:
+                add_system_log(f'Agent processing failed: {e}', 'error')
+                return jsonify({'type': 'error', 'message': str(e), 'status': 'error'}), 500
         
-        # Sanitize action vs server step: if client sent a 'continue_conversation' but
-        # the server isn't in 'conversation_loop', the client is likely out-of-sync
-        # (frontend local state mismatch). Remap to a safe default (custom phenomenon)
-        # and log the mismatch so it can be debugged. This avoids processing the
-        # LLM-driven improvement branch accidentally when the client was only
-        # attempting to send a new custom   description.
-        if action == 'continue_conversation' and conversation_state.get('step') != 'conversation_loop':
-            add_system_log(f"Received action 'continue_conversation' but server step is '{conversation_state.get('step')}'. Remapping to 'select_phenomenon' (custom).", 'warning')
-            # Treat the incoming message as a custom phenomenon description
-            action = 'select_phenomenon'
-
-        # Handle different conversation steps. If an explicit action is provided, honor it
-        # (so client requests like 'select_phenomenon' are not shadowed when server state == 'start').
-        # If server is expecting a phenomenon selection or custom description,
-        # treat any incoming message as a custom phenomenon description so user
-        # free-text continues to map to the same flow (choice '0'). This ensures
-        # follow-up user text is handled as custom description, not as
-        # conversation-loop tokens.
-        if conversation_state.get('step') in ('phenomenon_selection', 'custom_description'):
-            # If the server expects a phenomenon selection, only remap when
-            # the client didn't provide an explicit action (empty) or when
-            # the client sent 'continue_conversation' by mistake. Do NOT
-            # remap explicit actions like 'select_dataset'. Avoid setting
-            # a default 'choice' here — the select_phenomenon handler now
-            # requires a free-text 'message'.
-            if action == '' or action == 'continue_conversation':
-                add_system_log(f"Server expecting phenomenon selection; attempting intent-parser remap for incoming action '{action}'", 'debug')
-
-                # If we have a dataset selected and the current agent supports
-                # the new multi-agent intent parsing entry point, try that
-                # first (opt-in when use_langchain=True and AnimationAgent is used).
-                try:
-                    # Only attempt intent parsing when a dataset is present. Use
-                    # the agent's `process_query` entry point when available — it
-                    # now merges intent parsing and LangChain orchestration so
-                    # callers don't need to call a separate method.
-                        if conversation_state.get('dataset') and hasattr(agent, 'process_query'):
-                            context = {
-                                'dataset': conversation_state.get('dataset'),
-                                'current_animation': conversation_state.get('animation_info')
-                            }
-                            # Call the agent's unified entry point and interpret
-                            # results similar to the previous process_query_with_intent
-                            try:
-                                intent_result = agent.process_query(user_message, context=context)
-                                # If intent_result is a dict and indicates action taken, return it directly
-                                if isinstance(intent_result, dict) and intent_result.get('status'):
-                                    add_system_log(f"Intent parser handled message with intent: {intent_result.get('intent', {}).get('intent_type')}", 'info')
-                                    # Update conversation step on generate/modify flows
-                                    if intent_result.get('action') in ('generate_new', 'modify_existing'):
-                                        conversation_state['step'] = 'conversation_loop'
-                                    return jsonify({
-                                        'type': 'intent_parsed',
-                                        'result': intent_result,
-                                        'status': 'success'
-                                    })
-                                # Otherwise fall back to legacy behavior
-                                add_system_log('Agent did not return an actionable intent result; falling back to legacy select_phenomenon', 'debug')
-                            except Exception as e:
-                                add_system_log(f'Agent invocation for intent parsing failed: {e}', 'error')
-
-                except Exception:
-                    # If anything goes wrong, fall back to the legacy mapping
-                    pass
-
-                # Default fallback to legacy 'select_phenomenon' behavior
-                add_system_log(f"Remapping incoming action '{action}' to 'select_phenomenon' (legacy fallback)", 'debug')
-                action = 'select_phenomenon'
+        # Simplified action handling: only accept 'start', 'select_dataset',
+        # and 'continue_conversation' from the client. Any unknown action is
+        # treated as empty and the UI will re-synchronize. We intentionally do
+        # not implement a separate 'phenomenon_selection' remapping — after a
+        # dataset is selected the conversation proceeds directly to the
+        # LLM-driven conversation loop.
+        if action not in ('start', 'select_dataset', 'continue_conversation', ''):
+            add_system_log(f"Received unknown action '{action}', treating as empty action", 'warning')
+            action = ''
         if action == 'start' or (not action and conversation_state['step'] == 'start'):
-            # Show full dataset list and phenomenon options
+            # Start: show available datasets to the user. The frontend will
+            # call 'select_dataset' when the user chooses one.
             add_system_log("Starting new conversation", 'info')
-            
-            conversation_state['step'] = 'phenomenon_selection'
+            conversation_state['step'] = 'waiting_dataset'
         
         elif action == 'select_dataset':
             # User selected a dataset from the UI; provide a summary and suggested visualizations
@@ -555,8 +684,7 @@ def chat():
                 with current_app.test_client() as c:
                     # payload = {'dataset': dataset_obj}
                     payload = {
-                        'dataset': dataset_obj,
-                        'use_langchain': use_langchain  # ← ADD THIS LINE
+                        'dataset': dataset_obj
                     }
                     resp = c.post(f'/api/datasets/{dataset_id}/summarize', json=payload)
                     if resp.status_code == 200:
@@ -599,84 +727,7 @@ def chat():
                 'status': 'success'
             }
             add_system_log(f"Provided dataset summary for {dataset_id}", 'info')
-            conversation_state['step'] = 'phenomenon_selection'
-        
-        elif action == 'select_phenomenon':
-            # User selected a phenomenon. The frontend should send the
-            # free-text description in 'message'. Numeric preset choices are
-            # deprecated and removed from the runtime flow.
-            msg = (user_message or '').strip()
-            if not msg:
-                return jsonify({
-                    'type': 'error',
-                    'message': 'No phenomenon provided. Send a short textual description in "message".',
-                    'status': 'error'
-                }), 400
-
-            phenomenon = msg
-            conversation_state['phenomenon'] = phenomenon
-
-            # Require that a dataset be selected before attempting region
-            # extraction/generation. This prevents AttributeError inside the
-            # agent when self.dataset is not set and gives the frontend a
-            # clear next step instruction.
-            if not conversation_state.get('dataset'):
-                return jsonify({
-                    'type': 'error',
-                    'message': 'No dataset loaded. Please select a dataset first (action: select_dataset).',
-                    'status': 'error'
-                }), 400
-
-            if use_langchain:
-                # === NEW LANGCHAIN PATH ===
-                print("Using LangChain orchestration for animation generation", 'info')
-                
-                # Build context for the agent (include current_animation if available)
-                context = {
-                    'dataset': conversation_state.get('dataset'),
-                    'phenomenon': phenomenon,
-                    'current_animation': conversation_state.get('animation_info'),  # Add previous animation
-                    'has_current_animation': conversation_state.get('animation_info') is not None
-                }
-                
-                # Let LangChain agent handle the entire flow
-                try:
-                    result = agent.process_query(
-                        f"Generate an animation showing: {phenomenon}",
-                        context=context
-                    )
-                    
-                    # Extract paths from LangChain result
-                    # The agent returns the full structure from _handle_generate_new()
-                    # which includes: status, action, animation_path, output_base, num_frames, parameters
-                    
-                    # Store the complete result (includes parameters for future modifications)
-                    animation_info = result
-                    
-                    conversation_state['animation_info'] = animation_info
-                    
-                    # Determine intent type from result (for frontend multi-panel support)
-                    intent_type = animation_info.get('intent_type', 'GENERATE_NEW')
-                    
-                    response = {
-                        'type': 'animation_generated',
-                        'message': 'Animation generated using LangChain orchestration',
-                        'animation_path': convert_to_web_path(animation_info.get('animation_path', '')),
-                        'intent_type': intent_type,  # NEW: Tell frontend if this is new or modify
-                        'evaluation_available': True,
-                        'status': 'success'
-                    }
-                    
-                except Exception as e:
-                    # Do NOT silently fall back to the manual path when LangChain
-                    # orchestration fails. Return a clear error so the caller can
-                    # surface the problem and the user can retry or switch modes.
-                    add_system_log(f"LangChain animation generation failed: {e}", 'error')
-                    return jsonify({
-                        'type': 'error',
-                        'message': f'LangChain animation generation failed: {str(e)}',
-                        'status': 'error'
-                    }), 500
+            conversation_state['step'] = 'continue_conversation'
 
             
         elif action == 'continue_conversation':

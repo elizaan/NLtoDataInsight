@@ -27,9 +27,7 @@ from rasterio.transform import rowcol
 import xarray as xr
 import numpy as np
 from typing import Optional, List, Dict, Union
-# Ensure the models directory is in the path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'models'))
-from Agent import PGAAgent
+
 
 # Global agent instance (reuse for all tool calls)
 _agent_instance = None

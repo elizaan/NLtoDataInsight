@@ -60,7 +60,7 @@ class PGAAgent:
         # Store AI directory reference - use default if not provided
         if ai_dir is None:
             # Default to a directory relative to the web app
-            # Use project-level ai_data to match API routes (agent6-web-app/ai_data)
+            # Use project-level ai_data to match API routes (agents/ai_data)
             default_ai = os.path.normpath(os.path.join(os.path.dirname(__file__), '..', '..', 'ai_data'))
             self.ai_dir = default_ai
             os.makedirs(self.ai_dir, exist_ok=True)

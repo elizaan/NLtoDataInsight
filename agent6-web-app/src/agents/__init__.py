@@ -41,8 +41,5 @@ __all__ = [
     'find_existing_animation',
     'set_agent',
     'get_agent',
-    'validate_query_for_dataset',
-    'extract_parameters_structured',
-    'validate_and_refine_parameters',
     'create_animation_dirs'
 ]

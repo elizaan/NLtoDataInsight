@@ -41,10 +41,10 @@ Rendered_frames/*
 **/openai_api_key.txt
 **/api_key.txt
 **/*api_key*
-agent6-web-app/.env
-agent6-web-app/openai_api_key.txt
-agent6-web-app/ai_data/
-agent6-web-app/src/static/uploads/
+agents/.env
+agents/openai_api_key.txt
+agents/ai_data/
+agents/src/static/uploads/
 *.sqlite
 *.db
 

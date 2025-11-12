@@ -29,7 +29,7 @@ pip install -r requirements.txt
 4) Change into the web app folder and run the development server:
 
 ```bash
-cd agent6-web-app
+cd agents
 python src/app.py
 ```
 
@@ -62,7 +62,7 @@ Notes:
 
 ## Project Structure
 ```
-agent6-web-app/
+agents/
 ├── src/
 │   ├── app.py                     # Flask application entry point
 │   ├── api/
@@ -226,7 +226,7 @@ if (isExistingAnimation === true) {
 1. **Clone the repository:**
    ```
    git clone <repository-url>
-   cd agent6-web-app
+   cd agents
    ```
 
 2. **Install dependencies:**
@@ -886,7 +886,7 @@ console.log('Current Frame:', chatInterface.framePlayer.currentFrame);
 ```bash
 # Clone repository
 git clone <repository-url>
-cd agent6-web-app
+cd agents
 
 # Create virtual environment
 python -m venv venv
