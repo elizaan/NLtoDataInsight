@@ -105,10 +105,6 @@ Your task is to create a compelling summary of a dataset based on:
    - What questions can researchers answer?
    - Reference interesting findings from papers if available
 
-5. **Visualization Suggestions** (2-3 ideas):
-   - Suggest compelling visualizations users might want to create
-   - Focus on scientifically interesting phenomena
-
 **Style Guidelines:**
 - Use clear, engaging language
 - Avoid excessive jargon but maintain scientific accuracy

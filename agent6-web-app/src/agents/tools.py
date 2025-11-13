@@ -41,10 +41,6 @@ def set_agent(agent_instance):
     Args:
         agent_instance: An initialized `PGAAgent` object.
 
-    Side effects:
-        Subsequent calls to the tool wrappers will use this agent. Call
-        this once during application initialization (for example from
-        `AnimationAgent.__init__`).
     """
     global _agent_instance
     _agent_instance = agent_instance

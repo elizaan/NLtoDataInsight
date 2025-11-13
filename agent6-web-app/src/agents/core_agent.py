@@ -6,7 +6,6 @@ from langchain_openai import ChatOpenAI
 from langchain.agents import create_agent
 from .tools import (
     get_dataset_summary,
-    find_existing_animation,
     set_agent,
     get_agent
 
@@ -100,7 +99,6 @@ class AnimationAgent:
 
         self.tools = [
             get_dataset_summary,
-            find_existing_animation,
             set_agent,
             get_agent,
             create_animation_dirs
@@ -169,7 +167,7 @@ class AnimationAgent:
         intent_type = intent_result['intent_type']
         
         if intent_type == 'PARTICULAR':
-            # Generate new animation
+            # Specific question about the dataset
             return self._handle_particular_exploration(user_message, intent_result, context)
         
         elif intent_type == 'NOT_PARTICULAR':

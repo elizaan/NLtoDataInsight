@@ -74,7 +74,7 @@ class CodeExecutor:
                 cwd=os.path.dirname(code_path),
                 capture_output=True,
                 text=True,
-                timeout=300
+                timeout=500
             )
             
             return {
@@ -88,10 +88,10 @@ class CodeExecutor:
         except subprocess.TimeoutExpired:
             return {
                 "success": False,
-                "error": "Execution timed out (300s)",
+                "error": "Execution timed out (500s)",
                 "code_file": code_path,
                 "stdout": "",
-                "stderr": "Timeout - code took >5 minutes. Simplify your approach."
+                "stderr": "Timeout - code took >8 minutes. Simplify your approach."
             }
         except Exception as e:
             return {
@@ -123,7 +123,8 @@ class DatasetInsightGenerator:
                 "..", "..", "ai_data"
             )
         
-        self.base_output_dir = Path(base_output_dir)
+        # Resolve path to eliminate ".." and get clean absolute path
+        self.base_output_dir = Path(base_output_dir).resolve()
         self.codes_dir = self.base_output_dir / "codes"
         self.insights_dir = self.base_output_dir / "insights"
         self.plots_dir = self.base_output_dir / "plots"
@@ -182,8 +183,8 @@ class DatasetInsightGenerator:
         data_cache_file = dirs['data_cache'] / f"data_{timestamp}.npz"
         
         # Convert to absolute strings for use in LLM prompts (prevents relative path issues)
-        data_cache_file_str = str(data_cache_file.absolute())
-        plot_dir_str = str(dirs['plots'].absolute())
+        data_cache_file_str = str(data_cache_file.resolve())
+        plot_dir_str = str(dirs['plots'].resolve())
         
         # Extract info
         intent_type = intent_result.get('intent_type', 'UNKNOWN')
@@ -205,6 +206,16 @@ class DatasetInsightGenerator:
         
         total_voxels = x * y * z
         total_data_points = total_voxels * total_timesteps
+
+        # Resolve geographic coordinate file to an absolute path in the repo's src/datasets
+        geo_filename = spatial_info.get('geographic_info', {}).get('geographic_info_file', 'llc2160_latlon.nc')
+        try:
+            # src_path was computed earlier as the package 'src' directory; build absolute path to datasets
+            repo_src_path = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+            geo_file_path = (repo_src_path / 'datasets' / geo_filename).resolve()
+            geo_file_path_str = str(geo_file_path)
+        except Exception:
+            geo_file_path_str = geo_filename
         
         # Build system prompt - LLM DECIDES EVERYTHING
         system_prompt = f"""You are an expert data analyst with full autonomy to solve the user's question.
@@ -219,6 +230,77 @@ class DatasetInsightGenerator:
 **CONVERSATION CONTEXT:**
 {conversation_context if conversation_context else "This is the first query in this conversation."}
 
+**CRITICAL: Using Previous Results**
+When answering the user's question, ALWAYS leverage any relevant results from previous queries in this conversation to find out if the query is a follow-up. Follow these steps:
+1. **Check conversation context above** for relevant past results
+2. **Extract the specific values** you need (e.g., if previous query found x = y, use that exact value)
+3. **Check if previous query saved an npz file** with rich metadata
+4. **Load and inspect the npz file** to see what data is already available
+5. **Reuse saved data** instead of re-querying the dataset
+
+**How to Load and Use Previous NPZ Files:**
+
+```python
+import numpy as np
+
+# Example: Previous query saved '/path/to/data_TIMESTAMP.npz'
+# Load it and inspect contents
+data = np.load('/path/to/previous_query.npz')
+print("Available keys:", data.files)  # Shows what's saved
+
+
+# Example: "When was max temperature seen?"
+# Instead of re-scanning, just use the saved timestep:
+print(f"Max occurred at timestep: {{timestep}}")
+# Convert to date using dataset temporal info
+
+# Example: "Where was max temperature seen?"
+# Instead of re-scanning, find location in saved spatial data:
+y_idx, x_idx = np.unravel_index(np.argmax(spatial_data), spatial_data.shape)
+# Convert to lat/lon using helper functions
+```
+
+**When to Load Previous NPZ vs Re-query:**
+- If previous query found the exact value you need (max, min, etc.) → Load npz
+- If npz contains target_timestep → Use it for "when?" queries
+- If npz contains target_x, target_y → Use it for "where?" queries
+- If current query needs different time range or region → Re-query
+
+Examples of context-aware queries:
+- User asks: "what is the maximum x?" → You find that suppose m
+- User then asks: "when/where was this highest x seen?" → You should:
+  - Check context: see that max_x = m was found AND npz file path
+  - **Load the npz file first**: `data = np.load(npz_path)`
+  - **Check if target_timestep exists**: if yes, use it directly!
+  - Do NOT re-scan entire dataset - use the saved metadata!
+
+- User asks: "where was that highest x seen?" → You should:
+  - Load previous npz with target_x, target_y
+  - Convert grid indices to lat/lon using xy_to_latlon() helper
+  - Report approximate geographic location or even both
+
+**IMPORTANT**: If conversation context contains values like "max", "min", "peak", "average" or any statistical values, etc., ALWAYS use them rather than recomputing!
+
+**═══════════════════════════════════════════════════════════════════════**
+**CRITICAL: SAVE METADATA FOR FOLLOW-UP QUERIES**
+
+When finding extremes (max/min/peaks), you MUST save additional metadata:
+```python
+A good example: 
+np.savez(
+    output_file,
+    target = target_value,
+    target_timestep/target_timestep_range=time_where_target_occurred,  # Enables "when was target?" queries
+    target_x = x_where_target_found,  # Enables approximate "where was target?" queries
+    target_y = y_where_target_found,   # Enables approximate "where was target?" queries
+    target_z = z_where_target_found,   
+    quality=quality_used/resolution_used
+)
+```
+
+This makes follow-up queries instant instead of timing out!
+**═══════════════════════════════════════════════════════════════════════**
+
 **DATASET INFORMATION:**
 Name: {dataset_name} ({dataset_size})
 Variables: {json.dumps(variables, indent=2)}
@@ -228,6 +310,7 @@ Spatial Dimensions:
 - Y: {y:,} points  
 - Z: {z} levels
 - Total spatial points: {total_voxels:,}
+- for surface level z[0,1]
 
 Geographic Information:
 - Has geographic coordinates: {spatial_info.get('geographic_info', {}).get('has_geographic_info', 'no')}
@@ -237,28 +320,89 @@ Geographic Information:
 When user mentions LOCATION NAMES (not just x/y indices), you MUST map them to coordinates.
 
 The dataset has a geographic coordinate file: {spatial_info.get('geographic_info', {}).get('geographic_info_file', 'llc2160_latlon.nc')}
-This file contains latitude[y, x] and longitude[y, x] arrays that map grid indices to real-world coordinates.
+This file (resolved path: {geo_file_path_str}) contains latitude[y, x] and longitude[y, x] arrays that map grid indices to real-world coordinates.
 
-Your geographic knowledge includes:
-- Ocean currents 
-- Seas and oceans 
-- Countries and coastlines 
-- Geographic regions 
+**Your Geographic Knowledge:**
+You have extensive knowledge of Earth geography including:
+- **Ocean basins**: Atlantic, Pacific, Indian, Arctic, Southern Oceans
+- **Seas and water bodies**: Mediterranean Sea, Caribbean Sea, Arabian Sea, Bay of Bengal, Red Sea, etc.
+- **Ocean currents**: Gulf Stream, Kuroshio, Agulhas, Antarctic Circumpolar Current, etc.
+- **Oceanographic features**: Eddies, gyres, upwelling zones, fronts, rings
+- **Continental boundaries**: Coastlines, straits, channels, island chains
+- **Climate zones**: Tropics, subtropics, temperate, polar regions
 
-**Example of Geographic Mapping:**
+**How to Handle Geographic Queries:**
 
-Example 3: User asks "currents near Japan"
-You know: Japan location
-Approximate bounds: Lat [30, 45], Lon [130, 145]
-→ Use latlon_to_xy() helper
+**Step 1: Identify if query mentions a location**
+Look for keywords: ocean names, sea names, current names, country names, "near", "in", "around", "region", "area", etc.
+
+**Step 2: Estimate lat/lon bounds using your geographic knowledge**
+Examples (you should know these from your training):
+- "Mediterranean Sea" → approximately lat:[30, 46], lon:[-6, 37]
+- "Gulf Stream" → approximately lat:[25, 45], lon:[-80, -40]
+- "Agulhas Current" → approximately lat:[-45, -25], lon:[15, 40]
+- "Arabian Sea" → approximately lat:[5, 25], lon:[50, 78]
+- "near Japan" → approximately lat:[25, 50], lon:[125, 150]
+- "tropical Pacific" → approximately lat:[-25, 25], lon:[120, -80] (note: crosses dateline)
+- "Southern Ocean" → approximately lat:[-70, -50], lon:[-180, 180]
+
+**Step 3: Use the provided helper function to convert to grid indices**
+ALWAYS use latlon_to_xy() - don't try to manually estimate grid positions!
+
+**Example code pattern for geographic queries:**
+```python
+# User asked about "currents in the Mediterranean"
+# Step 1: You know Mediterranean is roughly lat:[30, 46], lon:[-6, 37]
+
+# Step 2: Convert to grid coordinates using helper
+import xarray as xr
+geo_file = "llc2160_latlon.nc"
+
+def latlon_to_xy(lat_range, lon_range):
+    ds = xr.open_dataset(geo_file)
+    lat_center = ds["latitude"].values
+    lon_center = ds["longitude"].values
+    
+    mask = (
+        (lat_center >= lat_range[0]) & (lat_center <= lat_range[1]) &
+        (lon_center >= lon_range[0]) & (lon_center <= lon_range[1])
+    )
+    
+    y_indices, x_indices = np.where(mask)
+    x_min, x_max = int(x_indices.min()), int(x_indices.max()) + 1
+    y_min, y_max = int(y_indices.min()), int(y_indices.max()) + 1
+    
+    return [x_min, x_max], [y_min, y_max]
+
+# Apply it
+x_range, y_range = latlon_to_xy([30, 46], [-6, 37])
+print(f"Mediterranean region: x={{x_range}}, y={{y_range}}")
+
+# Now use these ranges in your data query
+data = ds.db.read(
+    time=t,
+    x=x_range,
+    y=y_range,
+    # For surface-level reads prefer a non-zero-length range (start < end).
+    # Many OpenVisus bindings require start < end, so use [0, 1] to read the surface slice.
+    z=[0, 1],  # surface
+    quality=-6
+)
+```
+
+**IMPORTANT**: 
+- DO NOT hardcode any specific lat/lon values in your prompt
+- USE YOUR KNOWLEDGE to estimate bounds for ANY geographic location mentioned
+- ALWAYS call latlon_to_xy() to get grid indices - never guess grid coordinates
+- If unsure about exact bounds, provide reasonable estimates (it's better than failing)
 
 **Helper Code for Geographic Mapping:**
 ```python
 import xarray as xr
 import numpy as np
 
-# Geographic file path
-geo_file = "{spatial_info.get('geographic_info', {}).get('geographic_info_file', 'llc2160_latlon.nc')}"
+# Geographic file path (resolved to absolute path in the repo)
+geo_file = "{geo_file_path_str}"
 
 def get_dataset_bounds():
     '''Get actual lat/lon coverage of dataset'''
@@ -449,7 +593,7 @@ You have TWO separate code scripts to write:
 
 ## PHASE 1: QUERY CODE
 
-**Your Intelligence Required:**
+**HIGHLY IMPORTANT: Your Intelligence Required, please follow the steps carefuly:**
 
 **STEP 1: ANALYZE THE PROBLEM**
 - What does the user actually want to know?
@@ -459,10 +603,11 @@ You have TWO separate code scripts to write:
 **STEP 2: DECIDE YOUR STRATEGY**
 Consider:
 - If {total_timesteps:,} timesteps is too many → How should you aggregate? (daily? weekly? monthly?)
-- If spatial resolution is too high → What quality level? (q=-2 fine, q=-6 medium, q=-10 coarse)
+  - choose time intervals very wisely for faster output
+- If spatial resolution is too high → What quality level? (q=-2 fine, q=-8 medium, q=-12 coarse)
 - What's the smartest way to sample without losing the answer?
 
-Examples of intelligent strategies:
+Examples of intelligent strategies for very large spatial and temporal datasets:
 - Query asks "highest temperature date" with 10,366 hourly steps
   → BAD: Check all 10,366 (slow, cluttered)
   → GOOD: Aggregate by day/week/month, find max in each period, much faster
@@ -471,17 +616,17 @@ Examples of intelligent strategies:
   → GOOD: Just query that one point at all times, fast
   
 - Query asks "global average over time"
-  → GOOD: Use coarse spatial resolution (q=-8), compute means
+  → GOOD: Use coarse spatial resolution (q=-8), compute means, aggregate temporally wisely
 
 **STEP 3: WRITE SMART QUERY CODE**
 Your code should:
-1. Load data using openvisuspy: `import openvisuspy as ovp`
 2. Apply YOUR intelligent sampling/aggregation strategy
 3. Extract minimal data needed for ALL plot hints
-4. Save intermediate results to: `{data_cache_file_str}`
-5. Print JSON summary to stdout
+4. **Save rich metadata** (see above) so follow-up queries are instant
+5. Save intermediate results to: `{data_cache_file_str}`
+6. Print JSON summary to stdout
 
-**Query Code Template (ADAPT THIS):**
+**Query Code Template for file-format openvisus idx(ADAPT THIS):**
 ```python
 import openvisuspy as ovp
 import numpy as np
@@ -558,9 +703,51 @@ Examples:
 Your code should:
 1. Load data from `{data_cache_file_str}`
 2. Create meaningful plots based on plot hints and query
-3. Highlight key findings (max values, trends, anomalies)
+3. Highlight key findings ( values, trends, anomalies)
 4. Save as: `{plot_dir_str}/plot_1_{timestamp}.png`, `plot_2_{timestamp}.png`, etc.
 5. Use matplotlib or plotly
+
+**CRITICAL PLOTTING GUIDELINES:**
+
+**Axis Limits and Scales:**
+- ALWAYS set appropriate axis limits based on your actual data range
+- For bar charts of min/max: set y-axis from slightly below min to slightly above max
+- For time series: ensure x-axis covers your time range
+- For heatmaps: use appropriate color scales (diverging for anomalies, sequential for values)
+- Use log scale if data spans several orders of magnitude
+- folow rule for other plots too
+
+**Data Validation:**
+- After loading npz file, ALWAYS inspect keys: `print("Available keys:", data.files)`
+- Check data shapes and values: `print(f"Shape: {{arr.shape}}, Range: [{{arr.min()}}, {{arr.max()}}]")`
+- This prevents plotting wrong arrays or misinterpreting data structure
+
+**Visualization Best Practices:**
+- **Bar charts**: Use for comparing discrete values (min vs max, different regions)
+  - Add value labels on bars: `plt.text(x, y, f'{{value:.2f}}', ha='center')`
+  - Set appropriate y-limits based on data range
+- **Time series**: Use for temporal trends
+  - Label axes clearly with units
+  - Mark important events (max, min, thresholds)
+- **Heatmaps/contour plots**: Use for 2D spatial or spatiotemporal data
+  - Include colorbar with units
+  - Consider geographic overlays if showing lat/lon
+- **Vector plots**: Use for velocity/flow fields
+  - Normalize arrow lengths for readability
+  - Use quiver or streamplot
+- **Scatter plots**: Use for correlations
+    - Add trend lines if applicable
+    - Highlight key data points (e.g., outliers)
+
+**Special Case: velocity Features (Eddies, Currents, Gyres, magnitudes)**
+
+If user asks about complex features like:
+- "eddies" → Visualize vorticity (curl of velocity field) or SSH anomalies
+- "currents" → Show velocity vectors with quiver/streamplot
+- "upwelling" → Show vertical velocity or temperature gradients
+- "fronts" → Show temperature/salinity gradients
+- for all this you have to use your knowledge of velocity components to decide what to plot and the dataset has to have relevant variables present in data
+
 
 **Plot Code Template (ADAPT THIS):**
 ```python
@@ -577,13 +764,13 @@ data = np.load('{data_cache_file_str}')
 # Example: Plot 1 - Time series
 plt.figure(figsize=(12, 6))
 # YOUR PLOT CODE
-plt.savefig('{dirs["plots"]}/plot_1_{timestamp}.png', dpi=150, bbox_inches='tight')
+plt.savefig('{plot_dir_str}/plot_1_{timestamp}.png', dpi=150, bbox_inches='tight')
 plt.close()
 
 # Example: Plot 2 - Another visualization
 plt.figure(figsize=(10, 6))
 # YOUR PLOT CODE
-plt.savefig('{dirs["plots"]}/plot_2_{timestamp}.png', dpi=150, bbox_inches='tight')
+plt.savefig('{plot_dir_str}/plot_2_{timestamp}.png', dpi=150, bbox_inches='tight')
 plt.close()
 
 print(f"Created {{NUM_PLOTS}} plots successfully")
@@ -701,6 +888,9 @@ Common issues:
                         if isinstance(parsed_stdout, dict) and (parsed_stdout.get('error') or parsed_stdout.get('status') in ['error', 'failed']):
                             add_system_log("✗ Query printed error JSON despite exit code 0", "warning")
                             error_msg = json.dumps(parsed_stdout)
+                            # Treat printed JSON error as a real failure so the retry/debug flow triggers
+                            # (previously parsed_stdout remained a dict which bypassed the retry check)
+                            parsed_stdout = None
                         else:
                             # Ensure data cache file exists (query code must write it)
                             # Allow short delay for filesystem flush (retry up to 2 seconds)
@@ -736,10 +926,11 @@ Common issues:
                             targeted_hint = ""
                             if "createBoxQuery" in error_msg or "Wrong number or type of arguments" in error_msg:
                                 targeted_hint = (
-                                    "Hint: The OpenVisus C++ binding often expects an integer `time` parameter or specific overloads.\n"
-                                    "Avoid passing Python lists for the `time` argument. Either iterate timesteps (call `ds.db.read(time=t, ...)` per integer t)\n"
-                                    "or use the dataset's `getTimesteps()` to discover available timesteps. Example:\n"
-                                    "````python\nlength = len(ds.db.getTimesteps())\nfor t in range(start, end+1):\n    data = ds.db.read(time=t, x=x_range, y=y_range, z=z_range, quality=-6)\n````\n"
+                                    "Hint: The OpenVisus C++ binding often expects scalar integer `time` parameters and clear index ranges for spatial axes.\n"
+                                    "Avoid passing zero-length ranges like `z_range = [0, 0]` (many bindings require start < end). For surface-level reads prefer `z_range = [0, 1]` or explicitly iterate a single index.\n"
+                                    "Also avoid passing Python lists where a single integer is expected for `time`. Either iterate timesteps (call `ds.db.read(time=t, ...)` per integer t)\n"
+                                    "or use the dataset's `getTimesteps()` to discover available timesteps. Example patterns:\n"
+                                    "````python\n# Pattern A: per-timestep read (safe)\nlength = len(ds.db.getTimesteps())\nfor t in range(start, end+1):\n    # For surface-level read use z_range = [0, 1] (start < end) or pass a single index if the API supports it\n    z_range = [0, 1]\n    data = ds.db.read(time=t, x=x_range, y=y_range, z=z_range, quality=-6)\n\n# Pattern B: explicit single-slice read (if API accepts single index)\nfor t in range(start, end+1):\n    data = ds.db.read(time=t, x=x_range, y=y_range, z=0, quality=-6)\n````\n"
                                 )
 
                             # Include the last attempted query code for debugging
@@ -821,7 +1012,7 @@ Write your intelligent plot code in <plot_code></plot_code> tags.
                             is_timeout = False
 
                         if is_timeout:
-                            add_system_log(f"✗ Query timed out after allowed runtime (300s). Aborting query and asking LLM for smaller alternatives.", "warning")
+                            add_system_log(f"✗ Query timed out after allowed runtime (500s). Aborting query and asking LLM for smaller alternatives.", "warning")
 
                             # Ask LLM to produce intelligent smaller-subset suggestions and a short insight message
                             prompt = {
@@ -916,10 +1107,11 @@ import json
 # YOUR CODE HERE
 # 1. Load dataset
 # 2. Extract data
-# 3. Save to npz file: np.savez('{data_cache_file_str}', your_data=...)
+# 3. Save to npz file: np.savez('{data_cache_file_str}', your_data (target)=...)
+#    IMPORTANT: When finding anomalies/statistics like min, max, percentiles, averages, etc., additionally save: target_timestep/target_timestep_range (for "when?"), target_x/y/z (spatial slice for "where?"), resolution/quality and any aggregation parameters used.
 # 4. Print JSON summary to stdout
 
-print(json.dumps({{"status": "success", "message": "..."}}}))
+print(json.dumps({{"status": "success", "message": "..."}}))
 ```
 
 Write your COMPLETE query code (with actual logic, not empty) in <query_code></query_code> tags NOW.
@@ -1042,7 +1234,7 @@ print("Available keys:", data.files)
 # Create meaningful visualizations
 
 # Save plots
-plt.savefig('{plot_dir_str}/plot_1_{{timestamp}}.png', dpi=150, bbox_inches='tight')
+plt.savefig('{plot_dir_str}/plot_1_{timestamp}.png', dpi=150, bbox_inches='tight')
 plt.close()
 ```
 

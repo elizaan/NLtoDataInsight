@@ -101,22 +101,27 @@ def run_test_workflow():
     print_result("Dataset Summary", dataset_summary, max_len=400)
     
     # Test queries
-    test_queries = [
-        {
-            "id": "q1",
-            "query": "show me temperature change for two months",
-            "description": "Basic temporal aggregation query"
-        },
-        {
-            "id": "q2",
-            "query": "what is the highest temperature in full dataset?",
-            "description": "Max value across entire dataset (likely to timeout)"
-        },
-        {
-            "id": "q3",
-            "query": "when was this highest temperature seen?",
-            "description": "Temporal location of max (references q2)"
-        },
+    test_queries = [     
+        # {
+        #     "id": "q0",
+        #     "query": "show me average velocity magnitude in dataset",
+        #     "description": "Basic temporal aggregation query"
+        # },
+        #  {
+        #     "id": "q1",
+        #     "query": "show me temperature change for 7 days",
+        #     "description": "trend analysis over one week"
+        # },
+        # {
+        #     "id": "q2",
+        #     "query": "what is the highest temperature in full dataset?",
+        #     "description": "Max value across entire dataset (likely to timeout)"
+        # },
+        # {
+        #     "id": "q3",
+        #     "query": "when was this highest temperature seen?",
+        #     "description": "Temporal location of max (references q2)"
+        # },
         {
             "id": "q4",
             "query": "where was this highest temperature seen?",
@@ -134,9 +139,19 @@ def run_test_workflow():
         },
         {
             "id": "q7",
+            "query": "what is the average temperature in agulhas for each month?",
+            "description": "Basic temporal aggregation query"
+        },
+        {
+            "id": "q8",
             "query": "any plot to reveal eddy formation in mediterranean sea?",
             "description": "Geographic region + complex visualization"
-        }
+        },
+        # {
+        #     "id": "q9",
+        #     "query": "show me daily salinity change for 2 months",
+        #     "description": "Basic temporal aggregation query"
+        # },
     ]
     
     # Run each query

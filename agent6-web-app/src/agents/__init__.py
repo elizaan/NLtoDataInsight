@@ -1,5 +1,5 @@
 """
-Multi-agent system for animation generation.
+Multi-agent system
 """
 
 from .core_agent import AnimationAgent
