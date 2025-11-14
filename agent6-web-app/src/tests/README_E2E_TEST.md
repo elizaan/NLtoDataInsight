@@ -30,15 +30,6 @@ cd /Users/ishratjahaneliza/Documents/PhD/Valerio/codes/NLQtoDataInsight/agent6-w
 python3 src/tests/test_workflow_e2e.py
 ```
 
-### Expected Behavior
-- **q1**: Should succeed with 1-2 plots showing temperature trends
-- **q2**: May timeout (scanning 10,366 timesteps × large spatial grid)
-  - If timeout, LLM will suggest smaller queries (e.g., monthly aggregation, specific region)
-- **q3-q4**: Should reference q2's result (or suggest smaller scope if q2 timed out)
-- **q5**: Should succeed with min/max salinity values
-- **q6**: Should reference q5's max salinity and identify timesteps
-- **q7**: Should use geographic mapping to find Mediterranean Sea coordinates and generate eddy visualization
-
 ### Output Structure
 Each query produces:
 - **Query code**: `ai_data/codes/dyamond_llc2160/query_YYYYMMDD_HHMMSS.py`
