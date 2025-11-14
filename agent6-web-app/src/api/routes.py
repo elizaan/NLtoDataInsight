@@ -480,7 +480,7 @@ def get_agent():
 
     
     Returns:
-        Agent instance (either PGAAgent or AnimationAgent)
+        Agent instance 
     """
     global agent_instance
     global animation_agent_instance

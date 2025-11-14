@@ -25,8 +25,7 @@ from .tools import (
 
     # Agent management
     set_agent,
-    get_agent,
-    create_animation_dirs
+    get_agent
 )
 
 __all__ = [
@@ -36,6 +35,5 @@ __all__ = [
     'DatasetSummarizerAgent',
     'DatasetInsightGenerator',
     'set_agent',
-    'get_agent',
-    'create_animation_dirs'
+    'get_agent'
 ]

@@ -1,22 +1,4 @@
-"""src/agents/tools.py
-----------------------
-LangChain tool wrappers for the legacy `PGAAgent` implementation.
 
-These small adapter functions expose existing `PGAAgent` methods as
-callable tools that can be used by LangChain agents or by the local
-multi-agent orchestrator. Each tool is intentionally conservative and
-defensive: if the underlying `PGAAgent` does not implement a specific
-helper, the wrapper either falls back to a permissive default or
-returns an error-like dict so callers can handle the fallback.
-
-Typical usage:
-    - `set_agent(pga)` to register the global agent instance used by tools
-    - call the wrapped functions directly, or use them as LangChain tools
-
-Notes:
-    - Keep these wrappers thin — they should not duplicate the agent's
-        domain logic, only adapt interfaces and provide small fallbacks.
-"""
 import OpenVisus as ov
 from PIL import Image
 from langchain.tools import tool
@@ -33,102 +15,35 @@ from typing import Optional, List, Dict, Union
 _agent_instance = None
 
 def set_agent(agent_instance):
-    """Register a PGAAgent instance for subsequent tool calls.
+    """Register a Agent instance for subsequent tool calls.
 
     This sets a module-global pointer that the tool wrappers will use to
-    delegate work to the real implementation in `Agent.PGAAgent`.
+    delegate work to the real implementation in `Agent.Agent`.
 
     Args:
-        agent_instance: An initialized `PGAAgent` object.
+        agent_instance: An initialized `Agent` object.
 
     """
     global _agent_instance
     _agent_instance = agent_instance
 
 def get_agent():
-    """Return the registered `PGAAgent` instance.
+    """Return the registered `Agent` instance.
 
     Raises:
-        RuntimeError: if no PGAAgent has been registered via
+        RuntimeError: if no Agent has been registered via
             `set_agent()`.
 
     Returns:
-        The `PGAAgent` instance previously passed to `set_agent()`.
+        The `Agent` instance previously passed to `set_agent()`.
     """
     global _agent_instance
     if _agent_instance is None:
-        raise RuntimeError("PGAAgent not initialized. Call set_agent() first.")
+        raise RuntimeError("Agent not initialized. Call set_agent() first.")
     return _agent_instance
 
-@tool
-def generate_animation_from_params(params: dict, description: str) -> dict:
-    """Generate an animation using the given parameters.
 
-    This thin wrapper calls `PGAAgent.generate_animation(params, description)`
-    and returns whatever the agent implementation produces (typically a
-    dict with an `animation_path` or `path` key and status information).
 
-    Args:
-        params: Visualization parameter dict (x/y ranges, t_list, variable, etc.).
-        description: Original user query or explanation string used for logging.
-
-    Returns:
-        Result dict from the underlying `PGAAgent.generate_animation` call.
-    """
-    agent = get_agent()
-    return agent.generate_animation(params, description)
-
-@tool
-def evaluate_animation_quality(animation_info: dict, description: str, params: dict) -> str:
-    """Evaluate the quality of a generated animation.
-
-    Delegates to `PGAAgent.evaluate_animation` which may use internal
-    heuristics or an ML/vision model to score or describe the animation.
-
-    Args:
-        animation_info: Metadata about the animation (paths, frames, etc.).
-        description: Human description of what the animation should show.
-        params: Parameters used to generate the animation.
-
-    Returns:
-        A human-readable evaluation string or structured score information.
-    """
-    agent = get_agent()
-    return agent.evaluate_animation(animation_info, description, params)
-
-@tool
-def get_dataset_summary(dataset: dict) -> dict:
-    """Produce a concise summary of the provided dataset.
-
-    Calls `PGAAgent.summarize_dataset` to build a description including
-    available variables, spatial/temporal extents, and recommended
-    visualization suggestions.
-
-    Args:
-        dataset: Dataset metadata dictionary expected by the PGAAgent.
-
-    Returns:
-        A dict summarizing the dataset (variables, extents, suggested views, ...).
-    """
-    agent = get_agent()
-    return agent.summarize_dataset(dataset)
-
-@tool
-def find_existing_animation(region_params: dict) -> dict:
-    """Check for an existing animation matching given parameters.
-
-    This wrapper calls `PGAAgent.find_existing_animation` and returns a
-    dict containing at minimum an `'exists'` boolean and, when true,
-    path information under keys such as `'path'` or `'animation_path'`.
-
-    Args:
-        region_params: Parameter dict describing the animation region/time/variable.
-
-    Returns:
-        A dict with keys like `'exists'` (bool) and path fields when found.
-    """
-    agent = get_agent()
-    return agent.find_existing_animation(region_params)
 
 
 # ============================================================================
@@ -644,121 +559,3 @@ def list_available_geographic_regions() -> Dict:
     }
 
 
-@tool
-def create_animation_dirs(params: dict) -> Dict:
-    """
-    Create a hierarchical animation directory structure under the PGAAgent ai_dir
-    using the parameter values extracted by the ParameterExtractorAgent.
-
-    Directory format (example):
-    ai_dir/animation_{x0}_{y0}_{z0}-{x1}_{y1}_{z1}-{q}-{variable}-{active_scalar_name}/
-        Out_text/
-        GAD_text/
-        Rendered_frames/
-
-    Returns a dict with absolute paths for each created folder.
-    """
-    return create_animation_dirs_impl(params)
-
-
-def create_animation_dirs_impl(params: dict) -> Dict:
-    """Implementation of create_animation_dirs used internally by the codebase.
-
-    The LangChain `@tool` wrapper above delegates to this implementation so
-    internal callers can import and call the plain function without invoking
-    the LangChain Tool wrapper object.
-    """
-    try:
-        agent = get_agent()
-    except Exception:
-        agent = None
-
-    # Determine base ai directory
-    if agent and hasattr(agent, 'ai_dir') and agent.ai_dir:
-        base_ai = os.path.abspath(agent.ai_dir)
-    else:
-        # Fallback to repo-relative ai_data
-        base_ai = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'ai_data'))
-
-    region = params.get('region', {}) or {}
-    x_range = region.get('x_range', [0, 0])
-    y_range = region.get('y_range', [0, 0])
-    z_range = region.get('z_range', [0, 0])
-    q = params.get('quality', -6)
-    variable = params.get('variable', 'unknown')
-
-    # Determine active scalar name from params['url'] or dataset if available
-    active_scalar_name = 'active_scalar'
-    url_map = params.get('url', {}) or {}
-    active_url = url_map.get('active_scalar_url')
-    # Try to find a matching dataset variable id (if agent dataset available)
-    if agent and hasattr(agent, 'dataset') and agent.dataset:
-        for v in agent.dataset.get('variables', []):
-            if active_url and v.get('url') == active_url:
-                active_scalar_name = v.get('id') or v.get('name')
-                break
-
-    # Fallback: try to infer name from active_url
-    if (not active_scalar_name or active_scalar_name == 'active_scalar') and active_url:
-        active_scalar_name = os.path.splitext(os.path.basename(active_url))[0]
-
-    # check which representations are being used #"representations": {
-    #   "volume": true,
-    #   "streamline": false,
-    #   "isosurface": false
-    # },
-    representations = params.get('representations', {})
-    # check which ones are true
-    active_rep_name = ""
-    active_representations = [k for k, v in representations.items() if v]
-    if active_representations:
-        active_rep_name +=  "_".join(active_representations)
-    
-    #  add time start end and num of frames "time_range": {
-    #   "start_timestep": 0,
-    #   "end_timestep": 2400,
-    #   "num_frames": 100
-    # }
-    time_start = params.get('time_range', {}).get('start_timestep', 0)
-    time_end = params.get('time_range', {}).get('end_timestep', 2400)
-    num_frames = params.get('time_range', {}).get('num_frames', 100)
-
-    # Clean components (remove spaces and os-unfriendly chars)
-    def _clean(s: str) -> str:
-        return str(s).strip().replace(' ', '_').replace('/', '_').replace('\\', '_')
-
-    # it should look like: animation_0-0-0_1-1-1_-6_temperature_temperature_volume_streamline_isosurface
-    anim_dir_name = f"animation_{_clean(x_range[0])}-{_clean(y_range[0])}-{_clean(z_range[0])}_{_clean(x_range[1])}-{_clean(y_range[1])}-{_clean(z_range[1])}_{_clean(time_start)}-{_clean(time_end)}-{_clean(num_frames)}_{_clean(q)}_{_clean(variable)}_{_clean(active_scalar_name)}_{_clean(active_rep_name)}"
-
-    # Place animations under ai_data/animations for consistent organization
-    animations_root = os.path.join(base_ai, 'animations')
-    try:
-        os.makedirs(animations_root, exist_ok=True)
-    except Exception:
-        pass
-
-    base_path = os.path.join(animations_root, anim_dir_name)
-    out_text = os.path.join(base_path, 'Out_text')
-    gad_text = os.path.join(base_path, 'GAD_text')
-    rendered_frames = os.path.join(base_path, 'Rendered_frames')
-    statistics = os.path.join(base_path, 'Statistics')
-
-    for p in (base_path, out_text, gad_text, rendered_frames, statistics):
-        try:
-            os.makedirs(p, exist_ok=True)
-            # Helpful debug log so callers can see that directories were created
-            try:
-                print(f"[create_animation_dirs] ensured directory: {p}")
-            except Exception:
-                pass
-        except Exception:
-            pass
-
-    return {
-        'animation_name': anim_dir_name,
-        'base': base_path,
-        'out_text': out_text,
-        'gad_text': gad_text,
-        'rendered_frames': rendered_frames,
-        'statistics': statistics
-    }

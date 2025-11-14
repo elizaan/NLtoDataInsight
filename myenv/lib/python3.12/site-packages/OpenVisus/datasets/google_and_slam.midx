@@ -1,0 +1,11 @@
+<dataset name="slam" typename='IdxMultipleDataset'>
+
+	<field name="voronoi">
+		<code>output=voronoi()</code>
+	</field>
+
+	<dataset name='google'  url='./google.xml' />
+	<dataset name='visus' url='D:/GoogleSci/visus_slam/TaylorGrant/VisusSlamFiles/visus.midx' />
+	
+</dataset>
+

@@ -5,12 +5,10 @@ This replaces the manual orchestration in routes.py.
 from langchain_openai import ChatOpenAI
 from langchain.agents import create_agent
 from .tools import (
-    get_dataset_summary,
     set_agent,
     get_agent
 
 )
-from .tools import create_animation_dirs, create_animation_dirs_impl
 from .intent_parser import IntentParserAgent
 from .insight_extractor import InsightExtractorAgent
 from .dataset_profiler_agent import DatasetProfilerAgent
@@ -98,10 +96,8 @@ class AnimationAgent:
         print("[Agent] Initialized Insight Extractor Agent")
 
         self.tools = [
-            get_dataset_summary,
             set_agent,
-            get_agent,
-            create_animation_dirs
+            get_agent
         ]
 
 
@@ -227,9 +223,6 @@ class AnimationAgent:
         """
         text = (user_message or '').strip()
 
-        # Heuristic: if the user explicitly asks for a dataset summary, run
-        # the LangChain orchestration so it can call the get_dataset_summary
-        # tool and produce a detailed structured response.
         lower = text.lower()
         if 'summarize this dataset' in lower or lower.startswith('summarize dataset') or 'provide visualization suggestions' in lower:
             print(f"[Agent] Processing summary request with LangChain: {text[:80]}...")
@@ -768,8 +761,3 @@ Do not include any explanations or markdown formatting."""
         }
     
    
-    
-    # ========================================
-    # PROPERTY ACCESSORS
-    # Provide access to underlying PGAAgent attributes
-    # ========================================

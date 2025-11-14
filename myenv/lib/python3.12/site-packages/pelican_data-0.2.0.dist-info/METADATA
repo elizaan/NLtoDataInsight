@@ -1,0 +1,49 @@
+Metadata-Version: 2.1
+Name: pelican-data
+Version: 0.2.0
+Summary: Data and collections for Pelican
+Home-page: https://github.com/noirbizarre/pelican-data
+Author: Axel Haustant
+Author-email: noirbizarre+github@gmail.com
+License: MIT
+Keywords: pelican,data,yaml
+Platform: UNKNOWN
+Classifier: Development Status :: 3 - Alpha
+Classifier: Programming Language :: Python
+Classifier: Environment :: Web Environment
+Classifier: Operating System :: OS Independent
+Classifier: Intended Audience :: Developers
+Classifier: Topic :: System :: Software Distribution
+Classifier: Programming Language :: Python
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.6
+Classifier: Programming Language :: Python :: 3.7
+Classifier: Programming Language :: Python :: 3.8
+Classifier: Topic :: Software Development :: Libraries :: Python Modules
+Classifier: License :: OSI Approved :: MIT License
+Requires-Python: >=3.6
+Requires-Dist: PyYAML
+
+# pelican-data
+
+Data and collections management for Pelican
+
+This extension allow to load data from any reader plus yaml and json files.
+It also allows free custom pages layouts.
+
+# Changelog
+
+## In development
+
+- Nothing yet
+
+## 0.2.0 (2020-03-18)
+
+- Fix the `YAMLLoadWarning` raised du the deprecated `yaml.load()` usage
+
+
+## 0.1.0 (2020-03-14)
+
+- Initial release (raw extract from a pelican project, still needs ❤)
+
+
