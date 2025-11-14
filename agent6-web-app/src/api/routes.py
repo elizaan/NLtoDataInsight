@@ -4,6 +4,9 @@ import sys
 import os
 import json
 import uuid
+import time
+import threading
+from datetime import datetime, timedelta
 
 # Add the models directory to the path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'models'))
@@ -21,24 +24,10 @@ api_bp = Blueprint('api', __name__)
 agent_instance = None
 animation_agent_instance = None
 
-# List available PNG frames for a given animation (polling endpoint)
-@api_bp.route('/animations/<animation_id>/frames', methods=['GET'])
-def list_animation_frames(animation_id):
-    """Return a list of available PNG frames for the given animation."""
-    # Construct the Rendered_frames directory path
-    default_ai_dir = os.path.normpath(os.path.join(os.path.dirname(__file__), '..', '..', 'ai_data'))
-    ai_dir = os.getenv('AI_DIR', default_ai_dir)
-    frames_dir = os.path.join(ai_dir, 'animations', animation_id, 'Rendered_frames')
-    frames = []
-    try:
-        if os.path.isdir(frames_dir):
-            for fname in sorted(os.listdir(frames_dir)):
-                if fname.lower().endswith('.png'):
-                    # Return web-accessible path for each frame
-                    frames.append(f'/api/animations/animations/{animation_id}/Rendered_frames/{fname}')
-        return jsonify({'frames': frames, 'status': 'success'})
-    except Exception as e:
-        return jsonify({'frames': [], 'status': 'error', 'message': str(e)})
+# Task tracking for real-time streaming
+task_storage = {}  # {task_id: {'status', 'messages', 'result', 'created_at'}}
+task_lock = threading.Lock()
+
 
 # Add a new endpoint to return all available datasets
 @api_bp.route('/datasets', methods=['GET'])
@@ -381,8 +370,7 @@ def summarize_dataset_endpoint(dataset_id):
 
 # Global conversation state
 conversation_state = {
-    'step': 'start',  # start, dataset_selected, phenomenon_selected, conversation_loop
-    'phenomenon': None,
+    'step': 'start',  # start, dataset_selected, conversation_loop
     'region_params': None,
     'animation_info': None
 }
@@ -557,7 +545,7 @@ def get_agent():
         # Instantiate the AnimationAgent
         try:
             animation_agent_instance = AnimationAgentCls(api_key=api_key)
-            add_system_log("AnimationAgent initialized successfully", 'info')
+            add_system_log("Agent initialized successfully", 'info')
         except Exception as e:
             add_system_log(f"Failed to initialize AnimationAgent: {e}", 'error')
             animation_agent_instance = None
@@ -575,6 +563,83 @@ try:
         add_system_log("Eager agent initialization returned None", 'warning')
 except Exception as e:
     add_system_log(f"Eager agent initialization failed: {e}", 'error')
+
+
+# Helper functions for task management
+def create_task():
+    """Create a new task and return its ID"""
+    task_id = str(uuid.uuid4())
+    with task_lock:
+        task_storage[task_id] = {
+            'status': 'processing',
+            'messages': [],
+            'result': None,
+            'error': None,
+            'created_at': time.time()
+        }
+    return task_id
+
+def add_task_message(task_id, message_type, data):
+    """Add a message to task's message stream"""
+    with task_lock:
+        if task_id in task_storage:
+            task_storage[task_id]['messages'].append({
+                'type': message_type,
+                'data': data,
+                'timestamp': time.time()
+            })
+
+def complete_task(task_id, result):
+    """Mark task as completed with final result"""
+    with task_lock:
+        if task_id in task_storage:
+            task_storage[task_id]['status'] = 'completed'
+            task_storage[task_id]['result'] = result
+
+def fail_task(task_id, error):
+    """Mark task as failed with error message"""
+    with task_lock:
+        if task_id in task_storage:
+            task_storage[task_id]['status'] = 'error'
+            task_storage[task_id]['error'] = str(error)
+
+def cleanup_old_tasks():
+    """Remove tasks older than 10 minutes"""
+    current_time = time.time()
+    with task_lock:
+        expired = [tid for tid, task in task_storage.items() 
+                   if current_time - task['created_at'] > 600]  # 10 minutes
+        for tid in expired:
+            del task_storage[tid]
+    if expired:
+        add_system_log(f"Cleaned up {len(expired)} expired tasks", 'debug')
+
+# Run cleanup periodically
+def periodic_cleanup():
+    while True:
+        time.sleep(300)  # Every 5 minutes
+        cleanup_old_tasks()
+
+cleanup_thread = threading.Thread(target=periodic_cleanup, daemon=True)
+cleanup_thread.start()
+
+
+@api_bp.route('/chat/status/<task_id>', methods=['GET'])
+def get_task_status(task_id):
+    """Get the current status and messages for a task"""
+    cleanup_old_tasks()  # Opportunistic cleanup
+    
+    with task_lock:
+        task = task_storage.get(task_id)
+        if not task:
+            return jsonify({'error': 'Task not found'}), 404
+        
+        return jsonify({
+            'status': task['status'],
+            'messages': task['messages'],
+            'result': task.get('result'),
+            'error': task.get('error')
+        })
 
 
 @api_bp.route('/chat', methods=['POST'])
@@ -602,6 +667,139 @@ def chat():
         # forward the message to the agent with full context (dataset + summary).
         # The agent will use IntentParser to classify intent and route accordingly.
         if action == 'continue_conversation':
+            # Create task for background processing
+            task_id = create_task()
+            
+            # Build context with dataset and summary from conversation_state
+            context = {
+                'dataset': conversation_state.get('dataset'),
+                'dataset_summary': conversation_state.get('dataset_summary'),
+                'animation_info': conversation_state.get('animation_info')
+            }
+            
+            add_system_log(f"[continue_conversation] Created task {task_id[:8]}... for query", 'info')
+            add_system_log(f"[continue_conversation] User message: {user_message[:100]}", 'debug')
+            
+            # Define progress callback for real-time updates
+            def progress_callback(event_type, data):
+                """Called by agent to report progress"""
+                print(f"[PROGRESS] {event_type}: {str(data)[:100]}")
+                add_task_message(task_id, event_type, data)
+                add_system_log(f"[Task {task_id[:8]}] {event_type}", 'debug')
+            
+            # Process in background thread
+            def process_in_background():
+                try:
+                    print(f"\n{'='*60}")
+                    print(f"[BACKGROUND TASK {task_id[:8]}] Starting agent.process_query")
+                    print(f"[BACKGROUND TASK] User message: {user_message}")
+                    print(f"{'='*60}\n")
+                    
+                    # Add progress callback to context (agent expects it there)
+                    context['progress_callback'] = progress_callback
+                    
+                    # Call agent with progress callback in context
+                    result = agent.process_query(user_message, context=context)
+                    
+                    print(f"\n{'='*60}")
+                    print(f"[BACKGROUND TASK {task_id[:8]}] Agent completed")
+                    print(f"[BACKGROUND TASK] Result keys: {list(result.keys())}")
+                    print(f"[BACKGROUND TASK] Result type: {result.get('type')}")
+                    print(f"{'='*60}\n")
+                    
+                    # Extract LLM outputs for final result
+                    intent_result = result.get('intent_result')
+                    insight_result = result.get('insight_result')
+                    
+                    # Build assistant messages for final response
+                    assistant_messages = []
+                    try:
+                        if intent_result:
+                            assistant_messages.append({
+                                'role': 'assistant',
+                                'type': 'intent_parsing',
+                                'content': 'Parsing intent...',
+                                'data': intent_result
+                            })
+                        
+                        if insight_result:
+                            assistant_messages.append({
+                                'role': 'assistant',
+                                'type': 'insight_generation',
+                                'content': 'Generating insight...',
+                                'data': insight_result
+                            })
+                    except Exception as e:
+                        add_system_log(f"Failed to build assistant_messages: {e}", 'warning')
+                    
+                    # Determine response type based on context flags
+                    response_data = {'assistant_messages': assistant_messages, 'status': 'success'}
+                    
+                    if context.get('is_exit'):
+                        response_data.update({
+                            'type': 'conversation_end',
+                            'message': result.get('message', 'Goodbye!')
+                        })
+                    elif context.get('is_unrelated'):
+                        response_data.update({
+                            'type': 'clarification',
+                            'message': result.get('message', 'That seems unrelated to data analysis.')
+                        })
+                    elif context.get('is_help'):
+                        response_data.update({
+                            'type': 'help_response',
+                            'message': result.get('message')
+                        })
+                    elif context.get('is_particular'):
+                        response_data.update({
+                            'type': 'particular_response',
+                            'message': result.get('message'),
+                            'answer': result.get('answer'),
+                            'insight': result.get('insight'),
+                            'data_summary': result.get('data_summary'),
+                            'visualization': result.get('visualization'),
+                            'plot_files': result.get('plot_files')
+                        })
+                    elif context.get('is_not_particular'):
+                        response_data.update({
+                            'type': 'exploration_response',
+                            'message': result.get('message'),
+                            'insights': result.get('insights'),
+                            'insight': result.get('insight'),
+                            'data_summary': result.get('data_summary'),
+                            'visualization': result.get('visualization'),
+                            'plot_files': result.get('plot_files')
+                        })
+                    else:
+                        response_data.update({
+                            'type': 'agent_response',
+                            'result': result
+                        })
+                    
+                    # Mark task as completed
+                    complete_task(task_id, response_data)
+                    add_system_log(f"[Task {task_id[:8]}] Completed successfully", 'info')
+                    
+                except Exception as e:
+                    print(f"[BACKGROUND TASK {task_id[:8]}] ERROR: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    fail_task(task_id, str(e))
+                    add_system_log(f"[Task {task_id[:8]}] Failed: {e}", 'error')
+            
+            # Start background thread
+            thread = threading.Thread(target=process_in_background, daemon=True)
+            thread.start()
+            
+            # Return task ID immediately
+            return jsonify({
+                'type': 'task_started',
+                'task_id': task_id,
+                'status': 'processing'
+            })
+        
+        # OLD SYNCHRONOUS CODE BELOW - kept for non-continue_conversation actions
+        if action == 'continue_conversation_OLD_SYNC':
             try:
                 # Build context with dataset and summary from conversation_state
                 context = {
@@ -612,52 +810,141 @@ def chat():
                 
                 add_system_log(f"[continue_conversation] Calling agent.process_query with context", 'info')
                 add_system_log(f"[continue_conversation] User message: {user_message[:100]}", 'debug')
+                print(f"\n{'='*60}")
+                print(f"[ROUTES] Calling agent.process_query")
+                print(f"[ROUTES] User message: {user_message}")
+                print(f"{'='*60}\n")
                 
                 # Agent will internally call IntentParser, set flags, and route
                 result = agent.process_query(user_message, context=context)
                 
+                print(f"\n{'='*60}")
+                print(f"[ROUTES] Agent returned result:")
+                print(f"[ROUTES] Result keys: {list(result.keys())}")
+                print(f"[ROUTES] Result type: {result.get('type')}")
+                print(f"[ROUTES] Result status: {result.get('status')}")
+                print(f"[ROUTES] Has intent_result: {'intent_result' in result}")
+                print(f"[ROUTES] Has insight_result: {'insight_result' in result}")
+                if 'intent_result' in result:
+                    print(f"[ROUTES] intent_result: {result['intent_result']}")
+                if 'insight_result' in result:
+                    print(f"[ROUTES] insight_result keys: {list(result['insight_result'].keys())}")
+                print(f"[ROUTES] Context flags after agent call:")
+                print(f"[ROUTES]   is_particular: {context.get('is_particular')}")
+                print(f"[ROUTES]   is_not_particular: {context.get('is_not_particular')}")
+                print(f"[ROUTES]   is_help: {context.get('is_help')}")
+                print(f"[ROUTES]   is_exit: {context.get('is_exit')}")
+                print(f"[ROUTES]   is_unrelated: {context.get('is_unrelated')}")
+                print(f"{'='*60}\n")
+                
                 add_system_log(f"[continue_conversation] Agent returned result type: {result.get('status')}", 'info')
+                
+                # Extract LLM outputs for display in chat (separate from system logs)
+                intent_result = result.get('intent_result')
+                insight_result = result.get('insight_result')
+                
+                print(f"[ROUTES] Building assistant_messages...")
+                print(f"[ROUTES]   intent_result extracted: {intent_result is not None}")
+                print(f"[ROUTES]   insight_result extracted: {insight_result is not None}")
+                
+                # Build assistant messages for chat display
+                assistant_messages = []
+                try:
+                    # 1. Intent parsing output
+                    if intent_result:
+                        msg = {
+                            'role': 'assistant',
+                            'type': 'intent_parsing',
+                            'content': 'Parsing intent...',
+                            'data': intent_result
+                        }
+                        assistant_messages.append(msg)
+                        print(f"[ROUTES] Added intent_parsing message: {msg}")
+                    
+                    # 2. Insight generation indicator
+                    if insight_result:
+                        msg = {
+                            'role': 'assistant',
+                            'type': 'insight_generation',
+                            'content': 'Generating insight...',
+                            'data': insight_result
+                        }
+                        assistant_messages.append(msg)
+                        print(f"[ROUTES] Added insight_generation message with keys: {list(insight_result.keys())}")
+                except Exception as e:
+                    print(f"[ROUTES] ERROR building assistant_messages: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    add_system_log(f"Failed to build assistant_messages: {e}", 'warning')
+                
+                print(f"[ROUTES] Final assistant_messages count: {len(assistant_messages)}")
                 
                 # Check intent flags set by IntentParser in context to determine response
                 if context.get('is_exit'):
+                    print(f"[ROUTES] Returning conversation_end response")
                     return jsonify({
                         'type': 'conversation_end',
                         'message': result.get('message', 'Goodbye!'),
+                        'assistant_messages': assistant_messages,
                         'status': 'success'
                     })
                 elif context.get('is_unrelated'):
+                    print(f"[ROUTES] Returning clarification response")
                     return jsonify({
                         'type': 'clarification',
                         'message': result.get('message', 'That seems unrelated to data analysis. How can I help you explore this dataset?'),
+                        'assistant_messages': assistant_messages,
                         'status': 'success'
                     })
                 elif context.get('is_help'):
+                    print(f"[ROUTES] Returning help_response")
                     return jsonify({
                         'type': 'help_response',
                         'message': result.get('message'),
+                        'assistant_messages': assistant_messages,
                         'status': 'success'
                     })
                 elif context.get('is_particular'):
                     # User asked a specific question
-                    return jsonify({
+                    print(f"[ROUTES] Returning particular_response")
+                    response_data = {
                         'type': 'particular_response',
                         'message': result.get('message'),
                         'answer': result.get('answer'),
+                        'insight': result.get('insight'),
+                        'data_summary': result.get('data_summary'),
+                        'visualization': result.get('visualization'),
+                        'plot_files': result.get('plot_files'),
+                        'assistant_messages': assistant_messages,
                         'status': 'success'
-                    })
+                    }
+                    print(f"[ROUTES] Response data keys: {list(response_data.keys())}")
+                    print(f"[ROUTES] assistant_messages in response: {len(response_data['assistant_messages'])}")
+                    return jsonify(response_data)
                 elif context.get('is_not_particular'):
                     # User wants general exploration
-                    return jsonify({
+                    print(f"[ROUTES] Returning exploration_response")
+                    response_data = {
                         'type': 'exploration_response',
                         'message': result.get('message'),
                         'insights': result.get('insights'),
+                        'insight': result.get('insight'),
+                        'data_summary': result.get('data_summary'),
+                        'visualization': result.get('visualization'),
+                        'plot_files': result.get('plot_files'),
+                        'assistant_messages': assistant_messages,
                         'status': 'success'
-                    })
+                    }
+                    print(f"[ROUTES] Response data keys: {list(response_data.keys())}")
+                    print(f"[ROUTES] assistant_messages in response: {len(response_data['assistant_messages'])}")
+                    return jsonify(response_data)
                 else:
                     # Generic agent response
+                    print(f"[ROUTES] Returning generic agent_response")
                     return jsonify({
                         'type': 'agent_response',
                         'result': result,
+                        'assistant_messages': assistant_messages,
                         'status': 'success'
                     })
                     
@@ -669,10 +956,7 @@ def chat():
         
         # Simplified action handling: only accept 'start', 'select_dataset',
         # and 'continue_conversation' from the client. Any unknown action is
-        # treated as empty and the UI will re-synchronize. We intentionally do
-        # not implement a separate 'phenomenon_selection' remapping — after a
-        # dataset is selected the conversation proceeds directly to the
-        # LLM-driven conversation loop.
+        # treated as empty and the UI will re-synchronize. 
         if action not in ('start', 'select_dataset', 'continue_conversation', ''):
             add_system_log(f"Received unknown action '{action}', treating as empty action", 'warning')
             action = ''
@@ -814,7 +1098,6 @@ def reset_conversation():
     global conversation_state
     conversation_state = {
         'step': 'start',
-        'phenomenon': None,
         'region_params': None,
         'animation_info': None
     }
@@ -918,31 +1201,6 @@ def get_system_logs():
         'logs': new_logs,
         'total_count': len(system_logs)
     })
-
-
-@api_bp.route('/evaluate_last_animation', methods=['POST'])
-def evaluate_last_animation():
-    """Run evaluation for the last animation stored in conversation_state on demand."""
-    global conversation_state
-    agent = get_agent()
-    if not agent:
-        return jsonify({'status': 'error', 'message': 'Agent not available'}), 500
-
-    animation_info = conversation_state.get('animation_info')
-    phenomenon = conversation_state.get('phenomenon')
-    region_params = conversation_state.get('region_params')
-
-    if not animation_info:
-        return jsonify({'status': 'error', 'message': 'No animation available to evaluate'}), 400
-
-    try:
-        add_system_log('Starting on-demand animation evaluation...', 'info')
-        evaluation = agent.evaluate_animation(animation_info, phenomenon or '', region_params or {})
-        add_system_log('On-demand evaluation completed', 'info')
-        return jsonify({'status': 'success', 'evaluation': evaluation})
-    except Exception as e:
-        add_system_log(f'On-demand evaluation failed: {e}', 'error')
-        return jsonify({'status': 'error', 'message': str(e)}), 500
 
 @api_bp.route('/system_logs', methods=['DELETE'])
 def clear_system_logs():

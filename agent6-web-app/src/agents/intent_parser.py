@@ -9,20 +9,19 @@ from typing import Dict, Any
 import json
 import os
 
-
-current_script_dir = os.path.dirname(os.path.abspath(__file__)) # Directory of this script
-# Path to current script directories parent
-src_path = os.path.abspath(os.path.join(current_script_dir, '..'))
-api_path = os.path.abspath(os.path.join(src_path, 'api'))
-routes_path = os.path.abspath(os.path.join(api_path, 'routes.py'))
-
-# Import add_system_log from the API routes module. Use a robust strategy so
-# this module can be imported in different working-directory / packaging
-# layouts without causing import-time failures or circular imports.
-
+# Import add_system_log - try direct import first, then fall back to dynamic
 try:
-        # Fallback: load the routes.py file by path and extract add_system_log
+    from src.api.routes import add_system_log
+except ImportError as e:
+    print(f"[intent_parser] Direct import failed: {e}. Trying dynamic import...")
+    # Fallback: dynamic import if running from different directory
+    try:
         import importlib.util
+        current_script_dir = os.path.dirname(os.path.abspath(__file__))
+        src_path = os.path.abspath(os.path.join(current_script_dir, '..'))
+        api_path = os.path.abspath(os.path.join(src_path, 'api'))
+        routes_path = os.path.abspath(os.path.join(api_path, 'routes.py'))
+        
         if os.path.exists(routes_path):
             spec = importlib.util.spec_from_file_location('src.api.routes', routes_path)
             mod = importlib.util.module_from_spec(spec)
@@ -30,13 +29,14 @@ try:
             add_system_log = getattr(mod, 'add_system_log', None)
         else:
             add_system_log = None
-except Exception:
-    add_system_log = None
+    except Exception as e2:
+        print(f"[intent_parser] Failed to import add_system_log: {e2}")
+        add_system_log = None
 
-    # Final fallback: define a lightweight logger to avoid runtime errors
+# Final fallback: define a lightweight logger to avoid runtime errors
 if add_system_log is None:
-        def add_system_log(msg, lt='info'):
-            print(f"[SYSTEM LOG] {msg}")
+    def add_system_log(msg, lt='info'):
+        print(f"[SYSTEM LOG - intent_parser] {msg}")
 
 
 

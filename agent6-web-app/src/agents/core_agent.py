@@ -27,32 +27,33 @@ from datetime import datetime
 
 
 current_script_dir = os.path.dirname(os.path.abspath(__file__)) # Directory of this script
-# Path to current script directories parent
-src_path = os.path.abspath(os.path.join(current_script_dir, '..'))
-api_path = os.path.abspath(os.path.join(src_path, 'api'))
-routes_path = os.path.abspath(os.path.join(api_path, 'routes.py'))
-
-# Import add_system_log from the API routes module. Use a robust strategy so
-# this module can be imported in different working-directory / packaging
-# layouts without causing import-time failures or circular imports.
-
+# Import add_system_log from the API routes module properly
+add_system_log = None
 try:
-        # Fallback: load the routes.py file by path and extract add_system_log
+    # Try direct import first (when running as part of Flask app)
+    from src.api.routes import add_system_log
+except ImportError:
+    try:
+        # Fallback: dynamic import for different execution contexts
         import importlib.util
+        current_script_dir = os.path.dirname(os.path.abspath(__file__))
+        src_path = os.path.abspath(os.path.join(current_script_dir, '..'))
+        api_path = os.path.abspath(os.path.join(src_path, 'api'))
+        routes_path = os.path.join(api_path, 'routes.py')
+        
         if os.path.exists(routes_path):
             spec = importlib.util.spec_from_file_location('src.api.routes', routes_path)
             mod = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(mod)  # type: ignore
+            spec.loader.exec_module(mod)
             add_system_log = getattr(mod, 'add_system_log', None)
-        else:
-            add_system_log = None
-except Exception:
-    add_system_log = None
+    except Exception as e:
+        print(f"[core_agent] Failed to import add_system_log: {e}")
+        add_system_log = None
 
-    # Final fallback: define a lightweight logger to avoid runtime errors
+# Fallback if all imports failed
 if add_system_log is None:
-        def add_system_log(msg, lt='info'):
-            print(f"[SYSTEM LOG] {msg}")
+    def add_system_log(msg, lt='info'):
+        print(f"[SYSTEM LOG] {msg}")
 
 
 # import renderInterface3
@@ -137,7 +138,8 @@ class AnimationAgent:
     def process_query_with_intent(
         self, 
         user_message: str, 
-        context: dict = None
+        context: dict = None,
+        progress_callback: callable = None
     ) -> dict:
         """
         Process query with intent classification first.
@@ -147,6 +149,7 @@ class AnimationAgent:
         Args:
             user_message: User's natural language query
             context: Optional context (dataset, current_animation, etc.)
+            progress_callback: Optional callback function(event_type, data) for real-time updates
             
         Returns:
             Result dictionary with intent and action taken
@@ -159,16 +162,20 @@ class AnimationAgent:
         print(f"[Agent] Intent: {intent_result['intent_type']} (confidence: {intent_result['confidence']:.2f})")
         print("full intent result:", intent_result)
         
+        # Report intent parsing progress
+        if progress_callback:
+            progress_callback('intent_parsed', intent_result)
+        
         # STEP 2: Route based on intent
         intent_type = intent_result['intent_type']
         
         if intent_type == 'PARTICULAR':
             # Specific question about the dataset
-            return self._handle_particular_exploration(user_message, intent_result, context)
+            return self._handle_particular_exploration(user_message, intent_result, context, progress_callback)
         
         elif intent_type == 'NOT_PARTICULAR':
             # General exploration - no specific question
-            return self._handle_general_exploration(user_message, intent_result, context)
+            return self._handle_general_exploration(user_message, intent_result, context, progress_callback)
 
         elif intent_type == 'UNRELATED':
             # Handle unrelated queries
@@ -253,7 +260,7 @@ class AnimationAgent:
                 return {'status': 'error', 'message': f'Dataset profiling failed: {e}'}
         # For all other queries, reuse the intent-based multi-agent flow so
         # callers don't need to call process_query_with_intent explicitly.
-        return self.process_query_with_intent(user_message, context)
+        return self.process_query_with_intent(user_message, context, context.get('progress_callback'))
     
     
     
@@ -635,26 +642,38 @@ Do not include any explanations or markdown formatting."""
 
        
     
-    def _handle_particular_exploration(self, query: str, intent_result: dict, context: dict) -> dict:
+    def _handle_particular_exploration(self, query: str, intent_result: dict, context: dict, progress_callback: callable = None) -> dict:
         """
         Handle PARTICULAR intent - user asked a specific question about the dataset.
 
         This stub returns a placeholder 'answer' and a short message. Replace
         with actual data-querying logic (or call to a dedicated QA/summarizer
-        agent) to provide real answers.
         """
+        print(f"[Agent] Handling PARTICULAR (specific inquiry) intent")
+        
+        # Report that we're starting insight extraction
+        if progress_callback:
+            progress_callback('insight_extraction_started', {'query': query})
+        
         insight_result = self.insight_extractor.extract_insights(
                     user_query=query,
                     intent_hints=intent_result,
-                    dataset=context.get('dataset')
+                    dataset=context.get('dataset'),
+                    progress_callback=progress_callback
                 )
 
         print(f"insight result: {insight_result}")
+        
+        # Report insight generation complete
+        if progress_callback:
+            progress_callback('insight_generated', insight_result)
                 
         if insight_result.get('status') == 'success':
             return {
                         'type': 'particular_insight',
                         'intent': intent_result,
+                        'intent_result': intent_result,  # Attach for routes.py
+                        'insight_result': insight_result,  # Attach full insight for routes.py
                         'insight': insight_result.get('insight'),
                         'data_summary': insight_result.get('data_summary', {}),
                         'visualization': insight_result.get('visualization', ''),
@@ -666,6 +685,8 @@ Do not include any explanations or markdown formatting."""
         else:
             return {
                         'type': 'error',
+                        'intent_result': intent_result,  # Attach even on error
+                        'insight_result': insight_result,  # Attach even on error
                         'message': insight_result.get('message', 'Failed to generate insight'),
                         'error': insight_result.get('error')
                     }
@@ -683,7 +704,7 @@ Do not include any explanations or markdown formatting."""
             'message': 'Ready to show example animation'
         }
     
-    def _handle_general_exploration(self, query: str, intent_result: dict, context: dict) -> dict:
+    def _handle_general_exploration(self, query: str, intent_result: dict, context: dict, progress_callback: callable = None) -> dict:
         """
         Handle NOT_PARTICULAR intent - user wants general exploration/insights.
         
@@ -691,18 +712,30 @@ Do not include any explanations or markdown formatting."""
         without a specific question.
         """
         print(f"[Agent] Handling NOT_PARTICULAR (general exploration) intent")
+        
+        # Report that we're starting insight extraction
+        if progress_callback:
+            progress_callback('insight_extraction_started', {'query': query})
+        
         insight_result = self.insight_extractor.extract_insights(
                     user_query=query,
                     intent_hints=intent_result,
-                    dataset=context.get('dataset')
+                    dataset=context.get('dataset'),
+                    progress_callback=progress_callback
                 )
 
         print(f"insight result: {insight_result}")
+        
+        # Report insight generation complete
+        if progress_callback:
+            progress_callback('insight_generated', insight_result)
                 
         if insight_result.get('status') == 'success':
             return {
                         'type': 'particular_insight',
                         'intent': intent_result,
+                        'intent_result': intent_result,  # Attach for routes.py
+                        'insight_result': insight_result,  # Attach full insight for routes.py
                         'insight': insight_result.get('insight'),
                         'data_summary': insight_result.get('data_summary', {}),
                         'visualization': insight_result.get('visualization', ''),
@@ -714,6 +747,8 @@ Do not include any explanations or markdown formatting."""
         else:
             return {
                         'type': 'error',
+                        'intent_result': intent_result,  # Attach even on error
+                        'insight_result': insight_result,  # Attach even on error
                         'message': insight_result.get('message', 'Failed to generate insight'),
                         'error': insight_result.get('error')
                     }

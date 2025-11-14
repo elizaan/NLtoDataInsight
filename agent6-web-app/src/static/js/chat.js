@@ -14,6 +14,10 @@ class ChatInterface {
         this.maxPanels = 4;
         this.nextPanelId = 1;
         
+        // Task polling management for real-time streaming
+        this.activePoll = null;
+        this.displayedMessageIds = new Set();  // Track which messages we've already displayed
+        
         // Pick up any pending state set by other scripts (e.g., main.js)
         if (window.pendingConversationState) {
             try {
@@ -342,8 +346,15 @@ class ChatInterface {
     }
 
     async sendApiMessage(message, action, extraData = {}) {
+        let thinkingId = null;
         try {
             this.updateStatus('Processing...', 'processing');
+            
+            // Add thinking indicator for queries that will take time
+            if (action === 'continue_conversation') {
+                thinkingId = 'thinking-' + Date.now();
+                this.addThinkingIndicator(thinkingId);
+            }
 
             const requestData = {
                 message: message,
@@ -362,6 +373,23 @@ class ChatInterface {
 
             const data = await response.json();
             console.log('Received response data:', data);
+            
+            // Check if this is a task-based response (for continue_conversation)
+            if (data.type === 'task_started' && data.task_id) {
+                console.log('🚀 Task started:', data.task_id);
+                // Remove initial thinking indicator, we'll show real-time updates now
+                if (thinkingId) {
+                    this.removeThinkingIndicator(thinkingId);
+                }
+                // Start polling for task updates
+                await this.pollTaskStatus(data.task_id);
+                return;
+            }
+            
+            // Remove thinking indicator for non-task responses
+            if (thinkingId) {
+                this.removeThinkingIndicator(thinkingId);
+            }
 
             if (data.status === 'error') {
                 this.addMessage(`Error: ${data.message}`, 'bot');
@@ -374,16 +402,170 @@ class ChatInterface {
 
         } catch (error) {
             console.error('Error:', error);
+            // Remove thinking indicator on error
+            if (thinkingId) {
+                this.removeThinkingIndicator(thinkingId);
+            }
             this.addMessage('Sorry, there was an error processing your request.', 'bot');
             this.updateStatus('Error', 'error');
         }
     }
+    
+    async pollTaskStatus(taskId) {
+        console.log('📊 Starting to poll task:', taskId);
+        let pollCount = 0;
+        const maxPolls = 1200;  // 10 minutes max (1200 * 500ms) - increased for long-running insight generation
+        
+        this.activePoll = setInterval(async () => {
+            pollCount++;
+            try {
+                const response = await fetch(`/api/chat/status/${taskId}`);
+                if (!response.ok) {
+                    console.error('Poll failed with status:', response.status);
+                    clearInterval(this.activePoll);
+                    this.addMessage('Error: Failed to get task status', 'bot');
+                    return;
+                }
+                
+                const status = await response.json();
+                console.log(`📡 Poll #${pollCount}:`, status.status, `- ${status.messages.length} messages`);
+                
+                // Process new messages
+                if (status.messages && status.messages.length > 0) {
+                    status.messages.forEach(msg => {
+                        const msgId = `${taskId}-${msg.timestamp}`;
+                        if (!this.displayedMessageIds.has(msgId)) {
+                            this.handleProgressMessage(msg);
+                            this.displayedMessageIds.add(msgId);
+                        }
+                    });
+                }
+                
+                // Check if task is completed
+                if (status.status === 'completed') {
+                    console.log('✅ Task completed!', status.result);
+                    clearInterval(this.activePoll);
+                    this.activePoll = null;
+                    
+                    // Handle final result
+                    if (status.result) {
+                        this.handleApiResponse(status.result);
+                    }
+                    this.updateStatus('Ready', 'success');
+                    
+                } else if (status.status === 'error') {
+                    console.error('❌ Task failed:', status.error);
+                    clearInterval(this.activePoll);
+                    this.activePoll = null;
+                    this.addMessage(`Error: ${status.error}`, 'bot');
+                    this.updateStatus('Error', 'error');
+                }
+                
+                // NO TIMEOUT - removed to allow unlimited processing time for complex queries
+                
+            } catch (error) {
+                console.error('Poll error:', error);
+                clearInterval(this.activePoll);
+                this.activePoll = null;
+                this.addMessage('Error polling for updates', 'bot');
+            }
+        }, 500);  // Poll every 500ms
+    }
+    
+    handleProgressMessage(msg) {
+        console.log('📬 Processing progress message:', msg.type);
+        
+        switch (msg.type) {
+            case 'intent_parsed':
+                // Intent goes to chat for user visibility
+                this.addMessage('🔍 Intent Analysis:', 'bot');
+                const intentStr = JSON.stringify(msg.data, null, 2);
+                this.addMessage(intentStr, 'bot');
+                break;
+                
+            case 'insight_extraction_started':
+                // Show in chat that insight generation started
+                this.addMessage('💡 Generating Insight...', 'bot');
+                break;
+                
+            case 'iteration_update':
+            case 'llm_response':
+            case 'query_execution':
+            case 'query_failed':
+                // These are system-level logs, already in system logs panel
+                // No need to show in chat
+                break;
+                
+            case 'insight_generated':
+                // Only show actual insight in chat
+                if (msg.data && msg.data.insight) {
+                    this.addMessage(msg.data.insight, 'bot');
+                }
+                if (msg.data && msg.data.data_summary) {
+                    this.addMessage('📊 Data Summary:', 'bot');
+                    const summaryStr = typeof msg.data.data_summary === 'string' 
+                        ? msg.data.data_summary 
+                        : JSON.stringify(msg.data.data_summary, null, 2);
+                    this.addMessage(summaryStr, 'bot');
+                }
+                break;
+                
+            default:
+                console.log('Unknown progress message type:', msg.type);
+        }
+    }
 
     handleApiResponse(data) {
-        console.log('Handling API response:', data);
+        console.log('====================================');
+        console.log('HANDLING API RESPONSE');
         console.log('Response type:', data.type);
+        console.log('Response keys:', Object.keys(data));
+        console.log('Has assistant_messages:', 'assistant_messages' in data);
+        if (data.assistant_messages) {
+            console.log('assistant_messages length:', data.assistant_messages.length);
+            console.log('assistant_messages:', JSON.stringify(data.assistant_messages, null, 2));
+        }
+        console.log('====================================');
 
         try {
+            // Display LLM agent outputs (intent parsing, insight generation) in chat
+            if (data.assistant_messages && Array.isArray(data.assistant_messages)) {
+                console.log('🔥 Processing assistant_messages:', data.assistant_messages.length);
+                data.assistant_messages.forEach((msg, index) => {
+                    console.log(`🔥 Processing message ${index + 1}:`, msg.type);
+                    if (msg.type === 'intent_parsing' && msg.data) {
+                        // Show intent parsing output as formatted JSON
+                        console.log('🔍 Adding intent parsing message');
+                        this.addMessage('🔍 Intent Analysis:', 'bot');
+                        const intentStr = JSON.stringify(msg.data, null, 2);
+                        this.addMessage(intentStr, 'bot');
+                        console.log('✅ Intent message added');
+                    } else if (msg.type === 'insight_generation' && msg.data) {
+                        // Show insight generation output
+                        console.log('💡 Adding insight generation message');
+                        this.addMessage('💡 Generating Insight...', 'bot');
+                        if (msg.data.insight) {
+                            console.log('Adding insight text:', msg.data.insight.substring(0, 50));
+                            this.addMessage(msg.data.insight, 'bot');
+                        }
+                        if (msg.data.data_summary) {
+                            console.log('Adding data summary');
+                            this.addMessage('📊 Data Summary:', 'bot');
+                            const summaryStr = typeof msg.data.data_summary === 'string' 
+                                ? msg.data.data_summary 
+                                : JSON.stringify(msg.data.data_summary, null, 2);
+                            this.addMessage(summaryStr, 'bot');
+                        }
+                        console.log('✅ Insight messages added');
+                    } else {
+                        console.warn('⚠️ Unknown assistant message type:', msg.type);
+                    }
+                });
+                console.log('✅ All assistant_messages processed');
+            } else {
+                console.log('⚠️ No assistant_messages in response or not an array');
+            }
+            
             switch (data.type) {
                 case 'dataset_selection':
                     // Show the exact same options as run_conversation
@@ -432,6 +614,16 @@ class ChatInterface {
                     console.log('Processing particular_response (specific question)');
                     if (data.message) this.addMessage(data.message, 'bot');
                     if (data.answer) this.addMessage(data.answer, 'bot');
+                    if (data.insight) this.addMessage(data.insight, 'bot');
+                    if (data.data_summary) {
+                        const summaryStr = typeof data.data_summary === 'string' 
+                            ? data.data_summary 
+                            : JSON.stringify(data.data_summary, null, 2);
+                        this.addMessage('📊 ' + summaryStr, 'bot');
+                    }
+                    if (data.plot_files && data.plot_files.length > 0) {
+                        this.addMessage(`📈 Generated ${data.plot_files.length} plot(s)`, 'bot');
+                    }
                     this.updateStatus('Answer Provided', 'success');
                     break;
 
@@ -447,6 +639,16 @@ class ChatInterface {
                         } else {
                             this.addMessage(JSON.stringify(data.insights, null, 2), 'bot');
                         }
+                    }
+                    if (data.insight) this.addMessage(data.insight, 'bot');
+                    if (data.data_summary) {
+                        const summaryStr = typeof data.data_summary === 'string' 
+                            ? data.data_summary 
+                            : JSON.stringify(data.data_summary, null, 2);
+                        this.addMessage('📊 ' + summaryStr, 'bot');
+                    }
+                    if (data.plot_files && data.plot_files.length > 0) {
+                        this.addMessage(`📈 Generated ${data.plot_files.length} plot(s)`, 'bot');
                     }
                     this.updateStatus('Insights Ready', 'success');
                     break;
@@ -1312,6 +1514,54 @@ class ChatInterface {
             }
 
             throw error; // Re-throw so the caller knows it failed
+        }
+    }
+
+    addThinkingIndicator(id) {
+        const messageDiv = document.createElement('div');
+        messageDiv.className = 'message bot-message';
+        messageDiv.id = id;
+        
+        messageDiv.innerHTML = `
+            <div class="message-avatar"><i class="fas fa-robot"></i></div>
+            <div class="message-content">
+                <p><span class="thinking-dots">🤔 Analyzing your request<span class="dot">.</span><span class="dot">.</span><span class="dot">.</span></span></p>
+            </div>
+        `;
+        
+        this.chatMessages.appendChild(messageDiv);
+        this.scrollToBottom();
+        
+        // Add CSS animation for dots
+        if (!document.getElementById('thinking-animation-style')) {
+            const style = document.createElement('style');
+            style.id = 'thinking-animation-style';
+            style.textContent = `
+                .thinking-dots .dot {
+                    animation: blink 1.4s infinite;
+                }
+                .thinking-dots .dot:nth-child(2) {
+                    animation-delay: 0.2s;
+                }
+                .thinking-dots .dot:nth-child(3) {
+                    animation-delay: 0.4s;
+                }
+                @keyframes blink {
+                    0%, 20% { opacity: 0.2; }
+                    50% { opacity: 1; }
+                    100% { opacity: 0.2; }
+                }
+            `;
+            document.head.appendChild(style);
+        }
+        
+        return id;
+    }
+
+    removeThinkingIndicator(id) {
+        const element = document.getElementById(id);
+        if (element) {
+            element.remove();
         }
     }
 

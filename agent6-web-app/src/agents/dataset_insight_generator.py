@@ -13,24 +13,30 @@ import subprocess
 from pathlib import Path
 from datetime import datetime
 
-# [Keep your logging imports - same as before]
+# Import system log function properly
+add_system_log = None
 try:
-    import importlib.util
-    current_script_dir = os.path.dirname(os.path.abspath(__file__))
-    src_path = os.path.abspath(os.path.join(current_script_dir, '..'))
-    api_path = os.path.abspath(os.path.join(src_path, 'api'))
-    routes_path = os.path.abspath(os.path.join(api_path, 'routes.py'))
-    
-    if os.path.exists(routes_path):
-        spec = importlib.util.spec_from_file_location('src.api.routes', routes_path)
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        add_system_log = getattr(mod, 'add_system_log', None)
-    else:
+    # Try direct import first (when running as part of Flask app)
+    from src.api.routes import add_system_log
+except ImportError:
+    try:
+        # Fallback: dynamic import for different execution contexts
+        import importlib.util
+        current_script_dir = os.path.dirname(os.path.abspath(__file__))
+        src_path = os.path.abspath(os.path.join(current_script_dir, '..'))
+        api_path = os.path.abspath(os.path.join(src_path, 'api'))
+        routes_path = os.path.join(api_path, 'routes.py')
+        
+        if os.path.exists(routes_path):
+            spec = importlib.util.spec_from_file_location('src.api.routes', routes_path)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            add_system_log = getattr(mod, 'add_system_log', None)
+    except Exception as e:
+        print(f"[dataset_insight_generator] Failed to import add_system_log: {e}")
         add_system_log = None
-except Exception:
-    add_system_log = None
 
+# Fallback if all imports failed
 if add_system_log is None:
     def add_system_log(msg, lt='info'):
         print(f"[SYSTEM LOG] {msg}")
@@ -156,7 +162,8 @@ class DatasetInsightGenerator:
         user_query: str,
         intent_result: Dict[str, Any],
         dataset_info: Dict[str, Any],
-        conversation_context: str = None
+        conversation_context: str = None,
+        progress_callback: callable = None
     ) -> Dict[str, Any]:
         """
         LLM-driven insight generation - LLM decides everything
@@ -483,7 +490,7 @@ def xy_to_latlon(x_range, y_range):
 ```
 
 **WORKFLOW for Location Queries:**
-1. User mentions location name (e.g., "Agulhas Current")
+1. User mentions location name (e.g., "Australia")
 2. You recognize it and recall approximate lat/lon bounds from your knowledge
 3. Optionally check dataset bounds with get_dataset_bounds() to verify coverage
 4. Use latlon_to_xy() helper to convert to x/y indices
@@ -518,7 +525,7 @@ You MUST calculate timestep indices from dates:
 
 **Examples of Temporal Mapping:**
 
-Example 1: User asks "show me January 2020"
+Example 1: User asks "show me .... for January 2020"
 - Dataset starts: 2020-01-20
 - User wants: 2020-01-01 to 2020-01-31
 - Calculate:
@@ -837,13 +844,32 @@ Common issues:
         max_total_iterations = 20
         
         for iteration in range(max_total_iterations):
-            add_system_log(f"=== Iteration {iteration + 1}/{max_total_iterations} (Phase: {current_phase}) ===", "info")
+            log_msg = f"=== Iteration {iteration + 1}/{max_total_iterations} (Phase: {current_phase}) ==="
+            add_system_log(log_msg, "info")
+            
+            # Report progress to UI with detailed message
+            if progress_callback:
+                progress_callback('iteration_update', {
+                    'iteration': iteration + 1,
+                    'max_iterations': max_total_iterations,
+                    'phase': current_phase,
+                    'message': log_msg
+                })
             
             try:
                 response = self.llm.invoke(self.conversation_history)
                 assistant_message = response.content
                 
-                add_system_log(f"LLM response: {len(assistant_message)} chars", "info")
+                llm_log_msg = f"LLM response: {len(assistant_message)} chars"
+                add_system_log(llm_log_msg, "info")
+                
+                # Report LLM response to UI with detailed message
+                if progress_callback:
+                    progress_callback('llm_response', {
+                        'length': len(assistant_message),
+                        'phase': current_phase,
+                        'message': llm_log_msg
+                    })
                 
                 self.conversation_history.append({
                     "role": "assistant",
@@ -867,7 +893,16 @@ Common issues:
                         code = code[:-3]
                     code = code.strip()
                     
-                    add_system_log(f"Executing query code (attempt {query_attempts}/{max_query_attempts})", "info")
+                    query_log_msg = f"Executing query code (attempt {query_attempts}/{max_query_attempts})"
+                    add_system_log(query_log_msg, "info")
+                    
+                    # Report query execution to UI
+                    if progress_callback:
+                        progress_callback('query_execution', {
+                            'attempt': query_attempts,
+                            'max_attempts': max_query_attempts,
+                            'message': query_log_msg
+                        })
                     
                     # Execute query code
                     execution_result = self.executor.execute_code(code, str(query_code_file))
@@ -921,17 +956,25 @@ Common issues:
                                 }
 
                             add_system_log(f"✗ Query failed (attempt {query_attempts}/{max_query_attempts})", "warning")
+                            
+                            # Report query failure to UI
+                            if progress_callback:
+                                progress_callback('query_failed', {
+                                    'attempt': query_attempts,
+                                    'max_attempts': max_query_attempts,
+                                    'error': error_msg[:200]  # First 200 chars of error
+                                })
 
-                            # Build targeted hint when known patterns appear
-                            targeted_hint = ""
-                            if "createBoxQuery" in error_msg or "Wrong number or type of arguments" in error_msg:
-                                targeted_hint = (
-                                    "Hint: The OpenVisus C++ binding often expects scalar integer `time` parameters and clear index ranges for spatial axes.\n"
-                                    "Avoid passing zero-length ranges like `z_range = [0, 0]` (many bindings require start < end). For surface-level reads prefer `z_range = [0, 1]` or explicitly iterate a single index.\n"
-                                    "Also avoid passing Python lists where a single integer is expected for `time`. Either iterate timesteps (call `ds.db.read(time=t, ...)` per integer t)\n"
-                                    "or use the dataset's `getTimesteps()` to discover available timesteps. Example patterns:\n"
-                                    "````python\n# Pattern A: per-timestep read (safe)\nlength = len(ds.db.getTimesteps())\nfor t in range(start, end+1):\n    # For surface-level read use z_range = [0, 1] (start < end) or pass a single index if the API supports it\n    z_range = [0, 1]\n    data = ds.db.read(time=t, x=x_range, y=y_range, z=z_range, quality=-6)\n\n# Pattern B: explicit single-slice read (if API accepts single index)\nfor t in range(start, end+1):\n    data = ds.db.read(time=t, x=x_range, y=y_range, z=0, quality=-6)\n````\n"
-                                )
+                            # # Build targeted hint when known patterns appear
+                            # targeted_hint = ""
+                            # if "createBoxQuery" in error_msg or "Wrong number or type of arguments" in error_msg:
+                            #     targeted_hint = (
+                            #         "Hint: The OpenVisus C++ binding often expects scalar integer `time` parameters and clear index ranges for spatial axes.\n"
+                            #         "Avoid passing zero-length ranges like `z_range = [0, 0]` (many bindings require start < end). For surface-level reads prefer `z_range = [0, 1]` or explicitly iterate a single index.\n"
+                            #         "Also avoid passing Python lists where a single integer is expected for `time`. Either iterate timesteps (call `ds.db.read(time=t, ...)` per integer t)\n"
+                            #         "or use the dataset's `getTimesteps()` to discover available timesteps. Example patterns:\n"
+                            #         "````python\n# Pattern A: per-timestep read (safe)\nlength = len(ds.db.getTimesteps())\nfor t in range(start, end+1):\n    # For surface-level read use z_range = [0, 1] (start < end) or pass a single index if the API supports it\n    z_range = [0, 1]\n    data = ds.db.read(time=t, x=x_range, y=y_range, z=z_range, quality=-6)\n\n# Pattern B: explicit single-slice read (if API accepts single index)\nfor t in range(start, end+1):\n    data = ds.db.read(time=t, x=x_range, y=y_range, z=0, quality=-6)\n````\n"
+                            #     )
 
                             # Include the last attempted query code for debugging
                             last_code_snippet = code if len(code) < 2000 else code[:1900] + "\n... (truncated)"
@@ -940,9 +983,6 @@ Common issues:
 
 ERROR/NOTE:
 {error_msg}
-
-TARGETED HINTS:
-{targeted_hint}
 
 LAST QUERY CODE (for reference):
 {last_code_snippet}
@@ -967,7 +1007,7 @@ Write your corrected query code in <query_code></query_code> tags.
                             query_success = True
                             current_phase = "plot"
                             add_system_log("✓ Query code succeeded! Moving to plot phase.", "success")
-                            feedback = f"""✅ QUERY CODE SUCCEEDED!
+                            feedback = f""" QUERY CODE SUCCEEDED!
 
 OUTPUT:
 {stdout}
@@ -1012,16 +1052,16 @@ Write your intelligent plot code in <plot_code></plot_code> tags.
                             is_timeout = False
 
                         if is_timeout:
-                            add_system_log(f"✗ Query timed out after allowed runtime (500s). Aborting query and asking LLM for smaller alternatives.", "warning")
+                            add_system_log(f"Query timed out after allowed runtime (500s). Aborting query and asking LLM for smaller alternatives.", "warning")
 
                             # Ask LLM to produce intelligent smaller-subset suggestions and a short insight message
                             prompt = {
                                 "role": "user",
                                 "content": (
-                                    "The data extraction script you generated timed out after 5 minutes while attempting the user's request.\n"
+                                    "The data extraction script you generated timed out after 8 minutes while attempting the user's request.\n"
                                     f"User query: {user_query}\n"
                                     f"Dataset: {dataset_name} (timesteps={total_timesteps}, time_units={time_units})\n"
-                                    "Please propose 4 concrete, actionable smaller queries the user can ask that are likely to complete quickly.\n"
+                                    "Please propose 2 concrete, actionable smaller queries the user can ask that are likely to complete quickly than 8 min.\n"
                                     "For EACH suggestion provide: id, short_description, why_it_helps, estimated_cost ('low'|'medium'|'high'), and a one-line code hint or parameter change.\n"
                                     "Return ONLY valid JSON with keys: 'message' (short user-facing string) and 'suggestions' (an array of suggestion objects).\n"
                                     "Example suggestion object:\n"
@@ -1067,7 +1107,7 @@ Write your intelligent plot code in <plot_code></plot_code> tags.
                                 f.write(insight_msg + "\n\nSuggestions:\n")
                                 f.write(json.dumps(suggestions_json, indent=2) if suggestions_json else suggestion_text)
 
-                            add_system_log("✓ Timeout insight saved and suggestions generated", "info")
+                            add_system_log("Timeout insight saved and suggestions generated", "info")
 
                             # Return a final structured result indicating timeout and suggestions
                             return {
@@ -1092,7 +1132,7 @@ Write your intelligent plot code in <plot_code></plot_code> tags.
                         
                         # Detect empty code error and provide specific feedback
                         if "Empty code" in error_msg or "empty response" in error_msg.lower():
-                            feedback = f"""❌ QUERY CODE FAILED - EMPTY CODE RETURNED (Attempt {query_attempts}/{max_query_attempts})
+                            feedback = f"""QUERY CODE FAILED - EMPTY CODE RETURNED (Attempt {query_attempts}/{max_query_attempts})
 
 **PROBLEM:** You returned an empty <query_code></query_code> block or the code extraction failed.
 
@@ -1117,7 +1157,7 @@ print(json.dumps({{"status": "success", "message": "..."}}))
 Write your COMPLETE query code (with actual logic, not empty) in <query_code></query_code> tags NOW.
 """
                         else:
-                            feedback = f"""❌ QUERY CODE FAILED (Attempt {query_attempts}/{max_query_attempts})
+                            feedback = f"""QUERY CODE FAILED (Attempt {query_attempts}/{max_query_attempts})
 
 ERROR:
 {error_msg}
@@ -1168,9 +1208,9 @@ Write your corrected query code in <query_code></query_code> tags.
                         # Find generated plots
                         plot_files = sorted(list(dirs['plots'].glob(f"plot_*_{timestamp}.png")))
                         
-                        add_system_log(f"✓ Plot code succeeded! Found {len(plot_files)} plots.", "success")
+                        add_system_log(f"Plot code succeeded! Found {len(plot_files)} plots.", "success")
                         
-                        feedback = f"""✅ PLOT CODE SUCCEEDED!
+                        feedback = f"""PLOT CODE SUCCEEDED!
 
 OUTPUT:
 {execution_result['stdout']}
@@ -1198,9 +1238,9 @@ Generated {len(plot_files)} plots:
                         error_msg = execution_result['stderr']
                         
                         if plot_attempts >= max_plot_attempts:
-                            add_system_log(f"✗ Plot failed after {max_plot_attempts} attempts", "error")
+                            add_system_log(f"Plot failed after {max_plot_attempts} attempts", "error")
                             current_phase = "finalize"
-                            feedback = """⚠ Plot code failed multiple times. 
+                            feedback = """Plot code failed multiple times. 
 
 Proceed to write:
 1. Insight based on query results in <insight></insight>
@@ -1215,7 +1255,7 @@ Proceed to write:
                             
                             # Detect empty code error and provide specific feedback
                             if "Empty code" in error_msg or "empty response" in error_msg.lower():
-                                feedback = f"""❌ PLOT CODE FAILED - EMPTY CODE RETURNED (Attempt {plot_attempts}/{max_plot_attempts})
+                                feedback = f"""PLOT CODE FAILED - EMPTY CODE RETURNED (Attempt {plot_attempts}/{max_plot_attempts})
 
 **PROBLEM:** You returned an empty <plot_code></plot_code> block or the code extraction failed.
 
@@ -1241,7 +1281,7 @@ plt.close()
 Write your COMPLETE plot code (with actual logic, not empty) in <plot_code></plot_code> tags NOW.
 """
                             else:
-                                feedback = f"""❌ PLOT CODE FAILED (Attempt {plot_attempts}/{max_plot_attempts})
+                                feedback = f"""PLOT CODE FAILED (Attempt {plot_attempts}/{max_plot_attempts})
 
 ERROR:
 {error_msg}
@@ -1268,7 +1308,7 @@ Write corrected plot code in <plot_code></plot_code> tags.
                     with open(insight_file, 'w') as f:
                         f.write(insight_text)
                     
-                    add_system_log(f"✓ Insight saved", "success")
+                    add_system_log(f"Insight saved", "success")
                     
                     self.conversation_history.append({
                         "role": "user",
@@ -1291,7 +1331,7 @@ Write corrected plot code in <plot_code></plot_code> tags.
                     
                     try:
                         final_answer = json.loads(answer_text)
-                        add_system_log("✓ Final answer parsed successfully!", "success")
+                        add_system_log("Final answer parsed successfully!", "success")
                         break
                     except json.JSONDecodeError as e:
                         add_system_log(f"JSON parse error: {str(e)}", "error")
@@ -1338,7 +1378,7 @@ Write corrected plot code in <plot_code></plot_code> tags.
             })
             
             add_system_log(
-                f"✓ COMPLETE! Query: {query_attempts} attempts, Plots: {len(plot_files)} generated",
+                f"COMPLETE! Query: {query_attempts} attempts, Plots: {len(plot_files)} generated",
                 "success"
             )
             

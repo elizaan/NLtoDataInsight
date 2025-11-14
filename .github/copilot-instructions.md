@@ -1,40 +1,76 @@
-This repository implements a web front-end for the Agent.py animation/CLI tool and a set of AI-powered "agents" that translate natural-language requests into animation generation parameters.
+## Purpose
+Short, actionable guidance to help an AI coding agent become productive in this repository.
 
-Keep guidance short and focused: where to look, how to run, and the project-specific patterns an automated coding agent should follow.
+This file documents the project architecture, developer workflows, important files, integration points, and explicit conventions discovered by reading the codebase.
 
-Quick orientation
-- The web app entrypoint (Flask) is `agent6-web-app/src/app.py` (factory `create_app()`); API blueprints live under `agent6-web-app/src/api/` and are mounted at `/api`.
-- The core conversational/AI code lives in `agent6-web-app/src/models/Agent.py` and in the `agent6-web-app/src/agents/` helpers (e.g. `core_agent.py`, `tools.py`).
-- Rendering and animation generation logic is in Agent.py-based modules: look for `find_existing_animation()` and `generate_animation()` implementations in `src/models/Agent.py` (these drive caching vs. generation flows).
+## High-level architecture (big picture)
+- Web UI (chat-like interface): `agent6-web-app/src/templates/index.html` + `static/js/chat.js`.
+- Backend API: Flask app at `agent6-web-app/src/app.py` which registers `src/api/routes.py` under `/api`.
+- Orchestration / AI: `AnimationAgent` in `agent6-web-app/src/agents/core_agent.py` (uses LangChain and ChatOpenAI).
+- Rendering / animation pipeline: Python-based rendering scripts under `python/` and rendering support called via `superbuild.sh`.
+- Data layer: dataset JSONs and geographic metadata under `agent6-web-app/src/datasets/` (e.g. `llc2160_latlon.nc`).
 
-Running & tests (developer workflows)
-- Development server (from repo root):
-  - Create venv, install deps: `python3 -m venv venv && source venv/bin/activate && pip install -r requirements.txt`
-  - Install rendering/backend tools (heavy): `./superbuild.sh` (may touch system deps; avoid running inside CI without sandboxing).
-  - Run the web app: `cd agent6-web-app && python src/app.py` — app listens on port 5000 by default.
-- OpenAI keys: the code checks `OPENAI_API_KEY` env var or reads `openai_api_key.txt` inside agent folders. DO NOT commit API keys — `openai_api_key.txt` is ignored in `.gitignore`.
-- End-to-end tests require `OPENAI_API_KEY` set. See `agent6-web-app/src/tests/README_E2E_TEST.md` and `src/tests/test_workflow_e2e.py`.
+## Key developer workflows and commands
+- Create virtualenv and install deps (from repo root):
+  - `python3 -m venv venv` then `source venv/bin/activate`
+  - `pip install -r requirements.txt`
+- Rendering backend (required for full end-to-end):
+  - `./superbuild.sh` (project-provided build/install helper used by README)
+- Run development server (from repo root):
+  - `python agent6-web-app/src/app.py`  OR `cd agent6-web-app && python src/app.py`
+  - Flask dev server listens on 0.0.0.0:5000 by default (see `create_app()` in `app.py`).
 
-Project-specific patterns and conventions
-- Animation folder naming & frames: generated animations are stored under `animation_*/Rendered_frames/` with frame names like `img_kf{X}f{Y}.png`. Many discovery algorithms check both `img_kf{n}f{n}.png` and `img_kf{n}f{n+1}.png`.
-- Discovery strategies: the frontend can bulk-load existing animations (fast) or poll for frames during real-time generation. See `agent6-web-app/README.md` sections "Discovery Algorithms" and the front-end `src/static/js/chat.js` for client-side logic.
-- Agent wrappers: prefer using `agent6-web-app/src/agents/tools.py` thin wrappers (`generate_animation_from_params`, `find_existing_animation`) instead of instantiating low-level rendering logic directly — wrappers maintain expected input/output dict formats.
-- OpenAI usage: LLM clients are created in `agent6-web-app/src/models/Agent.py` and `src/models/auto_learning_system.py` (uses `openai.OpenAI` or `langchain_openai.ChatOpenAI`). Tests and agents expect either an env var `OPENAI_API_KEY` or an API key file path configured via `API_KEY_FILE`/`OPENAI_API_KEY`.
+## Environment variables and secrets
+- The agent requires an OpenAI API key. The code looks for the key in this priority order:
+  1. `agent6-web-app/ai_data/openai_api_key.txt` (default) – a plain text file containing the key
+  2. `OPENAI_API_KEY` environment variable
+  3. `API_KEY_FILE` environment variable to override the API key file path
+- Other configurable envs: `AI_DIR` (to override `ai_data` location).
 
-Integration & caution notes for AI editing
-- Heavy operations: rendering and `./superbuild.sh` are resource-heavy and platform-specific — do not run or modify them in PRs unless explicitly requested by maintainer and documented.
-- Non-trivial changes that affect animation pipelines must preserve backward compatibility of the `region_params` dict shape (keys: `x_range`, `y_range`, `z_range`, `t_list`, `quality`, `flip_axis`, `transpose`, `render_mode`, `needs_velocity`, `field`). Tests and front-end rely on these keys.
-- When changing API routes, keep the existing blueprint mounts (`/api`, `/api/v1`) and compatibility redirects in `agent6-web-app/src/app.py` so external tools and bookmarks still work.
+If the agent fails to initialize, check the above files/vars and server logs in `/system_logs` route.
 
-Files to reference for concrete examples
-- `agent6-web-app/src/models/Agent.py` — OpenAI client init, `find_existing_animation`, `generate_animation` flows.
-- `agent6-web-app/src/agents/tools.py` — canonical wrappers for external use.
-- `agent6-web-app/src/app.py` — Flask app factory and URL mounts.
-- `agent6-web-app/README.md` — architecture, discovery strategies, and helpful run notes.
-- `agent6-web-app/src/tests/README_E2E_TEST.md` and `src/tests/test_workflow_e2e.py` — how tests expect API keys and end-to-end behavior.
+## Important files and where to look for behavior
+- `agent6-web-app/src/app.py` — Flask app factory and top-level routes.
+- `agent6-web-app/src/api/routes.py` — main API endpoints and the glue that calls the agent.
+  - Endpoints to know: `/api/datasets` (GET), `/api/describe_dataset` (POST),
+    `/api/upload_dataset_metadata` (POST), `/api/chat` (POST), `/api/datasets/<id>/summarize` (POST).
+  - Global state: `conversation_state`, `system_logs` are module-level dict/list objects (not user-scoped).
+- `agent6-web-app/src/agents/core_agent.py` — `AnimationAgent` class: LLM setup, `process_query`, intent-routing, and Dataset Profiler/Summarizer agents.
+- `agent6-web-app/src/agents/tools.py` — LangChain tool wrappers and utilities. Provides `set_agent()` / `get_agent()` used by tools.
+- `agent6-web-app/ai_data/` — runtime data store; default location for keys, conversation history, caches, and vectors.
+- `python/` — rendering and plotting scripts used by the animation pipeline.
 
-When in doubt
-- Search for `find_existing_animation` / `generate_animation` to find call sites and expected metadata shapes.
-- Preserve secrecy: never add credentials or API keys to commits; prefer environment variables and documented test helpers.
+## Patterns & conventions an AI should follow when editing code
+- Dynamic imports & multi-layout support: `get_agent()` in `routes.py` attempts several import strategies (package import, alternative package name, file-path import). When changing imports, preserve these fallbacks or update initialization logic consistently.
+- Single global agent instance: the runtime uses a single `AnimationAgent` instance (module-level `animation_agent_instance`) and LangChain tools rely on `set_agent()` to register it. Do not create additional independent agent instances unless intentionally changing the architecture.
+- Tool contract: Tools in `src/agents/tools.py` expect a registered agent (via `set_agent(agent)`) and should call `get_agent()` to access behavior/state. Tool wrappers should be thin and avoid side-effectful initialization.
+- Conversation & intent flow: `routes.py` builds a `context` object and passes it to `agent.process_query(...)`. The agent may set intent flags in the same `context` (e.g., `is_exit`, `is_particular`, `is_help`, `is_unrelated`) — callers (including tests) rely on these flags.
+- Persistence & caching: `find_existing_animation()` and related functions standardize folder names from parameters; matching is done by deterministic parameter-to-path rules. Reuse existing animation if returned to avoid re-rendering.
 
-If any section is unclear or you'd like more examples (e.g., exact `region_params` samples from code), ask and I'll extend this file with concise, discoverable snippets.
+## API shapes & small examples (useful when writing integration code/tests)
+- /api/chat (POST)
+  - Body example: `{ "message": "Show Agulhas Ring Current temperature", "action": "continue_conversation" }`
+  - Returns JSON with `type` and `status`. The API consults `agent.process_query()` and inspects intent flags placed into the `context`.
+- /api/datasets (GET)
+  - Returns `{ "datasets": [...], "status": "success" }` reading JSON files from `src/datasets/`.
+- /api/describe_dataset (POST)
+  - Accepts `{ "sources": ["http..."], "metadata": {...} }`, registers a lightweight dataset ID in `conversation_state` and triggers an optional profiling call to the agent.
+
+## Integration points & external dependencies
+- OpenAI (via langchain_openai.ChatOpenAI) — API key required.
+- OpenVisus (`OpenVisus` import inside `src/agents/tools.py`) — used for reading dataset blocks and generating raw data for rendering.
+- Rasterio, xarray, numpy — used for geographic conversions and mask generation (`GeographicConverter` in `tools.py`).
+- Rendering backend (native build via `superbuild.sh`) — required for offline rendering tasks invoked by the animation pipeline.
+
+## Quick troubleshooting checklist for an AI agent to suggest/fix
+1. If `/api/chat` returns 'Agent not available', confirm `agent6-web-app/ai_data/openai_api_key.txt` or `OPENAI_API_KEY` is present and readable.
+2. If import errors for `src.agents.core_agent` appear, recommend running the app from repository root or ensure `PYTHONPATH` includes repo root; preserve the dynamic import fallbacks in `get_agent()`.
+3. If multiple concurrent users see state bleed, surface that `conversation_state` and `system_logs` are global and propose per-session scoping as an improvement.
+
+## Notes for code edits by AI agents
+- Prefer minimal, localized changes when editing: update imports or API shapes together with tests and startup docs.
+- When editing initialization (agent or rendering), update `README.md` and `agent6-web-app/README.md` to keep dev-run instructions in sync.
+- Avoid committing API keys. The project already expects keys to live in `ai_data/openai_api_key.txt` which is ignored by VCS.
+
+---
+If anything here is unclear or you'd like additional examples (unit test skeletons, sample /api/chat integration test, or a short diagram of the data flow), tell me which area to expand and I will iterate.
