@@ -42,72 +42,24 @@ if add_system_log is None:
         print(f"[SYSTEM LOG] {msg}")
 
 
-class CodeExecutor:
-    """Executes Python code safely"""
-    
-    def __init__(self, work_dir: str = None):
-        self.work_dir = work_dir or tempfile.mkdtemp(prefix="insight_temp_")
-        os.makedirs(self.work_dir, exist_ok=True)
-    
-    def execute_code(self, code: str, code_path: str) -> Dict[str, Any]:
-        """Execute Python code from a file path"""
-        os.makedirs(os.path.dirname(code_path), exist_ok=True)
-        
-        # Basic validation: ensure we actually received code to write
-        if not code or not code.strip():
-            # Still write an empty file for debug, but return an error so caller doesn't try to execute it
-            with open(code_path, "w") as f:
-                f.write(code or "")
-            add_system_log(f"Saved EMPTY code to: {code_path} (LLM returned empty response)", "warning")
-            return {
-                "success": False,
-                "error": "Empty code received from LLM",
-                "code_file": code_path,
-                "stdout": "",
-                "stderr": "Empty code: nothing to execute"
-            }
-
-        with open(code_path, "w") as f:
-            f.write(code)
-
-        add_system_log(f"Saved code to: {code_path}", "info")
-        
-        try:
-            add_system_log(f"Executing: {code_path}", "info")
-            
-            result = subprocess.run(
-                [sys.executable, code_path],
-                cwd=os.path.dirname(code_path),
-                capture_output=True,
-                text=True,
-                timeout=500
-            )
-            
-            return {
-                "success": result.returncode == 0,
-                "stdout": result.stdout,
-                "stderr": result.stderr,
-                "return_code": result.returncode,
-                "code_file": code_path
-            }
-            
-        except subprocess.TimeoutExpired:
-            return {
-                "success": False,
-                "error": "Execution timed out (500s)",
-                "code_file": code_path,
-                "stdout": "",
-                "stderr": "Timeout - code took >8 minutes. Simplify your approach."
-            }
-        except Exception as e:
-            return {
-                "success": False,
-                "error": str(e),
-                "traceback": traceback.format_exc(),
-                "code_file": code_path,
-                "stdout": "",
-                "stderr": str(e)
-            }
+# Import CodeExecutor from dedicated module (extracted to avoid duplicating execution logic)
+try:
+    from src.agents.code_executor import CodeExecutor
+    print("CodeExecutor imported successfully")
+except Exception:
+    # Fallback dynamic import for different execution contexts
+    try:
+        import importlib.util
+        current_script_dir = os.path.dirname(os.path.abspath(__file__))
+        agents_path = os.path.abspath(os.path.join(current_script_dir, '..'))
+        code_executor_path = os.path.join(agents_path, 'code_executor.py')
+        if os.path.exists(code_executor_path):
+            spec = importlib.util.spec_from_file_location('src.agents.code_executor', code_executor_path)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            CodeExecutor = getattr(mod, 'CodeExecutor')
+    except Exception as e:
+        add_system_log(f"Failed to import CodeExecutor: {e}", "warning")
 
 
 class DatasetInsightGenerator:
@@ -1207,7 +1159,16 @@ Write your corrected query code in <query_code></query_code> tags.
                         
                         # Find generated plots
                         plot_files = sorted(list(dirs['plots'].glob(f"plot_*_{timestamp}.png")))
-                        
+
+                        # Log where the plot files were saved (mirror the "Saved code to:" message for query/plot code)
+                        if plot_files:
+                            plot_paths = [str(p.resolve()) for p in plot_files]
+                            add_system_log(f"Saved plots to: {plot_dir_str} ({len(plot_paths)} files)", "info")
+                            # Also include explicit file names for easier debugging
+                            add_system_log(f"Plot files: {plot_paths}", "info")
+                        else:
+                            add_system_log(f"No plot files found in expected directory: {plot_dir_str}", "warning")
+
                         add_system_log(f"Plot code succeeded! Found {len(plot_files)} plots.", "success")
                         
                         feedback = f"""PLOT CODE SUCCEEDED!

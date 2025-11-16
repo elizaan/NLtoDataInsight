@@ -732,8 +732,32 @@ def chat():
                     except Exception as e:
                         add_system_log(f"Failed to build assistant_messages: {e}", 'warning')
                     
-                    # Determine response type based on context flags
-                    response_data = {'assistant_messages': assistant_messages, 'status': 'success'}
+                    # If the task already emitted an 'insight_generated' progress
+                    # message, avoid repeating the full assistant_messages payload
+                    # in the final result to prevent duplicate rendering on clients.
+                    # Instead include a lightweight flag so clients can decide how
+                    # to present the final payload.
+                    final_summary_only = False
+                    try:
+                        with task_lock:
+                            task_msgs = task_storage.get(task_id, {}).get('messages', [])
+                            for m in task_msgs:
+                                if m.get('type') == 'insight_generated':
+                                    final_summary_only = True
+                                    break
+                    except Exception:
+                        # If anything goes wrong inspecting messages, fall back to
+                        # including full assistant_messages to avoid losing content.
+                        final_summary_only = False
+
+                    if final_summary_only:
+                        response_data = {
+                            # signal client that progress included the full insight
+                            'final_summary_only': True,
+                            'status': 'success'
+                        }
+                    else:
+                        response_data = {'assistant_messages': assistant_messages, 'status': 'success'}
                     
                     if context.get('is_exit'):
                         response_data.update({
@@ -751,25 +775,32 @@ def chat():
                             'message': result.get('message')
                         })
                     elif context.get('is_particular'):
-                        response_data.update({
+                        # If progress already included the full insight, avoid
+                        # repeating large insight/data_summary payloads in the
+                        # final result to prevent client-side duplicates.
+                        pr = {
                             'type': 'particular_response',
                             'message': result.get('message'),
                             'answer': result.get('answer'),
-                            'insight': result.get('insight'),
-                            'data_summary': result.get('data_summary'),
                             'visualization': result.get('visualization'),
                             'plot_files': result.get('plot_files')
-                        })
+                        }
+                        if not final_summary_only:
+                            pr['insight'] = result.get('insight')
+                            pr['data_summary'] = result.get('data_summary')
+                        response_data.update(pr)
                     elif context.get('is_not_particular'):
-                        response_data.update({
+                        er = {
                             'type': 'exploration_response',
                             'message': result.get('message'),
                             'insights': result.get('insights'),
-                            'insight': result.get('insight'),
-                            'data_summary': result.get('data_summary'),
                             'visualization': result.get('visualization'),
                             'plot_files': result.get('plot_files')
-                        })
+                        }
+                        if not final_summary_only:
+                            er['insight'] = result.get('insight')
+                            er['data_summary'] = result.get('data_summary')
+                        response_data.update(er)
                     else:
                         response_data.update({
                             'type': 'agent_response',
@@ -911,15 +942,19 @@ def chat():
                         'type': 'particular_response',
                         'message': result.get('message'),
                         'answer': result.get('answer'),
-                        'insight': result.get('insight'),
-                        'data_summary': result.get('data_summary'),
                         'visualization': result.get('visualization'),
                         'plot_files': result.get('plot_files'),
                         'assistant_messages': assistant_messages,
                         'status': 'success'
                     }
+                    # Avoid duplicating insight/data_summary when assistant_messages
+                    # already contains the same content (clients render both).
+                    if not assistant_messages:
+                        response_data['insight'] = result.get('insight')
+                        response_data['data_summary'] = result.get('data_summary')
+
                     print(f"[ROUTES] Response data keys: {list(response_data.keys())}")
-                    print(f"[ROUTES] assistant_messages in response: {len(response_data['assistant_messages'])}")
+                    print(f"[ROUTES] assistant_messages in response: {len(response_data.get('assistant_messages') or [])}")
                     return jsonify(response_data)
                 elif context.get('is_not_particular'):
                     # User wants general exploration
@@ -928,15 +963,17 @@ def chat():
                         'type': 'exploration_response',
                         'message': result.get('message'),
                         'insights': result.get('insights'),
-                        'insight': result.get('insight'),
-                        'data_summary': result.get('data_summary'),
                         'visualization': result.get('visualization'),
                         'plot_files': result.get('plot_files'),
                         'assistant_messages': assistant_messages,
                         'status': 'success'
                     }
+                    if not assistant_messages:
+                        response_data['insight'] = result.get('insight')
+                        response_data['data_summary'] = result.get('data_summary')
+
                     print(f"[ROUTES] Response data keys: {list(response_data.keys())}")
-                    print(f"[ROUTES] assistant_messages in response: {len(response_data['assistant_messages'])}")
+                    print(f"[ROUTES] assistant_messages in response: {len(response_data.get('assistant_messages') or [])}")
                     return jsonify(response_data)
                 else:
                     # Generic agent response

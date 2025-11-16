@@ -641,12 +641,12 @@ class ChatInterface {
                         }
                     }
                     if (data.insight) this.addMessage(data.insight, 'bot');
-                    if (data.data_summary) {
-                        const summaryStr = typeof data.data_summary === 'string' 
-                            ? data.data_summary 
-                            : JSON.stringify(data.data_summary, null, 2);
-                        this.addMessage('📊 ' + summaryStr, 'bot');
-                    }
+                    // if (data.data_summary) {
+                    //     const summaryStr = typeof data.data_summary === 'string' 
+                    //         ? data.data_summary 
+                    //         : JSON.stringify(data.data_summary, null, 2);
+                    //     this.addMessage('📊 ' + summaryStr, 'bot');
+                    // }
                     if (data.plot_files && data.plot_files.length > 0) {
                         this.addMessage(`📈 Generated ${data.plot_files.length} plot(s)`, 'bot');
                     }

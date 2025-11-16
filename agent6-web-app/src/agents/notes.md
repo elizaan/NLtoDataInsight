@@ -93,3 +93,47 @@ Concrete small patches I recommend (low-risk)
 (D) Increase data_cache_file polling window (e.g., to 5 seconds) or make it configurable.
 (E) Initialize error_msg = None at the top of the relevant block to avoid locals() checks.
 
+Does the agent generate the query and plot codes and do we execute them as a helper function?
+Yes. The LLM (via self.llm.invoke(...)) is prompted to produce two types of code sections:
+<query_code> ... </query_code> — code that extracts data (saves an .npz data cache).
+<plot_code> ... </plot_code> — code that creates visualizations and saves PNG(s) in the plots folder.
+The file contains a helper class CodeExecutor whose execute_code(code, code_path) method writes the code to a file and runs it in a subprocess using the Python interpreter:
+It runs: [sys.executable, code_path], captures stdout/stderr, enforces a timeout (500s), and returns a success/failed result dict.
+The agent treats subprocess exit code 0 and printed JSON output as the success signal (it additionally inspects stdout for JSON status).
+So the workflow is: the agent (DatasetInsightGenerator) receives an LLM response containing code, extracts the code block, calls the CodeExecutor to execute it, checks outputs/files (e.g., data_cache .npz), and either marks success or sends feedback to the LLM for retries. In short: LLM generates code, executor runs it as a helper.
+Is this agent totally dataset-agnostic (not specific to a particular data domain)?
+The agent is written to be largely dataset-agnostic:
+It accepts dataset_info (metadata) that contains variables, spatial_info, temporal_info, dataset id/name, etc. The system prompt and LLM instructions use those fields so the LLM can adapt strategy to the dataset scale, variables present, geo info, and temporal units.
+The prompt includes helper patterns (openvisuspy usage, latlon helpers, np.savez metadata format) but does not hardcode a single dataset URL/type—so the LLM is expected to adapt to the dataset described by dataset_info.
+Practical caveats / implicit assumptions:
+The generated query code often relies on OpenVisus bindings (openvisuspy / ds.db.read), xarray, numpy, etc. These libraries must be available in the runtime environment for execution to succeed.
+Geographic helpers expect a geographic file present in src/datasets (like llc2160_latlon.nc). If dataset lacks that or dataset_info lacks proper fields, the LLM must adapt or the execution will fail.
+The agent is domain-generic in design (instructions cover geospatial-temporal oceanographic datasets as an example), but success depends on accurate dataset_info and presence of necessary runtime libraries and bindings.
+So: intended to be dataset-agnostic, but operationally it depends on metadata quality and installed dependencies.
+How are plots created? Are we just taking suggestions from the Intent Parser and creating plots?
+Plot generation is LLM-driven and guided by:
+intent_result produced by the Intent Parser (passed in as intent_result argument). intent_result provides plot_hints, intent_type, and reasoning that the DatasetInsightGenerator includes in the system prompt and uses when instructing the LLM what plots to make.
+The system prompt asks the LLM to write plot code in <plot_code> tags. The LLM should:
+Load the saved .npz data cache (from query phase),
+Inspect data.files and shapes,
+Create one or more plots (matplotlib/plotly) tailored to the user's question and plot_hints,
+Save plots to the plots directory using the timestamped naming pattern (e.g., plot_1_{timestamp}.png).
+The agent does not itself render plots directly in Python code in-process; instead it executes the LLM-produced plot script through CodeExecutor (subprocess) which writes PNG files to disk.
+After execution, the agent scans dirs['plots'] for plot_*_{timestamp}.png and reports found plot files back to the conversation and final JSON.
+So yes, the Intent Parser influences the LLM instructions (via plot_hints), but the LLM actually writes the concrete plotting code. The agent executes that plotting code and collects the outputs.
+Extra notes, risks, and suggested improvements
+
+Safety & sandboxing:
+Right now generated code is executed with the full Python interpreter in a subprocess. Timeout and output capture exist, but there is no sandboxing (no resource limits, no containerization). Consider running in a restricted environment (container, user with limited privileges, or using OS-level resource limits).
+Validation & robustness:
+The agent already checks for empty code, non-zero exit codes, timeouts, and printed JSON error messages. Still, you can add:
+Strict path sanitization (avoid writing outside ai_data),
+A validation step that inspects the generated plot files for expected dimensions / formats,
+Pre-flight static checks (e.g., run python -m pyflakes on the generated code) to detect obvious syntax errors before execution.
+Observability:
+Progress is emitted via progress_callback events: 'iteration_update', 'llm_response', 'query_execution' — these are forwarded to UI System Logs in your current architecture.
+Enhancements:
+Consider using a more controlled execution method for plotting (e.g., import the generated code as a module into a sandboxed runner or provide a small API the LLM can call instead of arbitrary code generation).
+If you want streaming LLM outputs (token-by-token) instead of per-iteration responses, integrate an LLM streaming client and forward partial outputs to UI (but that requires LLM support).
+Add file integrity checks (e.g., open image to confirm PNG validity) and add a thumbnail endpoint so the UI can quickly preview results.
+

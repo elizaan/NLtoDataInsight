@@ -120,7 +120,7 @@ IMPORTANT CLASSIFICATION RULES:
 - Only classify as EXIT if user explicitly says quit/exit/bye/done
 Be confident in your classification (aim for confidence ≥ 0.8)
 
-Return as many plot suggestions as are relevant for the query and dataset — do NOT limit the number or force a fixed mix of 1D/2D/3D. Multiple 1D plots are allowed when appropriate.
+Return as many plot suggestions as are relevant for the query and dataset — do NOT limit the number or force a fixed mix of 1D/2D/3D. Multiple 1D/2D/3D/nD plots are allowed when appropriate.
 
 Output ONLY valid JSON with this structure:
 {{
@@ -128,9 +128,8 @@ Output ONLY valid JSON with this structure:
     "confidence": 0.0-1.0,
     "plot_hints": [
         "plot1 (1D): variables: <comma-separated variable ids>",
-        "plot2 (1D): variables: <comma-separated variable ids>",
-        "plot3 (2D): variables: <comma-separated variable ids>",
-        "plot4 (3D): variables: <comma-separated variable ids>"
+        ......
+        "plotn (3D): variables: <comma-separated variable ids>"
     ],
     "user_query": "original user query",
     "reasoning": "brief explanation of why this classification was chosen"
