@@ -174,6 +174,15 @@ Do NOT include markdown formatting, just raw JSON."""
 
             if context.get('dataset_summary'):
                 context_str += f"Dataset Summary: {context['dataset_summary']}. "
+            
+            # Prefer a short conversation context if provided to keep prompt concise
+            if context.get('conversation_context_short'):
+                context_str += f"Conversation context: {context.get('conversation_context_short')}. "
+            elif context.get('conversation_context'):
+                # Fallback: include a trimmed version of the full conversation context
+                full_ctx = context.get('conversation_context')
+                if isinstance(full_ctx, str):
+                    context_str += f"Conversation context: {full_ctx[:400]}. "
         
         if not context_str:
             context_str = "No prior context."

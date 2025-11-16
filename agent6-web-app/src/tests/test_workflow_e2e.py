@@ -169,32 +169,35 @@ def run_test_workflow():
         print(f"Description: {description}\n")
         
         try:
-            # Step 1: Parse intent (using pre-generated dataset summary)
-            print(f"[{query_id}] Parsing user intent...")
-            intent_result = intent_parser.parse_intent(
-                user_query=user_query,
-                context={
-                    'dataset_summary': dataset_summary,
-                    'dataset_info': dataset_info
-                }
-            )
-            print_result(f"{query_id} - Intent", intent_result, max_len=400)
-            
-            # Step 2: Generate insight with conversation context
-            print(f"\n[{query_id}] Generating insight (with execution)...")
-            
+            # Step 1: Build a short conversation-context summary and parse intent
+            print(f"[{query_id}] Preparing conversation context and parsing intent...")
             # Pass conversation context with semantic search
             context_summary = context.get_context_summary(
                 current_query=user_query,
                 top_k=5,
                 use_semantic_search=True
             )
-            
+            # Create a short (1-3 line) condensed context for the intent parser
+            context_lines = [l.strip() for l in context_summary.splitlines() if l.strip()]
+            context_summary_short = " ".join(context_lines[:3]) if context_lines else ""
+
+            intent_result = intent_parser.parse_intent(
+                user_query=user_query,
+                context={
+                    'dataset_summary': dataset_summary,
+                    'dataset_info': dataset_info,
+                    'conversation_context': context_summary_short
+                }
+            )
+            print_result(f"{query_id} - Intent", intent_result, max_len=400)
+
+            # Step 2: Generate insight with the full conversation context
+            print(f"\n[{query_id}] Generating insight (with execution)...")
             insight_result = insight_generator.generate_insight(
                 user_query=user_query,
                 intent_result=intent_result,
                 dataset_info=dataset_info,
-                conversation_context=context_summary  # NEW: pass context
+                conversation_context=context_summary  # pass full context to generator
             )
             
             # Add to conversation history

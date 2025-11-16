@@ -8,6 +8,25 @@ import time
 import threading
 from datetime import datetime, timedelta
 
+# Conversation context helper
+try:
+    from src.agents.conversation_context import create_conversation_context
+except Exception:
+    # best-effort: dynamic import fallback
+    try:
+        import importlib.util
+        cur = os.path.dirname(os.path.abspath(__file__))
+        conv_path = os.path.abspath(os.path.join(cur, '..', 'agents', 'conversation_context.py'))
+        if os.path.exists(conv_path):
+            spec = importlib.util.spec_from_file_location('src.agents.conversation_context', conv_path)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            create_conversation_context = getattr(mod, 'create_conversation_context', None)
+        else:
+            create_conversation_context = None
+    except Exception:
+        create_conversation_context = None
+
 # Add the models directory to the path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'models'))
 
@@ -676,6 +695,38 @@ def chat():
                 'dataset_summary': conversation_state.get('dataset_summary'),
                 'animation_info': conversation_state.get('animation_info')
             }
+
+            # Attach conversation context (full + short) when we can
+            try:
+                ds = conversation_state.get('dataset') or {}
+                dsid = ds.get('id') if isinstance(ds, dict) else None
+                if create_conversation_context and dsid:
+                    conv = create_conversation_context(dataset_id=dsid, enable_vector_db=True)
+                    full_ctx = conv.get_context_summary(current_query=user_message, top_k=5, use_semantic_search=True)
+                    # short: first 2 non-empty lines joined
+                    lines = [l.strip() for l in full_ctx.splitlines() if l.strip()]
+                    short_ctx = " ".join(lines[:2]) if lines else ""
+                    # Record provenance so operators can confirm context was loaded
+                    try:
+                        persist_path = getattr(conv, 'persist_path', None)
+                        hist_count = len(getattr(conv, 'history', []))
+                        add_system_log(f"[continue_conversation] ConversationContext loaded: persist_path={persist_path}, entries={hist_count}", 'debug')
+                        # Log short snippets for quick inspection (truncated)
+                        preview = full_ctx[:400] + '...' if len(full_ctx) > 400 else full_ctx
+                        add_system_log(f"[continue_conversation] conversation_context (preview): {preview}", 'debug')
+                        if short_ctx:
+                            add_system_log(f"[continue_conversation] conversation_context_short: {short_ctx}", 'debug')
+                    except Exception:
+                        pass
+                    context['conversation_context'] = full_ctx
+                    context['conversation_context_short'] = short_ctx
+                else:
+                    # preserve existing conversation_state value if present
+                    if conversation_state.get('conversation_context'):
+                        context['conversation_context'] = conversation_state.get('conversation_context')
+            except Exception:
+                # non-fatal: proceed without conversation context
+                pass
             
             add_system_log(f"[continue_conversation] Created task {task_id[:8]}... for query", 'info')
             add_system_log(f"[continue_conversation] User message: {user_message[:100]}", 'debug')
@@ -685,7 +736,24 @@ def chat():
                 """Called by agent to report progress"""
                 print(f"[PROGRESS] {event_type}: {str(data)[:100]}")
                 add_task_message(task_id, event_type, data)
-                add_system_log(f"[Task {task_id[:8]}] {event_type}", 'debug')
+                # Log a short, human-readable summary of the progress data
+                try:
+                    # Prefer common keys that carry useful text
+                    data_summary = data
+                    if isinstance(data, dict):
+                        for k in ('message', 'msg', 'log', 'text', 'detail', 'iteration', 'content'):
+                            if k in data and data[k]:
+                                data_summary = data[k]
+                                break
+
+                    # Always stringify and truncate to avoid huge system log entries
+                    s = str(data_summary)
+                    if len(s) > 400:
+                        s = s[:400] + '...'
+                    add_system_log(f"[Task {task_id[:8]}] {event_type}: {s}", 'debug')
+                except Exception:
+                    # Fallback to logging only the event type
+                    add_system_log(f"[Task {task_id[:8]}] {event_type}", 'debug')
             
             # Process in background thread
             def process_in_background():
@@ -838,6 +906,23 @@ def chat():
                     'dataset_summary': conversation_state.get('dataset_summary'),
                     'animation_info': conversation_state.get('animation_info')
                 }
+
+                # Attach conversation context (full + short) when available
+                try:
+                    ds = conversation_state.get('dataset') or {}
+                    dsid = ds.get('id') if isinstance(ds, dict) else None
+                    if create_conversation_context and dsid:
+                        conv = create_conversation_context(dataset_id=dsid, enable_vector_db=True)
+                        full_ctx = conv.get_context_summary(current_query=user_message, top_k=5, use_semantic_search=True)
+                        lines = [l.strip() for l in full_ctx.splitlines() if l.strip()]
+                        short_ctx = " ".join(lines[:2]) if lines else ""
+                        context['conversation_context'] = full_ctx
+                        context['conversation_context_short'] = short_ctx
+                    else:
+                        if conversation_state.get('conversation_context'):
+                            context['conversation_context'] = conversation_state.get('conversation_context')
+                except Exception:
+                    pass
                 
                 add_system_log(f"[continue_conversation] Calling agent.process_query with context", 'info')
                 add_system_log(f"[continue_conversation] User message: {user_message[:100]}", 'debug')
