@@ -85,6 +85,33 @@
         </div>
     </div>
     
+    <!-- Right Panel: Artifacts (plots, code, downloads) -->
+    <div class="artifacts-panel" id="artifactsPanel">
+        <div class="artifacts-header">
+            <h3><i class="fas fa-image"></i> Artifacts</h3>
+            <div class="artifacts-controls">
+                <button id="downloadAllPlotsBtn" onclick="chatInterface && chatInterface.downloadAllPlots()" title="Download all plots"><i class="fas fa-download"></i> Download All Plots</button>
+            </div>
+        </div>
+
+        <div class="artifacts-body">
+            <div class="artifacts-section" id="plotsSection">
+                <h4>Plots</h4>
+                <div id="plotsContainer">No plots yet.</div>
+            </div>
+
+            <div class="artifacts-section" id="plotCodeSection">
+                <h4>Plot Code</h4>
+                <div id="plotCodeContainer"><em>No plot code available.</em></div>
+            </div>
+
+            <div class="artifacts-section" id="queryCodeSection">
+                <h4>Query Code</h4>
+                <div id="queryCodeContainer"><em>No query code available.</em></div>
+            </div>
+        </div>
+    </div>
+
     <!-- Load scripts: main first, then chat so it can override where necessary -->
     <script src="{{ url_for('static', filename='js/main.js') }}"></script>
     <script src="{{ url_for('static', filename='js/chat.js') }}?v=20251105_2145_dynamic_padding"></script>

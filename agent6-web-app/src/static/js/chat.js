@@ -435,6 +435,15 @@ class ChatInterface {
                         : JSON.stringify(msg.data.data_summary, null, 2);
                     this.addMessage(summaryStr, 'bot');
                 }
+                // If progress message includes artifact references, render them
+                try {
+                    if (msg.data && (msg.data.plot_files || msg.data.query_code_file || msg.data.plot_code_file)) {
+                        console.log('Progress message contains artifacts; rendering artifacts panel');
+                        this.renderArtifacts(msg.data);
+                    }
+                } catch (e) {
+                    console.warn('Failed to render artifacts from progress message', e);
+                }
                 break;
                 
             default:
@@ -631,8 +640,18 @@ class ChatInterface {
                     break;
 
                 default:
-                    this.addMessage(data.message || 'Unknown response type', 'bot');
-            }
+                        this.addMessage(data.message || 'Unknown response type', 'bot');
+                }
+
+                // Render artifacts panel if response contains artifact references
+                try {
+                    if ((data.plot_files && data.plot_files.length > 0) || data.query_code_file || data.plot_code_file) {
+                        console.log('Rendering artifacts for response');
+                        this.renderArtifacts(data);
+                    }
+                } catch (e) {
+                    console.warn('Failed to render artifacts:', e);
+                }
         } catch (error) {
             console.error('Error in handleApiResponse:', error);
             console.error('Full error details:', error.message, error.stack);
@@ -900,6 +919,142 @@ class ChatInterface {
         }
     }
     
+    // --- Artifacts rendering helpers ---
+    renderArtifacts(data) {
+        try {
+            const panel = document.getElementById('artifactsPanel');
+            if (!panel) return;
+
+            // Plots
+            const plotsContainer = document.getElementById('plotsContainer');
+            if (!plotsContainer) return;
+            plotsContainer.innerHTML = '';
+            const plotFiles = Array.isArray(data.plot_files) ? data.plot_files : [];
+            if (plotFiles.length === 0) {
+                plotsContainer.innerHTML = '<em>No plots available.</em>';
+            } else {
+                plotFiles.forEach((p, idx) => {
+                    try {
+                        const url = this.pathToArtifactUrl(p);
+                        const wrap = document.createElement('div');
+                        wrap.className = 'artifact-plot';
+                        const img = document.createElement('img');
+                        img.src = url;
+                        img.alt = `Plot ${idx + 1}`;
+                        img.style.maxWidth = '100%';
+                        img.style.height = 'auto';
+                        img.style.display = 'block';
+                        img.style.marginBottom = '6px';
+                        // Debugging hooks: log load/error and visually mark failures
+                        img.onload = () => {
+                            console.log('Artifact image loaded:', url, 'size:', img.naturalWidth, img.naturalHeight);
+                            // ensure visible
+                            img.style.visibility = 'visible';
+                        };
+                        img.onerror = (ev) => {
+                            console.error('Artifact image failed to load:', url, ev);
+                            // show visible red border to help debugging
+                            img.style.border = '4px solid rgba(255,0,0,0.9)';
+                            img.style.visibility = 'visible';
+                        };
+
+                        const dl = document.createElement('a');
+                        dl.href = url;
+                        dl.className = 'artifact-download';
+                        dl.textContent = 'Download';
+                        dl.style.display = 'inline-block';
+                        dl.style.marginBottom = '10px';
+
+                        wrap.appendChild(img);
+                        wrap.appendChild(dl);
+                        plotsContainer.appendChild(wrap);
+                    } catch (e) {
+                        console.warn('Failed to render plot item', e, p);
+                    }
+                });
+            }
+
+            // Plot code
+            const plotCodeContainer = document.getElementById('plotCodeContainer');
+            if (plotCodeContainer) {
+                if (data.plot_code_file) {
+                    const url = this.pathToArtifactUrl(data.plot_code_file);
+                    this.fetchAndShowCode(url, plotCodeContainer, 'plot_code.py');
+                } else {
+                    plotCodeContainer.innerHTML = '<em>No plot code available.</em>';
+                }
+            }
+
+            // Query code
+            const queryCodeContainer = document.getElementById('queryCodeContainer');
+            if (queryCodeContainer) {
+                if (data.query_code_file) {
+                    const url = this.pathToArtifactUrl(data.query_code_file);
+                    this.fetchAndShowCode(url, queryCodeContainer, 'query_code.py');
+                } else {
+                    queryCodeContainer.innerHTML = '<em>No query code available.</em>';
+                }
+            }
+
+        } catch (e) {
+            console.warn('renderArtifacts error', e);
+        }
+    }
+
+    pathToArtifactUrl(p) {
+        try {
+            if (!p) return p;
+            if (typeof p !== 'string') p = String(p);
+            // If already an API path or URL, return as-is
+            if (p.startsWith('/api/') || p.startsWith('/static') || p.startsWith('http')) return p;
+            // Find 'ai_data' segment and build /api/artifacts/<relpath>
+            const idx = p.indexOf('ai_data');
+            if (idx !== -1) {
+                const rel = p.substring(idx + 'ai_data'.length + 1).replace(/\\\\/g, '/').replace(/\\/g, '/');
+                // Ensure we return a same-origin absolute URL so browser requests don't hit cross-host issues
+                const origin = (window && window.location && window.location.origin) ? window.location.origin : '';
+                return `${origin}/api/artifacts/${rel}`.replace(/%2F/g, '/');
+            }
+            // Fallback: return original path (may work if already relative)
+            return p;
+        } catch (e) {
+            return p;
+        }
+    }
+
+    async fetchAndShowCode(url, containerEl, fallbackName) {
+        try {
+            containerEl.innerHTML = 'Loading code...';
+            const resp = await fetch(url);
+            if (!resp.ok) {
+                containerEl.innerHTML = `<em>Unable to fetch code (${resp.status})</em>`;
+                return;
+            }
+            const text = await resp.text();
+            const safe = text.replace(/&/g, '&amp;').replace(/</g, '&lt;');
+            containerEl.innerHTML = `<pre class="artifact-code"><code>${safe}</code></pre><a href="${url}" download="${fallbackName}">Download</a>`;
+        } catch (e) {
+            console.warn('fetchAndShowCode error', e);
+            containerEl.innerHTML = `<em>Error loading code</em>`;
+        }
+    }
+
+    downloadAllPlots() {
+        try {
+            const plots = Array.from(document.querySelectorAll('#plotsContainer a.artifact-download'));
+            plots.forEach(a => {
+                const link = document.createElement('a');
+                link.href = a.href;
+                link.download = '';
+                document.body.appendChild(link);
+                link.click();
+                link.remove();
+            });
+        } catch (e) {
+            console.warn('downloadAllPlots failed', e);
+        }
+    }
+
 }
 
 // Global functions called from HTML

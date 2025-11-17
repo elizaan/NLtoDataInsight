@@ -661,6 +661,40 @@ def get_task_status(task_id):
         })
 
 
+
+@api_bp.route('/artifacts/<path:relpath>', methods=['GET'])
+def serve_artifact(relpath):
+    """Serve files under the ai_data directory.
+
+    The frontend will request artifact URLs like /api/artifacts/<relative/path/inside/ai_data>.
+    This endpoint maps that to the ai_data directory and returns the file.
+    """
+    try:
+        from urllib.parse import unquote
+
+        default_ai_dir = os.path.normpath(os.path.join(os.path.dirname(__file__), '..', '..', 'ai_data'))
+        ai_dir = os.getenv('AI_DIR', default_ai_dir)
+        ai_dir = os.path.abspath(ai_dir)
+
+        relpath_clean = unquote(relpath)
+        # Prevent path traversal by normalizing and ensuring prefix match
+        file_path = os.path.normpath(os.path.join(ai_dir, relpath_clean))
+        if not file_path.startswith(ai_dir):
+            add_system_log(f"Attempt to access outside ai_data: {file_path}", 'warning')
+            return jsonify({'status': 'error', 'message': 'Forbidden'}), 403
+
+        if not os.path.exists(file_path):
+            return jsonify({'status': 'error', 'message': 'Not found'}), 404
+
+        directory = os.path.dirname(file_path)
+        filename = os.path.basename(file_path)
+        # Let Flask's safe send_from_directory handle content-type and range requests
+        return send_from_directory(directory, filename)
+    except Exception as e:
+        add_system_log(f"serve_artifact error: {e}", 'error')
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
 @api_bp.route('/chat', methods=['POST'])
 def chat():
     """Handle chat messages - exactly replaces run_conversation CLI interface"""

@@ -688,3 +688,39 @@ input[type="range"]::-moz-range-thumb {
         height: 40px;
     }
 }
+
+/* Artifacts panel (right-side) */
+.artifacts-panel {
+    position: fixed;
+    top: 70px;
+    right: 20px;
+    width: calc(60% - 40px);
+    height: calc(100vh - 160px);
+    background-color: #0f0f0f;
+    border: 1px solid #2a2a2a;
+    border-radius: 8px;
+    padding: 12px;
+    overflow: auto;
+    /* Ensure artifacts are above system logs overlay */
+    z-index: 1101;
+}
+
+.artifacts-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+}
+
+.artifacts-header h3 { color: #00d4aa; margin: 0; }
+
+.artifacts-body { display: flex; flex-direction: column; gap: 12px; }
+
+.artifacts-section h4 { color: #fff; margin: 6px 0; }
+
+#plotsContainer { display: flex; flex-wrap: wrap; gap: 12px; }
+.artifact-plot { width: 48%; background: #151515; padding: 8px; border-radius: 6px; border: 1px solid #222; }
+.artifact-plot img { display: block; max-width: 100%; height: auto; }
+.artifact-download { color: #00d4aa; display:block; margin-top:6px; }
+
+.artifact-code { background:#0b0b0b; padding:8px; color:#ddd; overflow:auto; max-height:260px; }
