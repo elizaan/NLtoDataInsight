@@ -4,6 +4,8 @@ console.log('CHAT.JS VERSION 20251105_v10');
 
 class ChatInterface {
     constructor() {
+// Expose helper on window for resize handlers inside the ChatInterface
+if (typeof window !== 'undefined') window.updateArtifactsPanelLayout = updateArtifactsPanelLayout;
         console.log('ChatInterface constructor called');
         this.initializeElements();
         this.setupEventListeners();
@@ -140,6 +142,8 @@ class ChatInterface {
                     // Add 20px buffer for visual spacing
                     animationGrid.style.paddingBottom = `${newHeight + 20}px`;
                 }
+                // Continuously update artifacts panel layout while dragging
+                if (window.updateArtifactsPanelLayout) window.updateArtifactsPanelLayout();
             }
         });
         
@@ -151,6 +155,8 @@ class ChatInterface {
                 document.body.style.userSelect = '';
                 // Restore transition
                 systemLogs.style.transition = 'height 0.3s ease';
+                // Final layout update after resize completes
+                if (window.updateArtifactsPanelLayout) window.updateArtifactsPanelLayout();
             }
         });
     }
@@ -200,6 +206,8 @@ class ChatInterface {
                     const animationPanelPercent = 100 - widthPercent;
                     systemLogs.style.width = `${animationPanelPercent}%`;
                 }
+                // Continuously update artifacts panel layout while dragging
+                if (window.updateArtifactsPanelLayout) window.updateArtifactsPanelLayout();
             }
         });
         
@@ -209,6 +217,8 @@ class ChatInterface {
                 resizeHandle.classList.remove('dragging');
                 document.body.style.cursor = '';
                 document.body.style.userSelect = '';
+                // After resizing completes, update artifacts layout
+                if (window.updateArtifactsPanelLayout) window.updateArtifactsPanelLayout();
             }
         });
     }
@@ -1103,6 +1113,16 @@ document.addEventListener('DOMContentLoaded', function() {
     // Initialize system logs
     initializeSystemLogs();
     // No delegation required: workflow uses explicit dataset selection -> summary -> typed conversation.
+    // Give the layout helper a short moment to compute and then reveal the artifacts panel
+    setTimeout(() => {
+        try {
+            if (window.updateArtifactsPanelLayout) window.updateArtifactsPanelLayout();
+            const panel = document.getElementById('artifactsPanel');
+            if (panel) panel.style.visibility = 'visible';
+        } catch (e) {
+            console.warn('Failed to initialize artifacts panel layout', e);
+        }
+    }, 30);
 });
 
 // System logs functions
@@ -1200,6 +1220,38 @@ function minimizeSystemLogs() {
 // toggleLogsExpand removed — use toggleLogsSize() directly where needed
 
 // Helper: remove common Markdown artifacts before showing LLM evaluation in chat
+
+function updateArtifactsPanelLayout() {
+        try {
+            const panel = document.getElementById('artifactsPanel');
+            const container = document.querySelector('.container');
+            const chatPanel = document.querySelector('.chat-panel');
+            const systemLogs = document.querySelector('.system-logs');
+            if (!panel || !container || !chatPanel) return;
+
+            // Compute available right-side area based on chatPanel width and container
+            const containerRect = container.getBoundingClientRect();
+            const chatRect = chatPanel.getBoundingClientRect();
+
+            const rightMargin = 20; // match CSS right spacing
+            const leftX = Math.max(chatRect.right, containerRect.left);
+            const availableWidth = Math.max(200, containerRect.right - rightMargin - leftX - 10);
+
+            panel.style.position = 'fixed';
+            panel.style.left = `${leftX + 10}px`;
+            panel.style.width = `${availableWidth}px`;
+
+            // Keep top aligned below header (approx 70px) and bottom above system logs
+            const topOffset = 70; // same as CSS default
+            const logsHeight = systemLogs ? systemLogs.offsetHeight : 0;
+            const bottomOffset = Math.max(20, logsHeight + 20);
+            panel.style.top = `${topOffset}px`;
+            panel.style.bottom = `${bottomOffset}px`;
+            panel.style.height = 'auto'; // let top/bottom control height
+        } catch (e) {
+            console.warn('updateArtifactsPanelLayout error', e);
+        }
+    }
 function cleanMarkdownForChat(text) {
     if (!text) return '';
     let s = String(text);
@@ -1245,13 +1297,19 @@ function addSystemLog(message, type = 'info') {
     const logEntry = document.createElement('div');
     logEntry.className = `log-entry ${type}`;
     logEntry.innerHTML = `<span class="log-timestamp">[${timestamp}]</span>${message}`;
-
+                    wrap.style.position = 'relative'; // Ensure wrap is positioned relative
+                    const img = document.createElement('img'); 
     logsContent.appendChild(logEntry);
     logsContent.scrollTop = logsContent.scrollHeight;
 
     // Add activity indicator if logs are minimized
     const systemLogs = document.querySelector('.system-logs');
     if (systemLogs && systemLogs.classList.contains('minimized')) {
+                    // Add a load/error badge (top-right)
+                    const badge = document.createElement('span');
+                    badge.className = 'artifact-badge artifact-badge-loading';
+                    badge.title = 'Loading...';
+                    wrap.appendChild(badge);
         systemLogs.classList.add('active');
         setTimeout(() => {
             systemLogs.classList.remove('active');

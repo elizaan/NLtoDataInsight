@@ -703,6 +703,8 @@ input[type="range"]::-moz-range-thumb {
     overflow: auto;
     /* Ensure artifacts are above system logs overlay */
     z-index: 1101;
+    /* Start hidden until JS computes correct layout to avoid initial overlap */
+    visibility: hidden;
 }
 
 .artifacts-header {
@@ -724,3 +726,21 @@ input[type="range"]::-moz-range-thumb {
 .artifact-download { color: #00d4aa; display:block; margin-top:6px; }
 
 .artifact-code { background:#0b0b0b; padding:8px; color:#ddd; overflow:auto; max-height:260px; }
+
+/* Artifact badge (load / error indicators) */
+.artifact-plot { position: relative; }
+.artifact-badge {
+    position: absolute;
+    top: 6px;
+    right: 8px;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    display: inline-block;
+    text-align: center;
+    line-height: 18px;
+    font-size: 12px;
+}
+.artifact-badge-loading { background: #444; color: #fff; }
+.artifact-badge-success { background: #2ecc71; color: #042; }
+.artifact-badge-error { background: #e74c3c; color: #fff; }
