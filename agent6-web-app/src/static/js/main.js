@@ -4,7 +4,7 @@ document.addEventListener('DOMContentLoaded', function() {
     // Import feature modules
     import ('/static/js/features/datasetList.js').then(({ fetchDatasets, renderDatasetList }) => {
         import ('/static/js/features/datasetSummary.js').then(({ fetchDatasetSummary, renderDatasetSummary }) => {
-            import ('/static/js/features/phenomenonSelection.js').then(({ renderPhenomenonOptions }) => {
+            
                 // UI element IDs
                 const datasetSelectionId = 'datasetSelection';
                 const datasetListContainerId = 'available-datasets-list';
@@ -305,11 +305,12 @@ document.addEventListener('DOMContentLoaded', function() {
                         if (chatInputContainer) chatInputContainer.style.display = 'block';
                         // If there's an input element, set a helpful placeholder to guide the user
                         const chatInput = document.getElementById('chatInput');
-                        if (chatInput) chatInput.placeholder = `Describe the ${dtype} phenomenon you'd like to animate (e.g. temperature front, eddy, salinity intrusion)...`;
+                        // Derive a friendly dataset type label from the dataset object.
+                        // Some dataset descriptors use `type`, others may use `name`.
+                        const dtypeLabel = (dataset && (dataset.type || dataset.dtype || dataset.name)) ? (dataset.type || dataset.dtype || dataset.name) : 'selected';
+                        if (chatInput) chatInput.placeholder = `Describe what you like to see in this ${dtypeLabel} data`;
                     });
                 }
-                // Step 4: Handle phenomenon selection (call backend, show animation, etc.)
-            });
         });
     });
 });

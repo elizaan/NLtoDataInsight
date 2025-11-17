@@ -6,7 +6,6 @@ import json
 import uuid
 import time
 import threading
-from datetime import datetime, timedelta
 
 # Conversation context helper
 try:
@@ -1248,7 +1247,7 @@ def convert_to_web_path(local_path):
     try:
         # If caller passed a dict-like object, attempt to extract common path keys
         if isinstance(local_path, dict):
-            for k in ('animation_path', 'animation', 'path', 'output_base', 'base'):
+            for k in ('path', 'output_base', 'base'):
                 candidate = local_path.get(k)
                 if isinstance(candidate, str) and candidate:
                     local_path = candidate
@@ -1285,8 +1284,7 @@ def convert_to_web_path(local_path):
             relative_path = os.path.relpath(norm_local, norm_ai_dir)
             # Ensure URL uses forward slashes
             url_path = relative_path.replace(os.path.sep, '/')
-            # The /api/animations/ route already serves from ai_data, so just use relative path
-            return f'/api/animations/{url_path}'
+            return f'u/{url_path}'
 
         # If it looks like an absolute path but outside ai_data, return a file:// style
         if os.path.isabs(norm_local):
