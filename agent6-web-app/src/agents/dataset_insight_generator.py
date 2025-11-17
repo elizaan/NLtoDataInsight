@@ -673,6 +673,8 @@ Your code should:
 - For bar charts of min/max: set y-axis from slightly below min to slightly above max
 - For time series: ensure x-axis covers your time range
 - For heatmaps: use appropriate color scales (diverging for anomalies, sequential for values)
+ - For heatmaps: use appropriate color scales (diverging for anomalies, sequential for values)
+    - When using matplotlib's imshow for heatmaps, ALWAYS set origin='lower' so that the array's row 0 is displayed at the bottom (this matches typical Cartesian coordinates). Also provide an explicit extent=[x_min, x_max, y_min, y_max] when mapping array indices to coordinate axes so tick labels and overlays align correctly. Only use origin='upper' if you intentionally want row 0 at the top and clearly document that choice.
 - Use log scale if data spans several orders of magnitude
 - folow rule for other plots too
 

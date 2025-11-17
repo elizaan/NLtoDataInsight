@@ -17,11 +17,11 @@ export function renderDatasetList(datasets, containerId, onSelect) {
         
         // Build HTML for all datasets
         let datasetCardsHTML = datasets.map(ds => `
-            <div class='dataset-card' data-id='${ds.id || ds.name}' style='margin-top:10px;cursor:pointer;padding:12px;border:1px solid #444;border-radius:8px;background:#2a2a2a;transition:background 0.2s;'>
-                <i class="fas fa-water" style="font-size:24px;color:#4fc3f7;margin-right:10px;"></i>
-                <div>
-                    <h4 style="margin:0;color:#fff;">${ds.name || 'Unknown Dataset'}</h4>
-                    <p style="margin:4px 0 0 0;color:#aaa;font-size:0.9em;">${ds.description || ds.type || 'High Resolution Ocean Simulation'}</p>
+            <div class='dataset-card' data-id='${ds.id || ds.name}'>
+                <i class="fas fa-water dataset-icon"></i>
+                <div class='dataset-meta'>
+                    <h4 class='dataset-name'>${ds.name || 'Unknown Dataset'}</h4>
+                    <p class='dataset-desc'>${ds.description || ds.type || 'High Resolution Ocean Simulation'}</p>
                 </div>
             </div>
         `).join('');
@@ -40,13 +40,11 @@ export function renderDatasetList(datasets, containerId, onSelect) {
             const card = botMsg.querySelectorAll('.dataset-card')[index];
             if (card) {
                 card.onclick = () => {
-                    // Visual feedback
-                    card.style.background = '#1e5a7d';
+                    // Visual feedback: use CSS .selected class so theme variables apply
+                    botMsg.querySelectorAll('.dataset-card').forEach(c => c.classList.remove('selected'));
+                    card.classList.add('selected');
                     onSelect(ds);
                 };
-                // Hover effect
-                card.onmouseenter = () => { card.style.background = '#3a3a3a'; };
-                card.onmouseleave = () => { card.style.background = '#2a2a2a'; };
             }
         });
         
