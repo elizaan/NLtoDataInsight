@@ -1,5 +1,4 @@
 // Chat Interface JavaScript - Exactly replicates run_conversation CLI flow
-// VERSION: 20251105_v10 - FIXED: Animation grid padding dynamically adjusts with system logs resize
 
 console.log('CHAT.JS VERSION 20251105_v10');
 
@@ -26,8 +25,7 @@ class ChatInterface {
             }
         }
         if (!this.conversationState) this.conversationState = 'start';
-        this.pendingEvaluation = null; // Store evaluation to show after frames load
-        this.pendingEvaluationPrompt = null; // Store a deferred continue_prompt for new-generation animations
+
         console.log('ChatInterface initialized successfully');
     }
 
@@ -36,34 +34,9 @@ class ChatInterface {
         this.chatInput = document.getElementById('chatInput');
         this.sendButton = document.getElementById('sendButton');
         
-        // Multi-panel elements
-        this.animationGrid = document.getElementById('animationGrid');
-        this.gridPlaceholder = document.getElementById('gridPlaceholder');
-        
-        // Legacy single-panel elements (for backward compatibility)
-        this.animationViewer = document.getElementById('animationViewer');
-        this.animationPlaceholder = document.querySelector('.animation-placeholder');
-        this.animationPreview = document.getElementById('animationPreview');
-        this.animationControls = document.getElementById('animationControls');
-        this.animationStatus = document.getElementById('animationStatus');
-        this.animationTitle = document.getElementById('animationTitle');
-
         console.log('Elements initialized:');
         
-        // Additional debugging for animation controls
-        if (this.animationControls) {
-            console.log(' Animation controls element found');
-            console.log('- Controls display style:', this.animationControls.style.display);
-            console.log('- Controls computed style:', window.getComputedStyle(this.animationControls).display);
-            console.log('- Controls parent:', this.animationControls.parentElement);
-        } else {
-            console.error('Animation controls element NOT found');
-            // Try to find it manually
-            const manualSearch = document.querySelector('#animationControls');
-            console.log('Manual search result:', manualSearch);
-            const allAnimationElements = document.querySelectorAll('[id*="animation"]');
-            console.log('All elements with "animation" in ID:', allAnimationElements);
-        }
+       
     }
 
     setupEventListeners() {
@@ -107,7 +80,7 @@ class ChatInterface {
         // Setup resize handle for system logs
         this.setupLogsResize();
         
-        // Initialize animation grid padding based on initial system logs height
+        // Initialize grid padding based on initial system logs height
         this.updateGridPadding();
     }
     
@@ -161,7 +134,7 @@ class ChatInterface {
                 // Remove transition during drag for smooth resizing
                 systemLogs.style.transition = 'none';
                 
-                // IMPORTANT: Update animation grid bottom padding to match logs height
+                // IMPORTANT: Update  grid bottom padding to match logs height
                 const animationGrid = document.getElementById('animationGrid');
                 if (animationGrid) {
                     // Add 20px buffer for visual spacing

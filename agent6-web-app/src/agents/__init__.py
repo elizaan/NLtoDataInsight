@@ -12,16 +12,11 @@ from .tools import (
  
     
     # # Helper tools
-    # find_existing_animation,
     # validate_region_parameters,
     # setup_data_source,
-    
-    # # RAG tools (placeholders)
-    # search_similar_animations,
-    # store_successful_animation,
-    
-    # # Modification tools (placeholders)
-    # modify_animation_parameters,
+
+
+
 
     # Agent management
     set_agent,

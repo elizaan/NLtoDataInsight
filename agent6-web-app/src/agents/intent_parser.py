@@ -159,7 +159,7 @@ Do NOT include markdown formatting, just raw JSON."""
         
         Args:
             user_query: Natural language query from user
-            context: Optional context (current_animation, dataset, etc.)
+            context: Optional context ( dataset, etc.)
         
         Returns:
             Dictionary with intent classification and extracted hints

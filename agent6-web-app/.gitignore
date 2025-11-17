@@ -19,10 +19,6 @@ api_key.txt
 # Generated data and uploads
 ai_data/
 src/static/uploads/
-Animation/
-GAD_text/
-Out_text/
-Rendered_frames/
 
 # Python bytecode
 __pycache__/

@@ -9,9 +9,9 @@ docs_bp = Blueprint('docs', __name__)
 OPENAPI_SPEC = {
     "openapi": "3.0.1",
     "info": {
-        "title": "NLtoAnimation API (Dev)",
+        "title": "NLtoDataInsight API (Dev)",
         "version": "v1",
-        "description": "Minimal OpenAPI spec for the NLtoAnimation web API (development)."
+        "description": "Minimal OpenAPI spec for the NLtoDataInsight web API (development)."
     },
     "servers": [
         {"url": "/api", "description": "Primary API prefix"}
@@ -77,7 +77,7 @@ def swagger_ui():
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <title>NLtoAnimation API Docs</title>
+    <title>NLtoDataInsight API Docs</title>
     <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@4/swagger-ui.css" />
   </head>
     <body>

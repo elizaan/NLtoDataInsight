@@ -40,7 +40,7 @@ api_bp = Blueprint('api', __name__)
 
 # Global agent instance placeholders (initialized eagerly below)
 agent_instance = None
-animation_agent_instance = None
+global_agent_instance = None
 
 # Task tracking for real-time streaming
 task_storage = {}  # {task_id: {'status', 'messages', 'result', 'created_at'}}
@@ -389,8 +389,9 @@ def summarize_dataset_endpoint(dataset_id):
 # Global conversation state
 conversation_state = {
     'step': 'start',  # start, dataset_selected, conversation_loop
-    'region_params': None,
-    'animation_info': None
+    'dataset': None,
+    'dataset_summary': None
+   
 }
 
 # Global system logs storage
@@ -435,7 +436,7 @@ def add_system_log(message, log_type='info'):
 
 
 def start_log_file_monitoring(log_file_path):
-    """Start monitoring an animation log file for new entries"""
+    """Start monitoring log file for new entries"""
     # Mutate the existing log_file_monitor dict; no need for `global` here
     
     if os.path.exists(log_file_path):
@@ -489,12 +490,12 @@ def get_agent():
         Agent instance 
     """
     global agent_instance
-    global animation_agent_instance
+    global global_agent_instance
 
     # Return existing instance if already initialized
     try:
-        if animation_agent_instance is not None:
-            return animation_agent_instance
+        if global_agent_instance is not None:
+            return global_agent_instance
 
         # Determine default ai_dir and API key file path
         default_ai_dir = os.path.normpath(os.path.join(os.path.dirname(__file__), '..', '..', 'ai_data'))
@@ -512,22 +513,22 @@ def get_agent():
             api_key = os.getenv('OPENAI_API_KEY')
 
         if not api_key:
-            add_system_log("API key not found in file or environment; AnimationAgent cannot be initialized", 'error')
+            add_system_log("API key not found in file or environment; Agent cannot be initialized", 'error')
             return None
 
-        # Dynamically import the AnimationAgent class to avoid import-time failures
-        AnimationAgentCls = None
+        # Dynamically import the Agent class to avoid import-time failures
+        AgentCls = None
         try:
             import importlib
             # Try the project-style package first (works when project root is sys.path)
             try:
                 mod = importlib.import_module('src.agents.core_agent')
-                AnimationAgentCls = getattr(mod, 'AnimationAgent', None)
+                AgentCls = getattr(mod, 'AnimationAgent', None)
             except ModuleNotFoundError:
                 # Try alternate package name (if src is on sys.path directly)
                 try:
                     mod = importlib.import_module('agents.core_agent')
-                    AnimationAgentCls = getattr(mod, 'AnimationAgent', None)
+                    AgentCls = getattr(mod, 'AnimationAgent', None)
                 except ModuleNotFoundError:
                     # Final fallback: import by file path so we don't rely on sys.path
                     try:
@@ -537,44 +538,44 @@ def get_agent():
                             spec = importlib.util.spec_from_file_location('agents.core_agent', core_path)
                             mod = importlib.util.module_from_spec(spec)
                             spec.loader.exec_module(mod)
-                            AnimationAgentCls = getattr(mod, 'AnimationAgent', None)
+                            AgentCls = getattr(mod, 'Agent', None)
                         else:
                             raise ModuleNotFoundError(f"core_agent.py not found at {core_path}")
                     except Exception as e:
                         add_system_log(f"Unable to load core_agent by path: {e}", 'error')
-                        AnimationAgentCls = None
+                        AgentCls = None
 
             # If module imported but class not present, log its attributes for debugging
-            if AnimationAgentCls is None and 'mod' in locals() and mod is not None:
+            if AgentCls is None and 'mod' in locals() and mod is not None:
                 try:
                     attrs = [a for a in dir(mod) if not a.startswith('__')]
-                    add_system_log(f"Imported module 'core_agent' but AnimationAgent missing. module attrs: {attrs}", 'warning')
+                    add_system_log(f"Imported module 'core_agent' but Agent class missing. module attrs: {attrs}", 'warning')
                 except Exception:
                     pass
 
         except Exception as e:
-            add_system_log(f"Unable to import AnimationAgent class: {e}", 'error')
-            AnimationAgentCls = None
+            add_system_log(f"Unable to import Agent class: {e}", 'error')
+            AgentCls = None
 
-        if not AnimationAgentCls:
-            add_system_log("AnimationAgent class not available; skipping initialization", 'error')
+        if not AgentCls:
+            add_system_log("Agent class not available; skipping initialization", 'error')
             return None
 
-        # Instantiate the AnimationAgent
+        # Instantiate the agent
         try:
-            animation_agent_instance = AnimationAgentCls(api_key=api_key)
+            global_agent_instance = AgentCls(api_key=api_key)
             add_system_log("Agent initialized successfully", 'info')
         except Exception as e:
-            add_system_log(f"Failed to initialize AnimationAgent: {e}", 'error')
-            animation_agent_instance = None
+            add_system_log(f"Failed to initialize Agent: {e}", 'error')
+            global_agent_instance = None
 
     except Exception as e:
         add_system_log(f"Unexpected error in get_agent: {e}", 'error')
-        animation_agent_instance = None
+        global_agent_instance = None
 
-    return animation_agent_instance
+    return global_agent_instance
 
-# Eagerly initialize AnimationAgent so it's available to all API endpoints
+# Eagerly initialize Agent so it's available to all API endpoints
 try:
     _agent = get_agent()
     if _agent is None:
@@ -691,8 +692,7 @@ def chat():
             # Build context with dataset and summary from conversation_state
             context = {
                 'dataset': conversation_state.get('dataset'),
-                'dataset_summary': conversation_state.get('dataset_summary'),
-                'animation_info': conversation_state.get('animation_info')
+                'dataset_summary': conversation_state.get('dataset_summary')
             }
 
             # Attach conversation context (full + short) when we can
@@ -902,8 +902,7 @@ def chat():
                 # Build context with dataset and summary from conversation_state
                 context = {
                     'dataset': conversation_state.get('dataset'),
-                    'dataset_summary': conversation_state.get('dataset_summary'),
-                    'animation_info': conversation_state.get('animation_info')
+                    'dataset_summary': conversation_state.get('dataset_summary')
                 }
 
                 # Attach conversation context (full + short) when available
@@ -1106,7 +1105,7 @@ def chat():
                         dataset_obj = json.load(fh)
                         add_system_log(f"Loaded dataset from {dataset_filename}", 'info')
                         # Persist the loaded dataset into conversation_state so
-                        # downstream orchestrators (AnimationAgent) have access
+                        # downstream orchestrators have access
                         # to dataset metadata when invoked with use_langchain.
                         try:
                             conversation_state['dataset'] = dataset_obj
@@ -1219,24 +1218,13 @@ def reset_conversation():
     global conversation_state
     conversation_state = {
         'step': 'start',
-        'region_params': None,
-        'animation_info': None
+        'dataset': None,
+        'dataset_summary': None
     }
     return jsonify({
         'status': 'success',
         'message': 'Conversation reset successfully'
     })
-
-@api_bp.route('/animations/<path:filename>')
-def serve_animation(filename):
-    """Serve animation files from the ai_data directory (under the web app)"""
-    try:
-        default_ai_dir = os.path.normpath(os.path.join(os.path.dirname(__file__), '..', '..', 'ai_data'))
-        ai_dir = os.getenv('AI_DIR', default_ai_dir)
-        return send_from_directory(ai_dir, filename)
-    except Exception as e:
-        print(f"Error serving animation file: {e}")
-        return jsonify({'error': 'Animation file not found'}), 404
 
 def convert_to_web_path(local_path):
     """Convert a local file system path to a web-accessible URL"""

@@ -20,18 +20,7 @@ myenv
 
 imgui.ini
 
-rendered_frames
-rendered_frames-agulhaas-2
-rendered_frames-agulhaas-1
-rendered_frames-viewer
-rendered_frames1
-rendered_frames/*
-Rendered_frames
-Rendered_frames/*
-/AIExample/openai_api_key.txt
-/AIExample/existing_models.txt
-/AIdemo/openai_api_key.txt
-/AIdemo/animation_*
+
 
 # Web app sensitive files
 .env
