@@ -51,7 +51,8 @@ class InsightExtractorAgent:
         self.llm = ChatOpenAI(
             model="gpt-4o-mini", 
             api_key=api_key, 
-            temperature=0.2
+            temperature=0.2,
+            max_completion_tokens=3000
         )
         
         # Initialize the data insight generator
@@ -65,9 +66,7 @@ class InsightExtractorAgent:
 
 USER QUERY: {query}
 
-PLOT HINTS: {plot_hints}
-
-Previous Agent's Reasoning: {prev_reasoning}
+INTENT PARSER AGENT's OUTPUT: {intent_type}. {prev_reasoning}. 
 
 DATASET INFORMATION:
 Available Variables: {variables}
@@ -78,15 +77,19 @@ Dataset Size: {dataset_size}
 Your role is to analyze the query and determine:
 1. What variable(s) the user is asking about
 2. What type of analysis is needed (max/min, time series, spatial pattern, etc.)
-3. Whether this requires actual data querying or can be answered from metadata
-
+3. Whether this requires actual data querying/ writing a python code or can be answered from metadata information alone.
+4. Give plot suggestions: suggest as many NICE, SIMPLE, INTUITIVE plots as they are relevant to dataset, most easily interpretable by domain scientists and appropriate for the query and dataset — do NOT limit the number or force a fixed mix of 1D/2D/3D. Multiple 1D/2D/3D/nD plots are allowed when appropriate.
 Output JSON with:
 {{
     "analysis_type": "data_query" | "metadata_only",
-    "target_variables": ["variable_id1", "variable_id2"],
-    "query_type": "max_value" | "min_value" | "time_series" | "spatial_pattern" | "comparison",
+    "target_variables": ["variable_id1", "variable_id2", ...],
+    "plot_hints": [
+        "plot1 (1D/2D, ... ND): variables: <comma-separated variable ids>",
+        ......
+        "plotN (1D/2D, ... ND): variables: <comma-separated variable ids>"
+    ],
     "reasoning": "Brief explanation",
-    "confidence": 0.85
+    "confidence": (0.0-1.0)
 }}
 
 Rules:
@@ -147,7 +150,7 @@ Rules:
             prompt_vars = {
                 "dataset_name": dataset_name,
                 "query": user_query,
-                "plot_hints": json.dumps(intent_hints.get('plot_hints', [])),
+                "intent_type": intent_hints.get('intent_type', 'UNKNOWN'),
                 "prev_reasoning": intent_hints.get('reasoning', ''),
                 "variables": ', '.join(variable_names),
                 "spatial_info": json.dumps(spatial_info.get('dimensions', {})),
@@ -167,58 +170,90 @@ Rules:
                 f"confidence={analysis.get('confidence', 0):.2f}",
                 'info'
             )
+
+            # Emit analysis as a progress update so callers (and UI) can display it
+            try:
+                if progress_callback and callable(progress_callback):
+                    progress_callback('insight_analysis', analysis)
+            except Exception:
+                # Non-fatal: continue even if progress callback fails
+                pass
+
+            # Also expose the raw LLM text as a separate progress message
+            try:
+                raw_text = getattr(raw_response, 'content', None) or str(raw_response)
+                if progress_callback and callable(progress_callback):
+                    progress_callback('insight_raw', raw_text)
+            except Exception:
+                pass
             
             # Step 2: Check if we need to query actual data
             analysis_type = analysis.get('analysis_type', 'data_query')
             
             if analysis_type == 'metadata_only':
-                # The LLM judged this metadata-only, but user's preference is to
-                # always generate data-driven insights and plots. Proceed to run
-                # the DatasetInsightGenerator to produce concrete insights and
-                # visualizations. Keep the original analysis in the intent hints.
+                # LLM determined this can be answered from metadata alone.
+                # Generate a comprehensive insight using the LLM without querying data.
                 add_system_log(
-                    "Analysis suggests metadata-only, but proceeding with data query to produce plots and insights", 
+                    "Analysis suggests metadata-only, generating insight from metadata", 
                     'info'
                 )
 
-                # Ensure intent hints include plot_hints from analysis if available
-                intent_hints = intent_hints or {}
-                if not intent_hints.get('plot_hints') and analysis.get('target_variables'):
-                    # Provide a default exploratory hint when variables are known
-                    intent_hints['plot_hints'] = [f"explore: {v}" for v in analysis.get('target_variables')]
-
-                # Add a flag so downstream generator can know this run was forced
-                intent_hints['force_data_query'] = True
-
-                insight_result = self.insight_generator.generate_insight(
+                # Generate detailed metadata-based insight using LLM
+                metadata_insight = self._generate_metadata_insight_with_llm(
                     user_query=user_query,
-                    intent_result=intent_hints,
-                    dataset_info=dataset
+                    analysis=analysis,
+                    dataset=dataset
                 )
 
-                if 'error' in insight_result:
-                    add_system_log(f"Insight generation (forced) failed: {insight_result.get('error')}", 'error')
-                    return {
-                        'status': 'error',
-                        'message': insight_result.get('error'),
-                        'confidence': 0.0
-                    }
+                # Save the insight to file
+                from datetime import datetime
+                
+                base_output_dir = self.insight_generator.base_output_dir
+                insight_dir = base_output_dir / "insights" / dataset_id
+                insight_dir.mkdir(parents=True, exist_ok=True)
+                
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                insight_file = insight_dir / f"metadata_insight_{timestamp}.txt"
+                
+                with open(insight_file, 'w', encoding='utf-8') as f:
+                    f.write(metadata_insight)
+                
+                add_system_log(f"Metadata insight saved to {insight_file}", 'success')
 
-                # Build return value consistent with the success path below
+                # Return without plots or code files
                 return {
                     'status': 'success',
-                    'insight': insight_result.get('insight', ''),
-                    'data_summary': insight_result.get('data_summary', {}),
-                    'visualization': insight_result.get('visualization_description', ''),
-                    'code_file': insight_result.get('code_file'),
-                    'insight_file': insight_result.get('insight_file'),
-                    'plot_file': insight_result.get('plot_file'),
-                    'confidence': insight_result.get('confidence', analysis.get('confidence', 0.7))
+                    'insight': metadata_insight,
+                    'data_summary': {},
+                    'visualization': 'No visualization needed for metadata-only query',
+                    'query_code_file': None,
+                    'plot_code_file': None,
+                    'insight_file': str(insight_file),
+                    'plot_files': [],
+                    'num_plots': 0,
+                    'confidence': analysis.get('confidence', 0.8),
+                    'analysis': analysis
                 }
             
             # Step 3: Query actual data using DatasetInsightGenerator
             add_system_log("Step 2: Querying actual dataset...", 'info')
             
+            # Attach the parsed analysis (not the raw response text) into intent_hints
+            # so downstream generators receive a structured dict they can consume
+            # directly. If for some reason the parsed analysis is not available,
+            # fall back to the raw LLM text.
+            intent_hints = intent_hints or {}
+            try:
+                # Prefer the parsed analysis dict produced by _parse_llm_response
+                intent_hints['llm_pre_insight_analysis'] = analysis
+                print("printing pre insights", intent_hints['llm_pre_insight_analysis'])
+            except Exception:
+                # Last-resort fallback: raw response string
+                try:
+                    intent_hints['llm_pre_insight_analysis'] = getattr(raw_response, 'content', None) or str(raw_response)
+                except Exception:
+                    intent_hints['llm_pre_insight_analysis'] = None
+
             insight_result = self.insight_generator.generate_insight(
                 user_query=user_query,
                 intent_result=intent_hints,
@@ -248,7 +283,8 @@ Rules:
                 'insight_file': insight_result.get('insight_file'),
                 'plot_files': insight_result.get('plot_files', []),
                 'num_plots': insight_result.get('num_plots', 0),
-                'confidence': insight_result.get('confidence', 0.5)
+                'confidence': insight_result.get('confidence', 0.5),
+                'analysis': analysis
             }
 
         except Exception as e:
@@ -265,6 +301,14 @@ Rules:
     def _parse_llm_response(self, raw_response) -> dict:
         """Parse LLM response to dict"""
         if isinstance(raw_response, dict):
+            # Preserve the original text for provenance if available
+            try:
+                text = getattr(raw_response, 'content', None) or str(raw_response)
+            except Exception:
+                text = str(raw_response)
+            # Return the dict as-is. Do NOT attach a '_raw' field here;
+            # callers do not need the large raw LLM payload stored on the
+            # analysis dict.
             return raw_response
         
         # Try to get text content
@@ -284,21 +328,36 @@ Rules:
             json_end = text.find("```", json_start)
             text = text[json_start:json_end].strip()
         
-        # Try to parse JSON
+        # Try to parse JSON and preserve the original text for debugging/provenance
         try:
-            return json.loads(text)
-        except:
-            # Return default analysis
+            parsed = json.loads(text)
+            # If parsed is a dict, return it directly. We intentionally avoid
+            # adding a '_raw' field to keep the analysis dict compact.
+            if isinstance(parsed, dict):
+                return parsed
+            else:
+                # Parsed JSON but not a dict (e.g., list). Wrap into expected shape
+                return {
+                    'analysis_type': 'data_query',
+                    'target_variables': [],
+                    'query_type': 'general',
+                    'reasoning': 'Parsed JSON but unexpected shape',
+                    'confidence': 0.5,
+                    '_parsed_value': parsed
+                }
+        except Exception:
+            # Parsing failed: return a conservative default analysis but keep the raw text
             return {
                 'analysis_type': 'data_query',
                 'target_variables': [],
                 'query_type': 'general',
                 'reasoning': 'Could not parse analysis',
-                'confidence': 0.5
+                'confidence': 0.5,
+                '_parse_failed': True
             }
     
     def _generate_metadata_insight(self, query: str, dataset: dict) -> str:
-        """Generate insight from metadata without querying data"""
+        """Generate insight from metadata without querying data (simple fallback)"""
         dataset_name = dataset.get('name', 'this dataset')
         variables = dataset.get('variables', [])
         temporal_info = dataset.get('temporal_info', {})
@@ -327,4 +386,109 @@ Rules:
             )
         
         return '\n'.join(insight_parts)
+
+    def _generate_metadata_insight_with_llm(
+        self, 
+        user_query: str, 
+        analysis: dict, 
+        dataset: dict
+    ) -> str:
+        """
+        Generate comprehensive metadata-based insight using LLM.
+        
+        This method uses the LLM to produce a detailed, natural-language insight
+        that explains how the question can be answered from metadata alone,
+        without querying the actual data.
+        """
+        dataset_name = dataset.get('name', 'Unknown Dataset')
+        dataset_size = dataset.get('size', 'unknown size')
+        variables = dataset.get('variables', [])
+        spatial_info = dataset.get('spatial_info', {})
+        temporal_info = dataset.get('temporal_info', {})
+        
+        # Build detailed dataset info for LLM
+        var_details = []
+        for v in variables:
+            var_name = v.get('name') or v.get('id', 'unknown')
+            var_desc = v.get('description', 'No description')
+            var_units = v.get('units', 'unknown units')
+            var_details.append(f"- {var_name}: {var_desc} ({var_units})")
+        
+        variables_text = '\n'.join(var_details) if var_details else "No variables listed"
+        
+        # Temporal info
+        time_range = temporal_info.get('time_range', {})
+        temporal_text = "No temporal information"
+        if temporal_info.get('has_temporal_info') == 'yes':
+            temporal_text = f"Start: {time_range.get('start', 'unknown')}, End: {time_range.get('end', 'unknown')}, Total timesteps: {temporal_info.get('total_time_steps', 'unknown')}"
+        
+        # Spatial info
+        dims = spatial_info.get('dimensions', {})
+        spatial_text = f"X: {dims.get('x', 'unknown')}, Y: {dims.get('y', 'unknown')}, Z: {dims.get('z', 'unknown')}"
+        
+        # Geographic info
+        geo_info = spatial_info.get('geographic_info', {})
+        has_geo = geo_info.get('has_geographic_info', 'no')
+        geo_text = f"Geographic coordinates: {has_geo}"
+        if has_geo == 'yes':
+            geo_text += f", File: {geo_info.get('geographic_info_file', 'N/A')}"
+        
+        # Build LLM prompt for metadata insight generation
+        metadata_prompt = f"""You are an expert scientific dataset analyst. The user asked a question about a dataset, and your analysis determined this can be answered using ONLY the dataset's metadata (without querying actual data values).
+
+USER QUESTION: {user_query}
+
+YOUR ANALYSIS:
+- Analysis Type: {analysis.get('analysis_type', 'metadata_only')}
+- Target Variables: {', '.join(analysis.get('target_variables', [])) or 'None specified'}
+- Your Reasoning: {analysis.get('reasoning', 'No reasoning provided')}
+- Confidence: {analysis.get('confidence', 0.0):.2f}
+
+DATASET METADATA:
+Name: {dataset_name}
+Size: {dataset_size}
+
+Variables:
+{variables_text}
+
+Temporal Coverage:
+{temporal_text}
+
+Spatial Dimensions:
+{spatial_text}
+
+{geo_text}
+
+TASK:
+Write a comprehensive, natural-language insight that:
+1. Directly answers the user's question using ONLY the metadata above
+2. Explains CLEARLY why this question can be answered without querying actual data
+3. References specific metadata fields you used (variables, time range, spatial dimensions, etc.)
+4. Provides all relevant details from the metadata that address the question
+5. If the question cannot be fully answered from metadata, explain what information is available and what would require a data query
+
+Be conversational, clear, and thorough. Format your response as a cohesive paragraph or short essay.
+Do NOT output JSON. Output natural language text only.
+"""
+
+        try:
+            # Create a simple prompt and call the LLM
+            metadata_insight_prompt = ChatPromptTemplate.from_messages([
+                ("system", "You are an expert scientific dataset analyst who provides clear, detailed insights based on dataset metadata."),
+                ("human", metadata_prompt)
+            ])
+            
+            metadata_chain = metadata_insight_prompt | self.llm
+            response = metadata_chain.invoke({})
+            
+            insight_text = getattr(response, 'content', None) or str(response)
+            
+            add_system_log(f"Generated metadata insight: {len(insight_text)} characters", 'info')
+            
+            return insight_text
+            
+        except Exception as e:
+            add_system_log(f"Failed to generate LLM-based metadata insight: {e}", 'warning')
+            # Fallback to simple metadata insight
+            return self._generate_metadata_insight(user_query, dataset)
     

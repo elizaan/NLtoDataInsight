@@ -8,23 +8,11 @@ import time
 import threading
 
 # Conversation context helper
-try:
-    from src.agents.conversation_context import create_conversation_context
-except Exception:
-    # best-effort: dynamic import fallback
-    try:
-        import importlib.util
-        cur = os.path.dirname(os.path.abspath(__file__))
-        conv_path = os.path.abspath(os.path.join(cur, '..', 'agents', 'conversation_context.py'))
-        if os.path.exists(conv_path):
-            spec = importlib.util.spec_from_file_location('src.agents.conversation_context', conv_path)
-            mod = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(mod)
-            create_conversation_context = getattr(mod, 'create_conversation_context', None)
-        else:
-            create_conversation_context = None
-    except Exception:
-        create_conversation_context = None
+# Lazy import: avoid importing `create_conversation_context` at module import time
+# because that module may import other agents which in turn import `routes` and
+# create a circular import. We will attempt a dynamic import at the point of use
+# inside the request handler.
+create_conversation_context = None
 
 # Add the models directory to the path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'models'))
@@ -699,6 +687,8 @@ def serve_artifact(relpath):
 def chat():
     """Handle chat messages - exactly replaces run_conversation CLI interface"""
     global conversation_state
+    # Ensure we can update the module-level lazy-imported factory from here.
+    global create_conversation_context
     
     try:
         data = request.get_json()
@@ -729,10 +719,45 @@ def chat():
                 'dataset_summary': conversation_state.get('dataset_summary')
             }
 
+            # CRITICAL: Handle clarification responses properly
+            # If this is a clarification response, append it to the original query
+            is_clarify_response = data.get('clarify_response', False)
+            context['clarify_response'] = is_clarify_response
+            
+            if is_clarify_response and conversation_state.get('pending_clarification_query'):
+                # Retrieve original query
+                original_query = conversation_state.get('pending_clarification_query', '')
+                # Format clarification in a way the LLM can understand
+                # Make it clear that this is additional context/specification
+                user_message = f"{original_query}. Specifically: {user_message}"
+                add_system_log(f"[clarify_response] Combined query: {user_message[:200]}", 'info')
+                # Clear the pending clarification state
+                conversation_state.pop('pending_clarification_query', None)
+            elif not is_clarify_response:
+                # This is a new query, NOT a clarification response
+                # Clear any stale clarification state
+                conversation_state.pop('pending_clarification_query', None)
+
             # Attach conversation context (full + short) when we can
             try:
                 ds = conversation_state.get('dataset') or {}
                 dsid = ds.get('id') if isinstance(ds, dict) else None
+                # Ensure create_conversation_context is imported lazily to avoid
+                # circular imports (some agent modules import `routes` at import time).
+                if create_conversation_context is None:
+                    try:
+                        import importlib.util
+                        cur = os.path.dirname(os.path.abspath(__file__))
+                        conv_path = os.path.abspath(os.path.join(cur, '..', 'agents', 'conversation_context.py'))
+                        if os.path.exists(conv_path):
+                            spec = importlib.util.spec_from_file_location('src.agents.conversation_context', conv_path)
+                            mod = importlib.util.module_from_spec(spec)
+                            spec.loader.exec_module(mod)
+                            # Update the module-level variable via globals() to avoid scoping issues
+                            globals()['create_conversation_context'] = getattr(mod, 'create_conversation_context', None)
+                    except Exception as e:
+                        add_system_log(f"Failed to lazy-import create_conversation_context: {e}", 'warning')
+
                 if create_conversation_context and dsid:
                     conv = create_conversation_context(dataset_id=dsid, enable_vector_db=True)
                     full_ctx = conv.get_context_summary(current_query=user_message, top_k=5, use_semantic_search=True)
@@ -806,7 +831,18 @@ def chat():
                     print(f"[BACKGROUND TASK {task_id[:8]}] Agent completed")
                     print(f"[BACKGROUND TASK] Result keys: {list(result.keys())}")
                     print(f"[BACKGROUND TASK] Result type: {result.get('type')}")
+                    print(f"[BACKGROUND TASK] Result status: {result.get('status')}")
                     print(f"{'='*60}\n")
+                    
+                    # CRITICAL: If agent returned awaiting_clarification status, store original query
+                    if result.get('status') == 'awaiting_clarification':
+                        # Store the ORIGINAL user message (before any clarification appending)
+                        original_msg = user_message
+                        # If this was already a clarified query, extract the base query
+                        if '(User clarification:' in user_message:
+                            original_msg = user_message.split('(User clarification:')[0].strip()
+                        conversation_state['pending_clarification_query'] = original_msg
+                        add_system_log(f"[clarification] Stored original query for clarification: {original_msg[:100]}", 'info')
                     
                     # Extract LLM outputs for final result
                     intent_result = result.get('intent_result')
@@ -943,6 +979,21 @@ def chat():
                 try:
                     ds = conversation_state.get('dataset') or {}
                     dsid = ds.get('id') if isinstance(ds, dict) else None
+                    # Lazy-load conversation_context helper to avoid circular imports
+                    if create_conversation_context is None:
+                        try:
+                            import importlib.util
+                            cur = os.path.dirname(os.path.abspath(__file__))
+                            conv_path = os.path.abspath(os.path.join(cur, '..', 'agents', 'conversation_context.py'))
+                            if os.path.exists(conv_path):
+                                spec = importlib.util.spec_from_file_location('src.agents.conversation_context', conv_path)
+                                mod = importlib.util.module_from_spec(spec)
+                                spec.loader.exec_module(mod)
+                                # Update the module-level variable via globals() to avoid scoping issues
+                                globals()['create_conversation_context'] = getattr(mod, 'create_conversation_context', None)
+                        except Exception as e:
+                            add_system_log(f"Failed to lazy-import create_conversation_context: {e}", 'warning')
+
                     if create_conversation_context and dsid:
                         conv = create_conversation_context(dataset_id=dsid, enable_vector_db=True)
                         full_ctx = conv.get_context_summary(current_query=user_message, top_k=5, use_semantic_search=True)

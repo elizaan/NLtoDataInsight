@@ -147,8 +147,19 @@ class DatasetInsightGenerator:
         
         # Extract info
         intent_type = intent_result.get('intent_type', 'UNKNOWN')
-        plot_hints = intent_result.get('plot_hints', [])
+        plot_hints = intent_result.get('llm_pre_insight_analysis', {}).get('plot_hints', [])
+        print(f"Plot hints: {plot_hints}")
         reasoning = intent_result.get('reasoning', '')
+
+        # Include any prior LLM pre-insight analysis (produced by the intent parser / extractor)
+        # This will be injected into the system prompt so the generator LLM can leverage
+        # previous analysis/provenance. Truncate very long texts to keep prompt size reasonable.
+        pre_insight = intent_result.get('llm_pre_insight_analysis', None)
+        if pre_insight is None:
+            pre_insight_summary = "None"
+        else:
+            # keep a large but bounded portion (15k chars) to avoid excessively long prompts
+            pre_insight_summary = str(pre_insight)
         
         variables = dataset_info.get('variables', [])
         spatial_info = dataset_info.get('spatial_info', {})
@@ -174,78 +185,81 @@ class DatasetInsightGenerator:
             geo_file_path = (repo_src_path / 'datasets' / geo_filename).resolve()
             geo_file_path_str = str(geo_file_path)
         except Exception:
-            geo_file_path_str = geo_filename
-        
+          geo_file_path_str = geo_filename
+
         # Build system prompt - LLM DECIDES EVERYTHING
         system_prompt = f"""You are an expert data analyst with full autonomy to solve the user's question.
 
-**USER QUESTION:** {user_query}
+          **USER QUESTION:** {user_query}
 
-**INTENT ANALYSIS:**
-- Type: {intent_type}
-- Reasoning: {reasoning}
-- Plot Hints: {json.dumps(plot_hints, indent=2)}
+          **INTENT ANALYSIS:**
+          - Type: {intent_type}
+          - Reasoning: {reasoning}
+          - Plot Hints: {json.dumps(plot_hints, indent=2)}
 
-**CONVERSATION CONTEXT:**
-{conversation_context if conversation_context else "This is the first query in this conversation."}
+          **CONVERSATION CONTEXT:**
+          {conversation_context if conversation_context else "This is the first query in this conversation."}
 
-**CRITICAL: Using Previous Results**
-When answering the user's question, ALWAYS leverage any relevant results from previous queries in this conversation to find out if the query is a follow-up. Follow these steps:
-1. **Check conversation context above** for relevant past results
-2. **Extract the specific values** you need (e.g., if previous query found x = y, use that exact value)
-3. **Check if previous query saved an npz file** with rich metadata
-4. **Load and inspect the npz file** to see what data is already available
-5. **Reuse saved data** instead of re-querying the dataset
+          **PRE-INSIGHT LLM ANALYSIS (from intent parser / extractor):**
+          {pre_insight_summary}
 
-**How to Load and Use Previous NPZ Files:**
+          **CRITICAL: Using Previous Results**
+          When answering the user's question, ALWAYS leverage any relevant results from previous queries in this conversation to find out if the query is a follow-up. Follow these steps:
+          1. **Check conversation context above** for relevant past results
+          2. **Extract the specific values** you need (e.g., if previous query found x = y, use that exact value)
+          3. **Check if previous query saved an npz file** with rich metadata
+          4. **Load and inspect the npz file** to see what data is already available
+                5. **Reuse saved data** instead of re-querying the dataset
 
-```python
-import numpy as np
+                **How to Load and Use Previous NPZ Files:**
 
-# Example: Previous query saved '/path/to/data_TIMESTAMP.npz'
-# Load it and inspect contents
-data = np.load('/path/to/previous_query.npz')
-print("Available keys:", data.files)  # Shows what's saved
+                ```python
+                import numpy as np
+
+                # Example: Previous query saved '/path/to/data_TIMESTAMP.npz'
+                # Load it and inspect contents
+                data = np.load('/path/to/previous_query.npz')
+                print("Available keys:", data.files)  # Shows what's saved
 
 
-# Example: "When was max temperature seen?"
-# Instead of re-scanning, just use the saved timestep:
-print(f"Max occurred at timestep: {{timestep}}")
-# Convert to date using dataset temporal info
+                # Example: "When was max temperature seen?"
+                # Instead of re-scanning, just use the saved timestep:
+                print(f"Max occurred at timestep: {{timestep}}")
+                # Convert to date using dataset temporal info
 
-# Example: "Where was max temperature seen?"
-# Instead of re-scanning, find location in saved spatial data:
-y_idx, x_idx = np.unravel_index(np.argmax(spatial_data), spatial_data.shape)
-# Convert to lat/lon using helper functions
-```
+                # Example: "Where was max temperature seen?"
+                # Instead of re-scanning, find location in saved spatial data:
+                y_idx, x_idx = np.unravel_index(np.argmax(spatial_data), spatial_data.shape)
+                # Convert to lat/lon using helper functions
+                ```
 
-**When to Load Previous NPZ vs Re-query:**
-- If previous query found the exact value you need (max, min, etc.) → Load npz
-- If npz contains target_timestep → Use it for "when?" queries
-- If npz contains target_x, target_y → Use it for "where?" queries
-- If current query needs different time range or region → Re-query
+                **When to Load Previous NPZ vs Re-query:**
+                - If previous query found the exact value you need (max, min, etc.) → Load npz
+                - If npz contains target_timestep → Use it for "when?" queries
+                - If npz contains target_x, target_y → Use it for "where?" queries
+                - If current query needs different time range or region → Re-query
 
-Examples of context-aware queries:
-- User asks: "what is the maximum x?" → You find that suppose m
-- User then asks: "when/where was this highest x seen?" → You should:
-  - Check context: see that max_x = m was found AND npz file path
-  - **Load the npz file first**: `data = np.load(npz_path)`
-  - **Check if target_timestep exists**: if yes, use it directly!
-  - Do NOT re-scan entire dataset - use the saved metadata!
+                Examples of context-aware queries:
+                - User asks: "what is the maximum x?" → You find that suppose m
+                - User then asks: "when/where was this highest x seen?" → You should:
+                    - Check context: see that max_x = m was found AND npz file path
+                    - **Load the npz file first**: `data = np.load(npz_path)`
+                    - **Check if target_timestep exists**: if yes, use it directly!
+                    - Do NOT re-scan entire dataset - use the saved metadata!
 
-- User asks: "where was that highest x seen?" → You should:
-  - Load previous npz with target_x, target_y
-  - Convert grid indices to lat/lon using xy_to_latlon() helper
-  - Report approximate geographic location or even both
+                - User asks: "where was that highest x seen?" → You should:
+                    - Load previous npz with target_x, target_y
+                    - Convert grid indices to lat/lon using xy_to_latlon() helper
+                    - Report approximate geographic location or even both
 
-**IMPORTANT**: If conversation context contains values like "max", "min", "peak", "average" or any statistical values, etc., ALWAYS use them rather than recomputing!
+                **IMPORTANT**: If conversation context contains values like "max", "min", "peak", "average" or any statistical values, etc., ALWAYS use them rather than recomputing!
 
-**═══════════════════════════════════════════════════════════════════════**
-**CRITICAL: SAVE METADATA FOR FOLLOW-UP QUERIES**
+                **═══════════════════════════════════════════════════════════════════════**
+                **CRITICAL: SAVE METADATA FOR FOLLOW-UP QUERIES**
 
-When finding extremes (max/min/peaks), you MUST save additional metadata:
-```python
-A good example: 
+                When finding extremes (max/min/peaks), you MUST save additional metadata:
+                ```python
+                ```
 np.savez(
     output_file,
     target = target_value,
@@ -269,7 +283,7 @@ Spatial Dimensions:
 - Y: {y:,} points  
 - Z: {z} levels
 - Total spatial points: {total_voxels:,}
-- for surface level z[0,1]
+
 
 Geographic Information:
 - Has geographic coordinates: {spatial_info.get('geographic_info', {}).get('has_geographic_info', 'no')}
@@ -342,14 +356,14 @@ data = ds.db.read(
     time=t,
     x=x_range,
     y=y_range,
-    # For surface-level reads prefer a non-zero-length range (start < end).
-    # Many OpenVisus bindings require start < end, so use [0, 1] to read the surface slice.
-    z=[0, 1],  # surface
+    z= z_range
+    # x,y,z reads prefer a non-zero-length range (start < end).
+    #  OpenVisus bindings require start < end
     quality=-6
 )
 ```
 
-**IMPORTANT**: 
+**IMPORTANT** 
 - DO NOT hardcode any specific lat/lon values in your prompt
 - USE YOUR KNOWLEDGE to estimate bounds for ANY geographic location mentioned
 - ALWAYS call latlon_to_xy() to get grid indices - never guess grid coordinates
@@ -919,16 +933,6 @@ Common issues:
                                     'error': error_msg[:200]  # First 200 chars of error
                                 })
 
-                            # # Build targeted hint when known patterns appear
-                            # targeted_hint = ""
-                            # if "createBoxQuery" in error_msg or "Wrong number or type of arguments" in error_msg:
-                            #     targeted_hint = (
-                            #         "Hint: The OpenVisus C++ binding often expects scalar integer `time` parameters and clear index ranges for spatial axes.\n"
-                            #         "Avoid passing zero-length ranges like `z_range = [0, 0]` (many bindings require start < end). For surface-level reads prefer `z_range = [0, 1]` or explicitly iterate a single index.\n"
-                            #         "Also avoid passing Python lists where a single integer is expected for `time`. Either iterate timesteps (call `ds.db.read(time=t, ...)` per integer t)\n"
-                            #         "or use the dataset's `getTimesteps()` to discover available timesteps. Example patterns:\n"
-                            #         "````python\n# Pattern A: per-timestep read (safe)\nlength = len(ds.db.getTimesteps())\nfor t in range(start, end+1):\n    # For surface-level read use z_range = [0, 1] (start < end) or pass a single index if the API supports it\n    z_range = [0, 1]\n    data = ds.db.read(time=t, x=x_range, y=y_range, z=z_range, quality=-6)\n\n# Pattern B: explicit single-slice read (if API accepts single index)\nfor t in range(start, end+1):\n    data = ds.db.read(time=t, x=x_range, y=y_range, z=0, quality=-6)\n````\n"
-                            #     )
 
                             # Include the last attempted query code for debugging
                             last_code_snippet = code if len(code) < 2000 else code[:1900] + "\n... (truncated)"

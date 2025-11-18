@@ -166,6 +166,16 @@ class AnimationAgent:
         if progress_callback:
             progress_callback('intent_parsed', intent_result)
         
+        # CRITICAL: If the intent parser is awaiting clarification, STOP here
+        # Do not proceed to insight generation until user responds
+        if intent_result.get('awaiting_clarification'):
+            print("[Agent] Intent parser is awaiting user clarification. Stopping processing.")
+            return {
+                'status': 'awaiting_clarification',
+                'intent_result': intent_result,
+                'message': 'Awaiting user response to clarifying questions.'
+            }
+        
         # STEP 2: Route based on intent
         intent_type = intent_result['intent_type']
         

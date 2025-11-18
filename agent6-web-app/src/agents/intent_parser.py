@@ -6,7 +6,6 @@ from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
 from typing import Dict, Any
-import json
 import os
 
 # Import add_system_log - try direct import first, then fall back to dynamic
@@ -29,14 +28,15 @@ except ImportError as e:
             add_system_log = getattr(mod, 'add_system_log', None)
         else:
             add_system_log = None
-    except Exception as e2:
+    except (ImportError, FileNotFoundError, AttributeError) as e2:
         print(f"[intent_parser] Failed to import add_system_log: {e2}")
         add_system_log = None
 
 # Final fallback: define a lightweight logger to avoid runtime errors
 if add_system_log is None:
     def add_system_log(msg, lt='info'):
-        print(f"[SYSTEM LOG - intent_parser] {msg}")
+        # Keep lt parameter for compatibility; include in output to avoid unused-arg warnings
+        print(f"[SYSTEM LOG - intent_parser] ({lt}) {msg}")
 
 
 
@@ -70,6 +70,9 @@ class IntentParserAgent:
             api_key=api_key,
             temperature=0.2  # Low temperature for consistent classification
         )
+        # Clarification threshold: confidences <= this value will trigger clarifying questions
+        # Lowered from 0.9 to 0.75 to reduce excessive clarifying questions
+        self.clarify_threshold = 0.75
         
         # Define the system prompt
         self.system_prompt = """You are an intent classification expert for scientific data insight queries.
@@ -115,22 +118,15 @@ Your job is to classify user queries into one of these intent types:
 IMPORTANT CLASSIFICATION RULES:
 - If user asks a specific, answerable question → **PARTICULAR**
 - If user wants general exploration without specifics → **NOT_PARTICULAR**
-- If user asks for help/guidance → **HELP**
 - If user chats socially or off-topic → **UNRELATED**
 - Only classify as EXIT if user explicitly says quit/exit/bye/done
-Be confident in your classification (aim for confidence ≥ 0.8)
+- Only classify as HELP if user explicitly requests help/guidance
 
-Return as many plot suggestions as are relevant for the query and dataset — do NOT limit the number or force a fixed mix of 1D/2D/3D. Multiple 1D/2D/3D/nD plots are allowed when appropriate.
 
 Output ONLY valid JSON with this structure:
 {{
     "intent_type": "NOT_PARTICULAR|PARTICULAR|UNRELATED|HELP|EXIT",
     "confidence": 0.0-1.0,
-    "plot_hints": [
-        "plot1 (1D): variables: <comma-separated variable ids>",
-        ......
-        "plotn (3D): variables: <comma-separated variable ids>"
-    ],
     "user_query": "original user query",
     "reasoning": "brief explanation of why this classification was chosen"
 }}
@@ -145,9 +141,43 @@ Do NOT include markdown formatting, just raw JSON."""
         
         # JSON output parser
         self.parser = JsonOutputParser()
-        
-        # Create chain
+
+        # Create chain for intent classification
         self.chain = self.prompt | self.llm | self.parser
+
+        # Clarification prompt: ask the model to produce targeted clarifying questions and required params
+        # Use doubled braces for the example JSON so the prompt template treats them as literal braces
+        self.clarify_system = """You are a helpful assistant that generates targeted clarifying questions to disambiguate a user's data-insight request.
+
+IMPORTANT GUIDELINES:
+1. Ask ONLY 1-2 essential questions - be minimal and intelligent
+2. Make questions specific and answerable with short responses
+3. Infer obvious intent from context when possible
+4. If the user's query is reasonably clear, DON'T ask clarifying questions at all
+
+Given the user query and classification result, produce a JSON object:
+{{
+    "clarifying_questions": [1-2 short, essential questions only],
+    "required_parameters": [list of parameter names needed],
+    "notes": "brief note explaining why clarification is needed"
+}}
+
+Example of GOOD clarification (minimal):
+User: "how many variables"
+Questions: ["Do you want the total count including derived variables, or only primary variables?"]
+
+Example of BAD clarification (too many questions):
+Questions: ["total or specific?", "include derived?", "full dataset?", "with descriptions?"]
+
+Produce only valid JSON as the output.
+"""
+
+        self.clarify_prompt = ChatPromptTemplate.from_messages([
+            ("system", self.clarify_system),
+            ("human", "User query: {query}\n\nClassification result: {classification}\n\nContext: {context}")
+        ])
+        self.clarify_parser = JsonOutputParser()
+        self.clarify_chain = self.clarify_prompt | self.llm | self.clarify_parser
     
     def parse_intent(
         self, 
@@ -224,9 +254,29 @@ Do NOT include markdown formatting, just raw JSON."""
                     context['is_exit'] = True
                     add_system_log("[IntentParser] Set context['is_exit'] = True")
 
+            # If classification indicates clarification is needed, run clarify chain
+            try:
+                if self.needs_clarification(result):
+                    add_system_log("[IntentParser] Low confidence / ambiguous intent - generating clarifying questions", 'info')
+                    clar = self.run_clarify(user_query, result, context_str)
+                    # Attach clarifying payload to the result so callers can include it
+                    result['clarifying'] = clar
+                    result['awaiting_clarification'] = True
+
+                    # If caller provided a progress callback in context, emit clarifying questions
+                    try:
+                        if context and isinstance(context.get('progress_callback'), type(lambda: None)):
+                            cb = context.get('progress_callback')
+                            cb('clarifying_questions', clar)
+                    except (RuntimeError, TypeError):
+                        # Non-fatal: proceed without progress emission
+                        pass
+            except (RuntimeError, ValueError, TypeError) as e:
+                add_system_log(f"[IntentParser] Clarification generation error: {e}", 'warning')
+
             return result
             
-        except Exception as e:
+        except (RuntimeError, ValueError, TypeError) as e:
             add_system_log(f"[IntentParser] Error: {e}")
             # Fallback: return low-confidence result
             return {
@@ -236,7 +286,7 @@ Do NOT include markdown formatting, just raw JSON."""
                 "reasoning": f"Error during classification: {str(e)}"
             }
     
-    def is_high_confidence(self, result: Dict[str, Any], threshold: float = 0.8) -> bool:
+    def is_high_confidence(self, result: Dict[str, Any], threshold: float = 0.75) -> bool:
         """
         Check if classification confidence is above threshold.
         
@@ -259,11 +309,44 @@ Do NOT include markdown formatting, just raw JSON."""
         Returns:
             True if confidence is low or query is ambiguous
         """
-        if result['confidence'] < 0.7:
-            return True
-        
-        # Queries classified as UNRELATED or EXIT typically don't need data clarification
-        if result.get('intent_type') in ['UNRELATED', 'EXIT']:
+        # Treat anything below 0.75 as potentially ambiguous and in need of clarification
+        # If the model classified the query as UNRELATED or EXIT, we don't ask data clarifying
+        intent = result.get('intent_type')
+        if intent in ['UNRELATED', 'EXIT']:
             return False
-        
-        return False
+
+        # Robustly parse confidence (some LLMs may return strings)
+        try:
+            conf = float(result.get('confidence', 0.0))
+        except (TypeError, ValueError):
+            conf = 0.0
+
+        # Trigger clarification when confidence is less than or equal to the threshold
+        return conf <= self.clarify_threshold
+
+    def run_clarify(self, user_query: str, classification: Dict[str, Any], context_str: str = "No prior context") -> Dict[str, Any]:
+        """
+        Run the clarify chain to produce targeted clarifying questions and required parameters.
+
+        Returns a dict with keys: clarifying_questions, required_parameters, notes
+        """
+        try:
+            clar_res = self.clarify_chain.invoke({
+                'query': user_query,
+                'classification': classification,
+                'context': context_str
+            })
+            # ensure the returned dict is serializable and has expected keys
+            clar_out = {
+                'clarifying_questions': clar_res.get('clarifying_questions') if isinstance(clar_res, dict) else None,
+                'required_parameters': clar_res.get('required_parameters') if isinstance(clar_res, dict) else None,
+                'notes': clar_res.get('notes') if isinstance(clar_res, dict) else ''
+            }
+            return clar_out
+        except (RuntimeError, ValueError, TypeError) as e:
+            add_system_log(f"[IntentParser] Clarify chain failed: {e}", 'warning')
+            return {
+                'clarifying_questions': [],
+                'required_parameters': [],
+                'notes': f'Clarification failed: {e}'
+            }
