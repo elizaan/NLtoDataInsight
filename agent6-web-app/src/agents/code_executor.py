@@ -52,8 +52,14 @@ class CodeExecutor:
         self.work_dir = work_dir or tempfile.mkdtemp(prefix="insight_temp_")
         os.makedirs(self.work_dir, exist_ok=True)
 
-    def execute_code(self, code: str, code_path: str) -> Dict[str, Any]:
-        """Execute Python code from a file path and return result dict."""
+    def execute_code(self, code: str, code_path: str, timeout: int = 500) -> Dict[str, Any]:
+        """Execute Python code from a file path and return result dict.
+        
+        Args:
+            code: Python code to execute
+            code_path: Path where code file will be saved
+            timeout: Maximum execution time in seconds (default: 500)
+        """
         os.makedirs(os.path.dirname(code_path), exist_ok=True)
 
         # Basic validation: ensure we actually received code to write
@@ -84,7 +90,7 @@ class CodeExecutor:
                 cwd=os.path.dirname(code_path),
                 capture_output=True,
                 text=True,
-                timeout=500
+                timeout=timeout
             )
 
             return {

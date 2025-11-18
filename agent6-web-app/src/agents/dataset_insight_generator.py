@@ -150,6 +150,9 @@ class DatasetInsightGenerator:
         plot_hints = intent_result.get('llm_pre_insight_analysis', {}).get('plot_hints', [])
         print(f"Plot hints: {plot_hints}")
         reasoning = intent_result.get('reasoning', '')
+        
+        # Extract user time limit if provided
+        user_time_limit = intent_result.get('user_time_limit_minutes', None)
 
         # Include any prior LLM pre-insight analysis (produced by the intent parser / extractor)
         # This will be injected into the system prompt so the generator LLM can leverage
@@ -194,7 +197,7 @@ class DatasetInsightGenerator:
 
           **INTENT ANALYSIS:**
           - Type: {intent_type}
-          - Reasoning: {reasoning}
+          - Intent Reasoning: {reasoning}
           - Plot Hints: {json.dumps(plot_hints, indent=2)}
 
           **CONVERSATION CONTEXT:**
@@ -206,7 +209,7 @@ class DatasetInsightGenerator:
           **CRITICAL: Using Previous Results**
           When answering the user's question, ALWAYS leverage any relevant results from previous queries in this conversation to find out if the query is a follow-up. Follow these steps:
           1. **Check conversation context above** for relevant past results
-          2. **Extract the specific values** you need (e.g., if previous query found x = y, use that exact value)
+          2. **Extract the specific values** you need (e.g., if previous query found variable = y, use that exact value)
           3. **Check if previous query saved an npz file** with rich metadata
           4. **Load and inspect the npz file** to see what data is already available
                 5. **Reuse saved data** instead of re-querying the dataset
@@ -257,7 +260,7 @@ class DatasetInsightGenerator:
                 **═══════════════════════════════════════════════════════════════════════**
                 **CRITICAL: SAVE METADATA FOR FOLLOW-UP QUERIES**
 
-                When finding extremes (max/min/peaks), you MUST save additional metadata:
+                When finding extremes (max/min/peaks/ specific statistics), you MUST save additional metadata:
                 ```python
                 ```
 np.savez(
@@ -310,14 +313,6 @@ You have extensive knowledge of Earth geography including:
 Look for keywords: ocean names, sea names, current names, country names, "near", "in", "around", "region", "area", etc.
 
 **Step 2: Estimate lat/lon bounds using your geographic knowledge**
-Examples (you should know these from your training):
-- "Mediterranean Sea" → approximately lat:[30, 46], lon:[-6, 37]
-- "Gulf Stream" → approximately lat:[25, 45], lon:[-80, -40]
-- "Agulhas Current" → approximately lat:[-45, -25], lon:[15, 40]
-- "Arabian Sea" → approximately lat:[5, 25], lon:[50, 78]
-- "near Japan" → approximately lat:[25, 50], lon:[125, 150]
-- "tropical Pacific" → approximately lat:[-25, 25], lon:[120, -80] (note: crosses dateline)
-- "Southern Ocean" → approximately lat:[-70, -50], lon:[-180, 180]
 
 **Step 3: Use the provided helper function to convert to grid indices**
 ALWAYS use latlon_to_xy() - don't try to manually estimate grid positions!
@@ -568,14 +563,20 @@ You have TWO separate code scripts to write:
 
 **HIGHLY IMPORTANT: Your Intelligence Required, please follow the steps carefuly:**
 
-**STEP 1: ANALYZE THE PROBLEM**
-- What does the user actually want to know?
-- What data is needed to answer this?
-- How much computation is this? (Is it {total_data_points:,} points feasible?)
+**STEP 1: ANALYZE THE USER ASKED TIME**
+
+**USER TIME CONSTRAINT:**
+{f'''- User has provided a time limit of {user_time_limit} minutes. You MUST:
+  * Reduce spatial/temporal resolution (e.g., for openvisuspy play with quality values and reduce it to coarser levels like q=-10 or q=-12)
+  * Use aggressive aggregation (e.g., compute stats on subsampled data)
+  * Set query timeout to {user_time_limit * 60 * 0.7:.0f} seconds (70% of user limit to leave buffer for plotting)
+  * Balance speed vs accuracy based on this constraint
+''' if user_time_limit else '- No specific time constraint provided by user'}
+
 
 **STEP 2: DECIDE YOUR STRATEGY**
 Consider:
-- If {total_timesteps:,} timesteps is too many → How should you aggregate? (daily? weekly? monthly?)
+- within {user_time_limit} minutes, if {total_timesteps:,} timesteps is too many → How should you aggregate? (daily? weekly? monthly?)
   - choose time intervals very wisely for faster output
 - If spatial resolution is too high → What quality level? (q=-2 fine, q=-8 medium, q=-12 coarse)
 - What's the smartest way to sample without losing the answer?
@@ -872,8 +873,15 @@ Common issues:
                             'message': query_log_msg
                         })
                     
-                    # Execute query code
-                    execution_result = self.executor.execute_code(code, str(query_code_file))
+                    # Calculate dynamic timeout based on user time limit
+                    if user_time_limit:
+                        # 70% of user time for query execution, rest for plotting/overhead
+                        execution_timeout = int(user_time_limit * 60 * 0.7)
+                    else:
+                        execution_timeout = 500  # Default 500 seconds
+                    
+                    # Execute query code with dynamic timeout
+                    execution_result = self.executor.execute_code(code, str(query_code_file), timeout=execution_timeout)
                     
                     if execution_result["success"]:
                         # Basic success flag from subprocess (exit code == 0)

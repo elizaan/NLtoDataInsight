@@ -737,6 +737,22 @@ def chat():
                 # This is a new query, NOT a clarification response
                 # Clear any stale clarification state
                 conversation_state.pop('pending_clarification_query', None)
+            
+            # CRITICAL: Handle time preference responses properly
+            # If agent is awaiting time preference, this message is the user's time response
+            if conversation_state.get('awaiting_time_preference'):
+                add_system_log(f"[time_preference] Detected time preference response: {user_message}", 'info')
+                # Set flag in context so core_agent.process_query_with_intent can detect it
+                context['awaiting_time_preference'] = True
+                context['original_query'] = conversation_state.get('original_query', '')
+                context['original_intent_result'] = conversation_state.get('original_intent_result', {})
+                # Don't clear state yet - let core_agent handle it after parsing
+            elif not is_clarify_response:
+                # This is a new query, NOT a time preference response
+                # Clear any stale time preference state
+                conversation_state.pop('awaiting_time_preference', None)
+                conversation_state.pop('original_query', None)
+                conversation_state.pop('original_intent_result', None)
 
             # Attach conversation context (full + short) when we can
             try:
@@ -844,6 +860,13 @@ def chat():
                         conversation_state['pending_clarification_query'] = original_msg
                         add_system_log(f"[clarification] Stored original query for clarification: {original_msg[:100]}", 'info')
                     
+                    # CRITICAL: If agent returned awaiting_time_preference status, store state
+                    if result.get('status') == 'awaiting_time_preference':
+                        conversation_state['awaiting_time_preference'] = True
+                        conversation_state['original_query'] = result.get('original_query', user_message)
+                        conversation_state['original_intent_result'] = result.get('original_intent_result', {})
+                        add_system_log(f"[time_preference] Stored state for time preference flow", 'info')
+                    
                     # Extract LLM outputs for final result
                     intent_result = result.get('intent_result')
                     insight_result = result.get('insight_result')
@@ -851,7 +874,9 @@ def chat():
                     # Build assistant messages for final response
                     assistant_messages = []
                     try:
-                        if intent_result:
+                        # CRITICAL: Don't repeat intent_result if we're awaiting time preference
+                        # The intent was already shown in the initial query
+                        if intent_result and result.get('status') != 'awaiting_time_preference':
                             assistant_messages.append({
                                 'role': 'assistant',
                                 'type': 'intent_parsing',

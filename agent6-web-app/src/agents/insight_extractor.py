@@ -79,6 +79,19 @@ Your role is to analyze the query and determine:
 2. What type of analysis is needed (max/min, time series, spatial pattern, etc.)
 3. Whether this requires actual data querying/ writing a python code or can be answered from metadata information alone.
 4. Give plot suggestions: suggest as many NICE, SIMPLE, INTUITIVE plots as they are relevant to dataset, most easily interpretable by domain scientists and appropriate for the query and dataset — do NOT limit the number or force a fixed mix of 1D/2D/3D. Multiple 1D/2D/3D/nD plots are allowed when appropriate.
+5. **ESTIMATE QUERY EXECUTION TIME**: Based on the dataset size, query complexity, spatial/temporal extent, and whether aggregation is needed, estimate how long this query will take to execute in minutes.
+
+
+**STEP 1: ANALYZE THE PROBLEM**
+- What does the user actually want to know?
+- What data is needed to answer this?
+- How much computation is this? (Is it {total_data_points:,} point at full resolution feasible?)
+
+**STEP 2: TIME ESTIMATION GUIDELINES:**
+- Consider total data points: larger datasets = longer time
+- consider full resolution
+- Temporal range: more timesteps = more time
+
 Output JSON with:
 {{
     "analysis_type": "data_query" | "metadata_only",
@@ -89,7 +102,9 @@ Output JSON with:
         "plotN (1D/2D, ... ND): variables: <comma-separated variable ids>"
     ],
     "reasoning": "Brief explanation",
-    "confidence": (0.0-1.0)
+    "confidence": (0.0-1.0),
+    "estimated_time_minutes": <number>,
+    "time_estimation_reasoning": "Brief explanation of how you did time estimate for this query"
 }}
 
 Rules:
@@ -97,6 +112,7 @@ Rules:
 - If query asks about dataset description, available variables → "metadata_only"
 - Match query terms to available variables (handle typos/synonyms)
 - Provide confidence score (0.0-1.0)
+- Always provide estimated_time_minutes for user query (can be rough estimate)
 """
 
         self.prompt = ChatPromptTemplate.from_messages([
@@ -144,6 +160,14 @@ Rules:
             time_range = temporal_info.get('time_range', {})
             has_temporal_info = temporal_info.get('has_temporal_info', 'no')
             
+            spatial_dims = spatial_info.get('dimensions', {})
+            x = spatial_dims.get('x', 1000)
+            y = spatial_dims.get('y', 1000)
+            z = spatial_dims.get('z', 1)
+            total_timesteps = int(temporal_info.get('total_time_steps', '100'))
+            
+            total_voxels = x * y * z
+            total_data_points = total_voxels * total_timesteps
             # Step 1: Initial analysis with LLM
             add_system_log("Step 1: Analyzing query intent...", 'info')
             
@@ -155,7 +179,8 @@ Rules:
                 "variables": ', '.join(variable_names),
                 "spatial_info": json.dumps(spatial_info.get('dimensions', {})),
                 "time_range": json.dumps(time_range) if has_temporal_info == 'yes' else "No temporal info",
-                "dataset_size": dataset_size
+                "dataset_size": dataset_size,
+                "total_data_points": total_data_points
             }
 
             # Call LLM for initial analysis
@@ -233,6 +258,28 @@ Rules:
                     'num_plots': 0,
                     'confidence': analysis.get('confidence', 0.8),
                     'analysis': analysis
+                }
+            
+            # Step 2.5: Check if we need time clarification for data queries
+            # If analysis suggests data_query and we don't have user_time_limit_minutes yet, 
+            # return early to ask user
+            estimated_time = analysis.get('estimated_time_minutes')
+            user_time_limit = intent_hints.get('user_time_limit_minutes')
+            
+            if estimated_time is not None and user_time_limit is None:
+                # Need to ask user for time preference
+                add_system_log(
+                    f"Query estimated to take {estimated_time} minutes, requesting time clarification from user", 
+                    'info'
+                )
+                
+                return {
+                    'status': 'needs_time_clarification',
+                    'estimated_time_minutes': estimated_time,
+                    'time_estimation_reasoning': analysis.get('time_estimation_reasoning', 'Based on dataset size and query complexity'),
+                    'analysis': analysis,
+                    'message': f'This query is estimated to take approximately {estimated_time} minutes. Please specify your time preference.',
+                    'confidence': analysis.get('confidence', 0.7)
                 }
             
             # Step 3: Query actual data using DatasetInsightGenerator
@@ -334,6 +381,11 @@ Rules:
             # If parsed is a dict, return it directly. We intentionally avoid
             # adding a '_raw' field to keep the analysis dict compact.
             if isinstance(parsed, dict):
+                # Ensure estimated_time_minutes is preserved if present
+                # If missing, add a default for data_query types
+                if 'estimated_time_minutes' not in parsed and parsed.get('analysis_type') == 'data_query':
+                    parsed['estimated_time_minutes'] = None  # Will trigger clarification
+                    parsed['time_estimation_reasoning'] = 'No estimate provided by LLM'
                 return parsed
             else:
                 # Parsed JSON but not a dict (e.g., list). Wrap into expected shape
@@ -343,6 +395,7 @@ Rules:
                     'query_type': 'general',
                     'reasoning': 'Parsed JSON but unexpected shape',
                     'confidence': 0.5,
+                    'estimated_time_minutes': None,
                     '_parsed_value': parsed
                 }
         except Exception:
@@ -353,6 +406,7 @@ Rules:
                 'query_type': 'general',
                 'reasoning': 'Could not parse analysis',
                 'confidence': 0.5,
+                'estimated_time_minutes': None,
                 '_parse_failed': True
             }
     

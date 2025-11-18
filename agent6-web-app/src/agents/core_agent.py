@@ -156,7 +156,51 @@ class AnimationAgent:
         """
         print(f"[Agent] Processing query with intent classification: {user_message[:50]}...")
         
-        # STEP 1: Classify intent
+        # CRITICAL: Check if we're awaiting time preference BEFORE intent parsing
+        # This happens when the system estimated query time and needs user input
+        if context and context.get('awaiting_time_preference'):
+            print("[Agent] Processing user's time preference response (skipping intent parsing)")
+            
+            # Parse user's time input (e.g., "5 minutes" → 5, "10" → 10, "proceed" → None)
+            user_time_limit = self._parse_time_preference(user_message)
+            
+            # Get the original intent_result from context
+            original_intent = context.get('original_intent_result', {})
+            
+            # Attach user time limit to intent_result
+            original_intent['user_time_limit_minutes'] = user_time_limit
+            
+            add_system_log(f"User specified time limit: {user_time_limit} minutes", 'info')
+            
+            # Clear the awaiting flag
+            context['awaiting_time_preference'] = False
+            
+            # Call the appropriate handler with the updated intent (skip intent parsing!)
+            intent_type = original_intent.get('intent_type', 'PARTICULAR')
+            if intent_type == 'PARTICULAR':
+                return self._handle_particular_exploration(
+                    context.get('original_query', user_message), 
+                    original_intent, 
+                    context, 
+                    progress_callback
+                )
+            elif intent_type == 'NOT_PARTICULAR':
+                return self._handle_general_exploration(
+                    context.get('original_query', user_message),
+                    original_intent,
+                    context,
+                    progress_callback
+                )
+            else:
+                # Default to particular if unclear
+                return self._handle_particular_exploration(
+                    context.get('original_query', user_message),
+                    original_intent,
+                    context,
+                    progress_callback
+                )
+        
+        # STEP 1: Classify intent (only if NOT awaiting time preference)
         intent_result = self.intent_parser.parse_intent(user_message, context)
         
         print(f"[Agent] Intent: {intent_result['intent_type']} (confidence: {intent_result['confidence']:.2f})")
@@ -286,14 +330,59 @@ class AnimationAgent:
         if progress_callback:
             progress_callback('insight_extraction_started', {'query': query})
         
-        insight_result = self.insight_extractor.extract_insights(
-                    user_query=query,
-                    intent_hints=intent_result,
-                    dataset=context.get('dataset'),
-                    progress_callback=progress_callback
-                )
+        # CRITICAL: Check if user_time_limit_minutes is already in intent_result
+        # If yes, skip insight_extractor and go directly to generator
+        # This happens when user responded to time preference question
+        if intent_result.get('user_time_limit_minutes') is not None:
+            print(f"[Agent] User time limit already provided ({intent_result.get('user_time_limit_minutes')} minutes), skipping insight_extractor")
+            
+            # Use the existing generator from insight_extractor (already has API key)
+            # Don't create a new one - it won't have the API key!
+            insight_result = self.insight_extractor.insight_generator.generate_insight(
+                user_query=query,
+                intent_result=intent_result,
+                dataset_info=context.get('dataset'),
+                progress_callback=progress_callback
+            )
+        else:
+            # Normal flow: call insight_extractor first
+            insight_result = self.insight_extractor.extract_insights(
+                user_query=query,
+                intent_hints=intent_result,
+                dataset=context.get('dataset'),
+                progress_callback=progress_callback
+            )
 
         print(f"insight result: {insight_result}")
+        
+        # Check if we need time clarification (analysis returned with estimated_time_minutes)
+        if insight_result.get('status') == 'needs_time_clarification':
+            estimated_time = insight_result.get('estimated_time_minutes', 'unknown')
+            time_reasoning = insight_result.get('time_estimation_reasoning', '')
+            
+            if progress_callback:
+                progress_callback('time_clarification_request', {
+                    'query': query,
+                    'estimated_time_minutes': estimated_time,
+                    'reasoning': time_reasoning,
+                    'message': f'This query is estimated to take approximately {estimated_time} minutes. How much time would you like to allocate? (e.g., "5 minutes", "10 minutes", or "proceed" to use default)'
+                })
+            
+            # Set context flags for the next user message
+            context['awaiting_time_preference'] = True
+            context['original_query'] = query
+            context['original_intent_result'] = intent_result
+            
+            # Set flag and return early - user needs to provide time preference
+            return {
+                'type': 'awaiting_time_preference',
+                'status': 'awaiting_time_preference',
+                'query': query,
+                'intent_result': intent_result,
+                'estimated_time_minutes': estimated_time,
+                'time_reasoning': time_reasoning,
+                'message': f'This query is estimated to take ~{estimated_time} minutes. Please specify your time preference (e.g., "5 minutes", "10 minutes", or "proceed").'
+            }
         
         # Report insight generation complete
         if progress_callback:
@@ -383,6 +472,35 @@ class AnimationAgent:
                         'message': insight_result.get('message', 'Failed to generate insight'),
                         'error': insight_result.get('error')
                     }
+    
+    def _parse_time_preference(self, user_message: str) -> int:
+        """
+        Parse user's time preference from their message.
+        
+        Args:
+            user_message: User's response like "5 minutes", "10", "proceed"
+            
+        Returns:
+            Integer minutes, or None if user said "proceed" or couldn't parse
+        """
+        import re
+        
+        # Normalize message
+        msg_lower = user_message.lower().strip()
+        
+        # Check for "proceed" or "continue" or "default"
+        if any(word in msg_lower for word in ['proceed', 'continue', 'default', 'ok', 'yes']):
+            return None  # Use default/no limit
+        
+        # Try to extract number (with or without "minutes")
+        # Patterns: "5", "5 minutes", "ten", "10min", etc.
+        number_match = re.search(r'(\d+)\s*(?:min|minute|minutes)?', msg_lower)
+        if number_match:
+            return int(number_match.group(1))
+        
+        # Fallback: couldn't parse, return None
+        add_system_log(f"Could not parse time preference from: {user_message}, using default", 'warning')
+        return None
     
     def _handle_request_help(self, query: str, context: dict) -> dict:
         """Handle REQUEST_HELP intent."""
