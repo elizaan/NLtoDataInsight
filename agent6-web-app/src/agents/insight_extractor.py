@@ -78,7 +78,7 @@ Your role is to analyze the query and determine:
 1. What variable(s) the user is asking about
 2. What type of analysis is needed (max/min, time series, spatial pattern, etc.)
 3. Whether this requires actual data querying/ writing a python code or can be answered from metadata information alone.
-4. Give plot suggestions: suggest as many NICE, SIMPLE, INTUITIVE plots as they are relevant to dataset, most easily interpretable by domain scientists and appropriate for the query and dataset — do NOT limit the number or force a fixed mix of 1D/2D/3D. Multiple 1D/2D/3D/nD plots are allowed when appropriate.
+4. Give plot suggestions: suggest as many (try more than one for better coverage) NICE, SIMPLE, INTUITIVE plots as they are relevant to dataset, most easily interpretable by domain scientists and appropriate for the query and dataset — do NOT limit the number or force a fixed mix of 1D/2D/3D. Multiple 1D/2D/3D/nD plots are allowed when appropriate.
 5. **ESTIMATE QUERY EXECUTION TIME**: Based on the dataset size, query complexity, spatial/temporal extent, and whether aggregation is needed, estimate how long this query will take to execute in minutes.
 
 
@@ -189,11 +189,15 @@ Rules:
             # Parse response
             analysis = self._parse_llm_response(raw_response)
             
+            # Get the raw text for expandable log details
+            raw_text = getattr(raw_response, 'content', None) or str(raw_response)
+            
             add_system_log(
                 f"Analysis: type={analysis.get('analysis_type')}, "
                 f"variables={analysis.get('target_variables')}, "
                 f"confidence={analysis.get('confidence', 0):.2f}",
-                'info'
+                'info',
+                details=raw_text  # Add full LLM response as expandable details
             )
 
             # Emit analysis as a progress update so callers (and UI) can display it

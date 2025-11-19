@@ -393,8 +393,14 @@ log_file_monitor = {
     'monitoring': False
 }
 
-def add_system_log(message, log_type='info'):
-    """Add a log entry to the system logs"""
+def add_system_log(message, log_type='info', details=None):
+    """Add a log entry to the system logs
+    
+    Args:
+        message: Short log message to display
+        log_type: Type of log ('info', 'warning', 'error', 'success', 'debug')
+        details: Optional detailed content (for expandable/collapsible logs)
+    """
     import datetime
     
     log_entry = {
@@ -402,6 +408,10 @@ def add_system_log(message, log_type='info'):
         'message': message,
         'type': log_type
     }
+    
+    # Add details if provided (for expandable logs in UI)
+    if details is not None:
+        log_entry['details'] = details
     
     system_logs.append(log_entry)
 

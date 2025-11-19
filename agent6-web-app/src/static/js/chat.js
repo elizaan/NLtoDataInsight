@@ -1359,7 +1359,7 @@ function cleanMarkdownForChat(text) {
     return s.trim();
 }
 
-function addSystemLog(message, type = 'info') {
+function addSystemLog(message, type = 'info', details = null) {
     const logsContent = document.getElementById('logsContent');
     if (!logsContent) return;
 
@@ -1371,7 +1371,63 @@ function addSystemLog(message, type = 'info') {
     const timestamp = new Date().toLocaleTimeString();
     const logEntry = document.createElement('div');
     logEntry.className = `log-entry ${type}`;
-    logEntry.innerHTML = `<span class="log-timestamp">[${timestamp}]</span>${message}`;
+    
+    // Create main log message with optional expand button
+    const logContent = document.createElement('div');
+    logContent.className = 'log-content';
+    
+    if (details) {
+        // Add expand/collapse button for logs with details
+        const expandBtn = document.createElement('span');
+        expandBtn.className = 'log-expand-btn';
+        expandBtn.innerHTML = '▶';
+        expandBtn.style.cursor = 'pointer';
+        expandBtn.style.marginRight = '5px';
+        expandBtn.style.userSelect = 'none';
+        expandBtn.title = 'Click to expand/collapse details';
+        
+        const logText = document.createElement('span');
+        logText.innerHTML = `<span class="log-timestamp">[${timestamp}]</span>${message}`;
+        
+        logContent.appendChild(expandBtn);
+        logContent.appendChild(logText);
+        
+        // Create expandable details section (initially hidden)
+        const detailsDiv = document.createElement('div');
+        detailsDiv.className = 'log-details';
+        detailsDiv.style.display = 'none';
+        detailsDiv.style.marginTop = '8px';
+        detailsDiv.style.marginLeft = '20px';
+        detailsDiv.style.padding = '10px';
+        detailsDiv.style.backgroundColor = 'rgba(0, 0, 0, 0.1)';
+        detailsDiv.style.borderRadius = '4px';
+        detailsDiv.style.fontFamily = 'monospace';
+        detailsDiv.style.fontSize = '0.85em';
+        detailsDiv.style.whiteSpace = 'pre-wrap';
+        detailsDiv.style.wordBreak = 'break-word';
+        detailsDiv.style.maxHeight = '400px';
+        detailsDiv.style.overflowY = 'auto';
+        detailsDiv.textContent = details;
+        
+        // Toggle functionality
+        expandBtn.addEventListener('click', () => {
+            if (detailsDiv.style.display === 'none') {
+                detailsDiv.style.display = 'block';
+                expandBtn.innerHTML = '▼';
+            } else {
+                detailsDiv.style.display = 'none';
+                expandBtn.innerHTML = '▶';
+            }
+        });
+        
+        logEntry.appendChild(logContent);
+        logEntry.appendChild(detailsDiv);
+    } else {
+        // Simple log without expandable details
+        logContent.innerHTML = `<span class="log-timestamp">[${timestamp}]</span>${message}`;
+        logEntry.appendChild(logContent);
+    }
+    
     logsContent.appendChild(logEntry);
     logsContent.scrollTop = logsContent.scrollHeight;
 
@@ -1414,7 +1470,12 @@ function pollSystemLogs() {
             if (newLogs.length > 0) {
                 newLogs.forEach(log => {
                     try {
-                        addSystemLog(log.message || JSON.stringify(log), log.type || 'info');
+                        // Pass details if available for expandable logs
+                        addSystemLog(
+                            log.message || JSON.stringify(log), 
+                            log.type || 'info',
+                            log.details || null
+                        );
                     } catch (e) {
                         console.error('Error adding system log entry:', e, log);
                     }

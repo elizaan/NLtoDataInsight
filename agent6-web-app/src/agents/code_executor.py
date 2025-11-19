@@ -104,10 +104,10 @@ class CodeExecutor:
         except subprocess.TimeoutExpired:
             return {
                 "success": False,
-                "error": "Execution timed out (500s)",
+                "error": f"Execution timed out ({timeout}s)",
                 "code_file": code_path,
                 "stdout": "",
-                "stderr": "Timeout - code took >8 minutes. Simplify your approach."
+                "stderr": f"Timeout - code took >{timeout} seconds ({timeout//60} minutes). Simplify your approach or request more time."
             }
         except Exception as e:
             return {

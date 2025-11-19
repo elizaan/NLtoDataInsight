@@ -830,14 +830,16 @@ Common issues:
                 assistant_message = response.content
                 
                 llm_log_msg = f"LLM response: {len(assistant_message)} chars"
-                add_system_log(llm_log_msg, "info")
+                # Add the full LLM response as expandable details
+                add_system_log(llm_log_msg, "info", details=assistant_message)
                 
-                # Report LLM response to UI with detailed message
+                # Report LLM response to UI with detailed message and full content
                 if progress_callback:
                     progress_callback('llm_response', {
                         'length': len(assistant_message),
                         'phase': current_phase,
-                        'message': llm_log_msg
+                        'message': llm_log_msg,
+                        'content': assistant_message  # Full LLM response for expandable view
                     })
                 
                 self.conversation_history.append({
@@ -1341,6 +1343,7 @@ Write corrected plot code in <plot_code></plot_code> tags.
         
         # Build final result
         if final_answer:
+            add_system_log(f"final answer before update: {final_answer}", "info")
             final_answer.update({
                 'query_code_file': str(query_code_file) if query_success else None,
                 'plot_code_file': str(plot_code_file) if plot_success else None,
