@@ -13,6 +13,7 @@ from typing import Dict, Any, List, Optional
 import json
 import os
 import glob
+from .token_instrumentation import log_token_usage
 
 # Import logging
 # [Keep your existing logging import logic]
@@ -54,7 +55,7 @@ class DatasetSummarizerAgent:
             documents_dir: Path to directory containing PDF research documents
         """
         self.llm = ChatOpenAI(
-            model="gpt-4o-mini",
+            model="gpt-5",
             api_key=api_key,
             temperature=0.3  # Slightly creative but still focused
         )
@@ -301,6 +302,20 @@ Return a well-structured paragraph summary that is informative and engaging.
             profile_str = json.dumps(dataset_profile, indent=2)
             
             # Generate summary
+            try:
+                try:
+                    model_name = getattr(self.llm, 'model', None) or getattr(self.llm, 'model_name', 'gpt-5')
+                    msgs = [
+                        {"role": "system", "content": self.system_prompt},
+                        {"role": "user", "content": f"Please provide a summary of this dataset. Dataset profile: {profile_str[:1000]}"}
+                    ]
+                    token_count = log_token_usage(model_name, msgs, label="dataset_summary")
+                    add_system_log(f"[token_instrumentation][Summarizer] model={model_name} tokens={token_count}", 'debug')
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
             result = self.chain.invoke({
                 'dataset_profile': profile_str,
                 'research_context': research_context,

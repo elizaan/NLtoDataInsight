@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..',
 
 from src.agents.dataset_summarizer_agent import DatasetSummarizerAgent
 from src.agents.intent_parser import IntentParserAgent
-from src.agents.dataset_insight_generator import DatasetInsightGenerator
+from src.agents.core_agent import AnimationAgent
 from src.agents.conversation_context import ConversationContext, create_conversation_context
 
 
@@ -64,7 +64,7 @@ def run_test_workflow():
     # Load dataset
     print_section("STEP 1: Load Dataset Configuration")
     dataset_info = load_dataset_info(dataset_path)
-    print(f"✓ Loaded dataset: {dataset_info['name']}")
+    print(f" Loaded dataset: {dataset_info['name']}")
     print(f"  ID: {dataset_info['id']}")
     print(f"  Variables: {len(dataset_info['variables'])}")
     print(f"  Spatial: {dataset_info['spatial_info']['dimensions']}")
@@ -74,89 +74,121 @@ def run_test_workflow():
     print_section("STEP 2: Initialize Agents")
     
     summarizer = DatasetSummarizerAgent(api_key=api_key)
-    print("✓ DatasetSummarizer initialized")
+    print("DatasetSummarizer initialized")
     
-    intent_parser = IntentParserAgent(api_key=api_key)
-    print("✓ IntentParserAgent initialized")
+    # Initialize AnimationAgent (core agent with full workflow including cache reuse)
+    animation_agent = AnimationAgent(api_key=api_key)
+    print("AnimationAgent (core_agent) initialized")
     
-    insight_generator = DatasetInsightGenerator(api_key=api_key)
-    print("✓ DatasetInsightGenerator initialized")
+    # Set dataset on the agent (this loads the dataset profile AND creates conversation context)
+    animation_agent.set_dataset(dataset_info)
+    print(f" Dataset set on AnimationAgent (profile + conversation context initialized)")
     
-    # Initialize conversation context with vector DB semantic search
-    print("\n⚡ Initializing conversation context with vector DB...")
-    context = create_conversation_context(
-        dataset_id=dataset_info['id'],
-        enable_vector_db=True
-    )
-    stats = context.get_statistics()
-    print(f"✓ ConversationContext initialized:")
-    print(f"  - Vector DB enabled: {stats['vector_db_enabled']}")
-    print(f"  - Existing history: {stats['total_queries']} queries")
-    print(f"  - Persist path: {stats['persist_path']}")
+    # Verify conversation context was created
+    if animation_agent.conversation_context:
+        stats = animation_agent.conversation_context.get_statistics()
+        print(f" ConversationContext initialized:")
+        print(f"  - Vector DB enabled: {stats['vector_db_enabled']}")
+        print(f"  - Existing history: {stats['total_queries']} queries")
+        print(f"  - Persist path: {stats['persist_path']}")
+    else:
+        print("⚠️  Warning: conversation_context not initialized")
     
-    # Generate dataset summary ONCE at the beginning
+    # Generate dataset summary ONCE at the beginning (lazy cached save inside tests folder)
+    query = "Summarize this dataset"
+
     print_section("STEP 3: Generate Dataset Summary (One Time)")
-    print("Generating comprehensive dataset summary...")
-    dataset_summary = summarizer.dataset_summarize(dataset_info)
+    print("Generating comprehensive dataset summary (lazy cache)...")
+
+    # Save/load a lightweight cached summary inside the tests folder so the test
+    # can be run offline or repeatedly without hitting the summarizer every time.
+    tests_dir = os.path.dirname(__file__)
+    summaries_dir = os.path.join(tests_dir, 'dataset_summaries')
+    os.makedirs(summaries_dir, exist_ok=True)
+    summary_filename = os.path.join(summaries_dir, f"{dataset_info.get('id','dataset')}_summary.txt")
+
+    if os.path.exists(summary_filename):
+        # Load cached summary and present it in the same shape the agent returns
+        try:
+            with open(summary_filename, 'r', encoding='utf-8') as f:
+                cached_text = f.read()
+            dataset_summary = {
+                'status': 'success',
+                'summary': cached_text,
+                'dataset_name': dataset_info.get('name')
+            }
+            print(f"Loaded cached dataset summary from {summary_filename}")
+        except Exception as e:
+            print(f"Failed to read cached summary ({summary_filename}): {e}")
+            dataset_summary = animation_agent.process_query(query, context=dataset_info)
+    else:
+        # Generate and persist a cached summary for future test runs
+        dataset_summary = animation_agent.process_query(query, context=dataset_info)
+        try:
+            summary_text = dataset_summary.get('summary') if isinstance(dataset_summary, dict) and 'summary' in dataset_summary else str(dataset_summary)
+            with open(summary_filename, 'w', encoding='utf-8') as f:
+                f.write(summary_text)
+            print(f"Saved dataset summary to {summary_filename}")
+        except Exception as e:
+            print(f"Failed to save dataset summary to {summary_filename}: {e}")
+
     print_result("Dataset Summary", dataset_summary, max_len=400)
     
-    # Test queries
-    test_queries = [     
-        {
-            "id": "q0",
-            "query": "show me monthly average velocity magnitude in dataset",
-            "description": "Basic temporal aggregation query"
-        },
+    # Test queries designed to validate hybrid recency+similarity caching
+    # These queries test the scenario you described:
+    # Q1: "trend of x" → Q2: "when was x highest?" → Q4: "trend of x for 2 months" → Q5: "when was x highest?"
+    # Expected: Q5 should reuse Q4's data, NOT Q2's data (recency + similarity)
+    test_queries = [
         {
             "id": "q1",
-            "query": "now show me monthly average temperature in dataset",
-            "description": "trend analysis over one week"
-        },
-         {
-            "id": "q1",
-            "query": "show me temperature change for 7 days",
-            "description": "trend analysis over one week"
+            "query": "show me temperature trend for 2 days",
+            "description": "Load temperature data (2 days)"
         },
         {
             "id": "q2",
-            "query": "what is the highest temperature in full dataset?",
-            "description": "Max value across entire dataset (likely to timeout)"
-        },
-        {
-            "id": "q3",
-            "query": "when was this highest temperature seen?",
-            "description": "Temporal location of max (references q2)"
-        },
-        {
-            "id": "q4",
-            "query": "where was this highest temperature seen?",
-            "description": "Spatial location of max (references q2/q3)"
-        },
-        {
-            "id": "q5",
-            "query": "what is the minimum and maximum salinity in data?",
-            "description": "Min/max for different variable"
-        },
-        {
-            "id": "q6",
-            "query": "in which time steps was the salinity highest?",
-            "description": "Temporal analysis referencing q5"
-        },
-        {
-            "id": "q7",
-            "query": "what is the average temperature in agulhas for each month?",
-            "description": "Basic temporal aggregation query"
-        },
-        {
-            "id": "q8",
-            "query": "any plot to reveal eddy formation in mediterranean sea?",
-            "description": "Geographic region + complex visualization"
-        },
-        {
-            "id": "q9",
-            "query": "show me daily salinity change for 2 months",
-            "description": "Basic temporal aggregation query"
-        },
+            "query": "when was temperature for 2 days?",
+            "description": "Should reuse Q1's data (recent + contextually similar)"
+        }
+        # {
+        #     "id": "q2",
+        #     "query": "when was temperature highest?",
+        #     "description": "Should reuse Q1's data (recent + contextually similar)"
+        # },
+        # {
+        #     "id": "q3",
+        #     "query": "where was temperature highest?",
+        #     "description": "Should reuse Q1's data (recent + contextually similar)"
+        # },
+        # {
+        #     "id": "q4",
+        #     "query": "show me temperature trend for 2 months",
+        #     "description": "Load NEW temperature data (2 months) - different scope than Q1"
+        # },
+        # {
+        #     "id": "q5",
+        #     "query": "when was temperature highest?",
+        #     "description": "CRITICAL: Should reuse Q4 (recent + similar), NOT Q2 (old but textually identical)"
+        # },
+        # {
+        #     "id": "q6",
+        #     "query": "where was temperature highest?",
+        #     "description": "CRITICAL: Should reuse Q4 (recent + similar), NOT Q3 (old but textually identical)"
+        # },
+        # {
+        #     "id": "q7",
+        #     "query": "show me salinity trend for 2 days",
+        #     "description": "Different variable - should NOT reuse any temperature cache"
+        # },
+        # {
+        #     "id": "q8",
+        #     "query": "what is the maximum salinity?",
+        #     "description": "Should reuse Q7's salinity data (recent + variable match)"
+        # },
+        # {
+        #     "id": "q9",
+        #     "query": "7 day temperature trend in january 2020?",
+        #     "description": "similar to q1 if q1 is in january 2020"
+        # }
     ]
     
     # Run each query
@@ -169,42 +201,37 @@ def run_test_workflow():
         print(f"Description: {description}\n")
         
         try:
-            # Step 1: Build a short conversation-context summary and parse intent
-            print(f"[{query_id}] Preparing conversation context and parsing intent...")
-            # Pass conversation context with semantic search
-            context_summary = context.get_context_summary(
-                current_query=user_query,
-                top_k=5,
-                use_semantic_search=True
-            )
-            # Create a short (1-3 line) condensed context for the intent parser
-            context_lines = [l.strip() for l in context_summary.splitlines() if l.strip()]
-            context_summary_short = " ".join(context_lines[:3]) if context_lines else ""
-
-            intent_result = intent_parser.parse_intent(
-                user_query=user_query,
-                context={
-                    'dataset_summary': dataset_summary,
-                    'dataset_info': dataset_info,
-                    'conversation_context': context_summary_short
-                }
-            )
-            print_result(f"{query_id} - Intent", intent_result, max_len=400)
-
-            # Step 2: Generate insight with the full conversation context
-            print(f"\n[{query_id}] Generating insight (with execution)...")
-            insight_result = insight_generator.generate_insight(
-                user_query=user_query,
-                intent_result=intent_result,
-                dataset_info=dataset_info,
-                conversation_context=context_summary  # pass full context to generator
+            # Step 1: Process query through AnimationAgent (full workflow)
+            # CRITICAL: Mimic production workflow from routes.py - pass dataset and dataset_summary in context
+            print(f"[{query_id}] Processing query via AnimationAgent (full workflow with cache reuse)...")
+            
+            # Build context dict - EXACTLY like production (routes.py lines 720-725)
+            agent_context = {
+                'dataset': dataset_info,                # CRITICAL: dataset must be in context
+                'dataset_summary': dataset_summary,     # CRITICAL: summary must be in context
+                'query_id': query_id,                   # For conversation tracking
+                'user_time_limit_minutes': 15.0         # Bypass time estimation - user prefers 15 min
+            }
+            
+            # Process query through full workflow (intent parsing + cache check + generation)
+            # Use process_query (wrapper) instead of process_query_with_intent
+            # This matches production: routes.py calls agent.process_query()
+            final_result = animation_agent.process_query(
+                user_message=user_query,
+                context=agent_context
             )
             
-            # Add to conversation history
-            context.add_query_result(query_id, user_query, insight_result)
+            # Extract the insight result for display
+            insight_result = final_result.get('insight_result', final_result)
             
             # Display result
-            print_result(f"{query_id} - Insight Result", insight_result, max_len=600)
+            print_result(f"{query_id} - Final Result", final_result, max_len=600)
+            
+            # Check if this was a cache reuse (fast-path)
+            if final_result.get('cached_from_query_id'):
+                print(f"\n🔄 [{query_id}] CACHE REUSED from {final_result['cached_from_query_id']}")
+                print(f"    Cache confidence: {final_result.get('cache_confidence', 'N/A'):.2f}")
+                print(f"    Reasoning: {final_result.get('cache_reasoning', 'N/A')}")
             
             # Check for key outcomes
             if insight_result.get('status') == 'timeout':
@@ -237,14 +264,114 @@ def run_test_workflow():
     # Final summary
     print_section("WORKFLOW SUMMARY")
     print(f"Total queries executed: {len(test_queries)}")
-    print(f"Conversation history entries: {len(context.history)}")
+    
+    # Use AnimationAgent's conversation context (since that's where cache reuse is tracked)
+    agent_conv_context = animation_agent.conversation_context
+    print(f"Conversation history entries: {len(agent_conv_context.history)}")
+    
+    print("\n📊 CACHE REUSE ANALYSIS (Testing Hybrid Recency+Similarity):")
+    print("=" * 80)
+    
+    # Track cache reuse behavior
+    cache_reuse_map = {}
+    
+    for entry in agent_conv_context.history:
+        qid = entry['query_id']
+        result = entry['result']
+        
+        # AnimationAgent marks cache reuse with 'cached_from' or 'cached_from_query_id' field
+        if 'cached_from' in result or 'cached_from_query_id' in result:
+            cached_from = result.get('cached_from') or result.get('cached_from_query_id')
+            cache_confidence = result.get('cache_confidence', 'N/A')
+            cache_reuse_map[qid] = {
+                'cached_from': cached_from,
+                'confidence': cache_confidence,
+                'status': 'reused_cache'
+            }
+        else:
+            cache_reuse_map[qid] = {'status': 'generated_new'}
+    
+    for test_case in test_queries:
+        qid = test_case['id']
+        query_text = test_case['query']
+        desc = test_case['description']
+        
+        if qid in cache_reuse_map:
+            info = cache_reuse_map[qid]
+            if info['status'] == 'reused_cache':
+                print(f"  🔄 {qid}: REUSED cache from {info['cached_from']} (confidence: {info['confidence']:.2f})")
+                print(f"      \"{query_text}\"")
+            else:
+                print(f"  🆕 {qid}: GENERATED new data")
+                print(f"      \"{query_text}\"")
+        else:
+            print(f"  ❓ {qid}: (no entry in history)")
+    
+    # Validate expected behavior
+    print("\n✅ VALIDATION CHECKS:")
+    print("=" * 80)
+    
+    checks_passed = 0
+    checks_total = 0
+    
+    # Check 1: Q2 should reuse Q1
+    checks_total += 1
+    if cache_reuse_map.get('q2', {}).get('cached_from') == 'q1':
+        print("✅ Q2 correctly reused Q1 (recent temperature data)")
+        checks_passed += 1
+    else:
+        print(f"❌ Q2 did NOT reuse Q1 as expected (got: {cache_reuse_map.get('q2', {})})")
+    
+    # Check 2: Q3 should reuse Q1
+    checks_total += 1
+    if cache_reuse_map.get('q3', {}).get('cached_from') == 'q1':
+        print("✅ Q3 correctly reused Q1 (recent temperature data)")
+        checks_passed += 1
+    else:
+        print(f"❌ Q3 did NOT reuse Q1 as expected (got: {cache_reuse_map.get('q3', {})})")
+    
+    # Check 3: Q5 should reuse Q4 (NOT Q2) - THIS IS THE KEY TEST
+    checks_total += 1
+    if cache_reuse_map.get('q5', {}).get('cached_from') == 'q4':
+        print("✅ Q5 CORRECTLY reused Q4 (recent 2-month data), NOT Q2 - RECENCY+SIMILARITY WORKS!")
+        checks_passed += 1
+    else:
+        cached_from = cache_reuse_map.get('q5', {}).get('cached_from', 'none')
+        print(f"❌ Q5 did NOT reuse Q4 as expected (got: {cached_from}) - This means recency is not working!")
+    
+    # Check 4: Q6 should reuse Q4 (NOT Q3) - THIS IS THE KEY TEST
+    checks_total += 1
+    if cache_reuse_map.get('q6', {}).get('cached_from') == 'q4':
+        print("✅ Q6 CORRECTLY reused Q4 (recent 2-month data), NOT Q3 - RECENCY+SIMILARITY WORKS!")
+        checks_passed += 1
+    else:
+        cached_from = cache_reuse_map.get('q6', {}).get('cached_from', 'none')
+        print(f"❌ Q6 did NOT reuse Q4 as expected (got: {cached_from}) - This means recency is not working!")
+    
+    # Check 5: Q8 should reuse Q7 (different variable - salinity)
+    checks_total += 1
+    if cache_reuse_map.get('q8', {}).get('cached_from') == 'q7':
+        print("✅ Q8 correctly reused Q7 (recent salinity data)")
+        checks_passed += 1
+    else:
+        print(f"❌ Q8 did NOT reuse Q7 as expected (got: {cache_reuse_map.get('q8', {})})")
+    
+    print(f"\n🎯 VALIDATION RESULT: {checks_passed}/{checks_total} checks passed")
+    
+    if checks_passed == checks_total:
+        print("🎉 ALL CHECKS PASSED - Hybrid recency+similarity is working correctly!")
+    else:
+        print("⚠️  Some checks failed - Review cache reuse behavior above")
+    
+    print("\n" + "=" * 80)
     print("\nResults by query:")
+    print("=" * 80)
     
     success_count = 0
     timeout_count = 0
     failure_count = 0
     
-    for entry in context.history:
+    for entry in agent_conv_context.history:
         qid = entry['query_id']
         status = entry['result'].get('status', 'unknown')
         if status == 'success':

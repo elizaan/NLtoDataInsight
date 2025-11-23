@@ -342,9 +342,31 @@ def summarize_dataset_endpoint(dataset_id):
                 'status': 'error', 
                 'message': 'Failed to set dataset on agent. Check dataset metadata format.'
             }), 400
+        # Before generating a summary, check if we already cached one for this dataset
+        try:
+            insights_dir = os.path.join(agent.ai_dir, 'insights', dataset_id)
+            summary_file = os.path.join(insights_dir, 'dataset_summary.txt')
 
-     
-            # LangChain orchestration: let the agent decide how to summarize
+            if os.path.exists(summary_file):
+                try:
+                    with open(summary_file, 'r', encoding='utf-8') as f:
+                        cached_summary = f.read()
+                    add_system_log(f"Loaded cached dataset summary for {dataset_id}", 'info')
+                    return jsonify({
+                        'status': 'success',
+                        'dataset_id': dataset_id,
+                        'summary': cached_summary,
+                        'cached': True
+                    })
+                except Exception as e:
+                    # If reading cache fails, log and continue to regenerate
+                    add_system_log(f"Failed to read cached summary for {dataset_id}: {e}", 'warning')
+
+        except Exception:
+            # Non-fatal: proceed to generate summary if any path computation fails
+            pass
+
+        # LangChain orchestration: let the agent decide how to summarize
         try:
             # Build a simple query - the dataset context is passed separately
             query = "Summarize this dataset"
@@ -352,13 +374,25 @@ def summarize_dataset_endpoint(dataset_id):
             # LangChain agent will call dataset_summarizer with the context
             result = agent.process_query(query, context=dataset)
 
-            
-
         except Exception as e:
             return jsonify({
                 'status': 'error',
                 'message': f'LangChain processing failed: {str(e)}'
             }), 500
+
+        # Persist the generated summary for future calls
+        try:
+            summary_text = result['summary'] if isinstance(result, dict) and 'summary' in result else str(result)
+            os.makedirs(insights_dir, exist_ok=True)
+            try:
+                with open(summary_file, 'w', encoding='utf-8') as f:
+                    f.write(summary_text)
+                add_system_log(f"Saved dataset summary to cache: {summary_file}", 'info')
+            except Exception as e:
+                add_system_log(f"Failed to write dataset summary cache for {dataset_id}: {e}", 'warning')
+        except Exception:
+            # Non-fatal: ignore caching errors
+            pass
         
 
         return jsonify({
@@ -768,46 +802,10 @@ def chat():
             try:
                 ds = conversation_state.get('dataset') or {}
                 dsid = ds.get('id') if isinstance(ds, dict) else None
-                # Ensure create_conversation_context is imported lazily to avoid
-                # circular imports (some agent modules import `routes` at import time).
-                if create_conversation_context is None:
-                    try:
-                        import importlib.util
-                        cur = os.path.dirname(os.path.abspath(__file__))
-                        conv_path = os.path.abspath(os.path.join(cur, '..', 'agents', 'conversation_context.py'))
-                        if os.path.exists(conv_path):
-                            spec = importlib.util.spec_from_file_location('src.agents.conversation_context', conv_path)
-                            mod = importlib.util.module_from_spec(spec)
-                            spec.loader.exec_module(mod)
-                            # Update the module-level variable via globals() to avoid scoping issues
-                            globals()['create_conversation_context'] = getattr(mod, 'create_conversation_context', None)
-                    except Exception as e:
-                        add_system_log(f"Failed to lazy-import create_conversation_context: {e}", 'warning')
-
-                if create_conversation_context and dsid:
-                    conv = create_conversation_context(dataset_id=dsid, enable_vector_db=True)
-                    full_ctx = conv.get_context_summary(current_query=user_message, top_k=5, use_semantic_search=True)
-                    # short: first 2 non-empty lines joined
-                    lines = [l.strip() for l in full_ctx.splitlines() if l.strip()]
-                    short_ctx = " ".join(lines[:2]) if lines else ""
-                    # Record provenance so operators can confirm context was loaded
-                    try:
-                        persist_path = getattr(conv, 'persist_path', None)
-                        hist_count = len(getattr(conv, 'history', []))
-                        add_system_log(f"[continue_conversation] ConversationContext loaded: persist_path={persist_path}, entries={hist_count}", 'debug')
-                        # Log short snippets for quick inspection (truncated)
-                        preview = full_ctx[:400] + '...' if len(full_ctx) > 400 else full_ctx
-                        add_system_log(f"[continue_conversation] conversation_context (preview): {preview}", 'debug')
-                        if short_ctx:
-                            add_system_log(f"[continue_conversation] conversation_context_short: {short_ctx}", 'debug')
-                    except Exception:
-                        pass
-                    context['conversation_context'] = full_ctx
-                    context['conversation_context_short'] = short_ctx
-                else:
-                    # preserve existing conversation_state value if present
-                    if conversation_state.get('conversation_context'):
-                        context['conversation_context'] = conversation_state.get('conversation_context')
+                # NOTE: The AnimationAgent creates its own ConversationContext in set_dataset()
+                # and will generate context summaries as needed. We don't need to duplicate
+                # that work here in routes.py.
+                # The agent will handle all conversation context retrieval internally.
             except Exception:
                 # non-fatal: proceed without conversation context
                 pass
@@ -1010,37 +1008,9 @@ def chat():
                     'dataset_summary': conversation_state.get('dataset_summary')
                 }
 
-                # Attach conversation context (full + short) when available
-                try:
-                    ds = conversation_state.get('dataset') or {}
-                    dsid = ds.get('id') if isinstance(ds, dict) else None
-                    # Lazy-load conversation_context helper to avoid circular imports
-                    if create_conversation_context is None:
-                        try:
-                            import importlib.util
-                            cur = os.path.dirname(os.path.abspath(__file__))
-                            conv_path = os.path.abspath(os.path.join(cur, '..', 'agents', 'conversation_context.py'))
-                            if os.path.exists(conv_path):
-                                spec = importlib.util.spec_from_file_location('src.agents.conversation_context', conv_path)
-                                mod = importlib.util.module_from_spec(spec)
-                                spec.loader.exec_module(mod)
-                                # Update the module-level variable via globals() to avoid scoping issues
-                                globals()['create_conversation_context'] = getattr(mod, 'create_conversation_context', None)
-                        except Exception as e:
-                            add_system_log(f"Failed to lazy-import create_conversation_context: {e}", 'warning')
-
-                    if create_conversation_context and dsid:
-                        conv = create_conversation_context(dataset_id=dsid, enable_vector_db=True)
-                        full_ctx = conv.get_context_summary(current_query=user_message, top_k=5, use_semantic_search=True)
-                        lines = [l.strip() for l in full_ctx.splitlines() if l.strip()]
-                        short_ctx = " ".join(lines[:2]) if lines else ""
-                        context['conversation_context'] = full_ctx
-                        context['conversation_context_short'] = short_ctx
-                    else:
-                        if conversation_state.get('conversation_context'):
-                            context['conversation_context'] = conversation_state.get('conversation_context')
-                except Exception:
-                    pass
+                # NOTE: AnimationAgent creates its own ConversationContext in set_dataset()
+                # and will generate context summaries as needed internally.
+                # No need to duplicate that work here.
                 
                 add_system_log(f"[continue_conversation] Calling agent.process_query with context", 'info')
                 add_system_log(f"[continue_conversation] User message: {user_message[:100]}", 'debug')

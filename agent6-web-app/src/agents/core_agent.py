@@ -12,7 +12,9 @@ from .tools import (
 from .intent_parser import IntentParserAgent
 from .insight_extractor import InsightExtractorAgent
 from .dataset_profiler_agent import DatasetProfilerAgent
+from .dataset_profiler_pre_training import DatasetProfilerPretraining  # NEW: One-time profiling
 from .dataset_summarizer_agent import DatasetSummarizerAgent
+from .conversation_context import ConversationContext, create_conversation_context
 
 import os
 import sys
@@ -21,7 +23,7 @@ import time
 import json
 import hashlib
 from datetime import datetime
-
+from pathlib import Path
 
 
 
@@ -56,6 +58,14 @@ if add_system_log is None:
         print(f"[SYSTEM LOG] {msg}")
 
 
+# Token instrumentation helper (local estimator + logger)
+try:
+    from .token_instrumentation import log_token_usage
+except Exception:
+    def log_token_usage(model_name, messages, label=None):
+        return 0
+
+
 # import renderInterface3
 
 import hashlib
@@ -74,6 +84,10 @@ class AnimationAgent:
     def __init__(self, api_key=None, ai_dir=None, existing_agent=None):
         
         set_agent(self)
+        
+        # Store API key for later use
+        self.api_key = api_key
+        
         # Initialize LangChain LLM for orchestration
         self.llm = ChatOpenAI(model="gpt-4o-mini", api_key=api_key)
         # Compute a repository-root-like base path relative to this file so
@@ -85,16 +99,28 @@ class AnimationAgent:
         else:
             self.ai_dir = os.path.join(base_path, 'agent6-web-app', 'ai_data')
         os.makedirs(self.ai_dir, exist_ok=True)
-
-        # Initialize specialized agents
-        self.dataset_profiler = DatasetProfilerAgent(api_key=api_key)
+        
+        # Initialize one-time dataset profiler with caching
+        self.profiler = DatasetProfilerPretraining(
+            api_key=api_key,
+            cache_dir=Path(self.ai_dir) / "dataset_profiles"
+        )
+        print("[Agent] Initialized Dataset Profiler (one-time analysis + caching)")
+         # Initialize specialized agents
+        self.dataset_profiler_agent = DatasetProfilerAgent(api_key=api_key)
         print("[Agent] Initialized Dataset Profiler Agent")
         self.dataset_summarizer = DatasetSummarizerAgent(api_key=api_key)
         print("[Agent] Initialized Dataset Summarizer Agent")
         self.intent_parser = IntentParserAgent(api_key=api_key)
         print("[Agent] Initialized Intent Parser")
-        self.insight_extractor = InsightExtractorAgent(api_key=api_key)
+        self.insight_extractor = InsightExtractorAgent(api_key=api_key, base_output_dir=self.ai_dir)
         print("[Agent] Initialized Insight Extractor Agent")
+        
+        # Initialize conversation context and dataset profile (will be set per dataset)
+        self.conversation_context = None
+        self.dataset_profile = None  # NEW: Cached dataset profile
+        self.query_counter = 0
+        print("[Agent] Conversation context will be initialized per dataset")
 
         self.tools = [
             set_agent,
@@ -132,6 +158,38 @@ class AnimationAgent:
         """
     
         self._dataset = dataset
+        
+        # Initialize conversation context for this dataset
+        dataset_id = dataset.get('id', 'unknown')
+        try:
+            self.conversation_context = create_conversation_context(
+                dataset_id=dataset_id,
+                base_dir=self.ai_dir,
+                enable_vector_db=True
+            )
+            self.query_counter = len(self.conversation_context.history)
+            print(f"[Agent] Conversation context initialized for dataset {dataset_id} ({self.query_counter} past queries)")
+        except Exception as e:
+            print(f"[Agent] Warning: Could not initialize conversation context: {e}")
+            self.conversation_context = None
+            self.query_counter = 0
+        
+        # NEW: Get or create dataset profile (one-time analysis, cached permanently)
+        try:
+            print(f"[Agent] Loading/generating dataset profile for {dataset_id}...")
+            self.dataset_profile = self.profiler.get_or_create_profile(dataset)
+            
+            # Log profile quality score for user visibility
+            quality_score = self.dataset_profile.get('llm_insights', {}).get('data_quality_score', 'N/A')
+            print(f"[Agent] Dataset profile loaded - Quality score: {quality_score}/10")
+            
+            # Share profile with insight generators so they can use it
+            self.insight_extractor.insight_generator.dataset_profile = self.dataset_profile
+            
+        except Exception as e:
+            print(f"[Agent] Warning: Could not load dataset profile: {e}")
+            self.dataset_profile = None
+        
         print(f"[Agent] Dataset set: {self._dataset}")
         return True
 
@@ -156,21 +214,66 @@ class AnimationAgent:
         """
         print(f"[Agent] Processing query with intent classification: {user_message[:50]}...")
         
+        # Initialize context if not provided
+        if context is None:
+            context = {}
+        
+        # CRITICAL: Ensure dataset is in context (fallback to self._dataset if not provided)
+        # This allows callers to either pass dataset in context OR rely on set_dataset()
+        if 'dataset' not in context and self._dataset:
+            context['dataset'] = self._dataset
+        
+        # Attach conversation context and progress callback for intent parser
+        if self.conversation_context:
+            context['conversation_context_obj'] = self.conversation_context
+            context['conversation_context'] = self.conversation_context.get_context_summary(
+                current_query=user_message,
+                top_k=5,
+                use_semantic_search=True
+            )
+            # Shortened version for intent parser (to keep prompt small)
+            recent = self.conversation_context.history[-2:] if self.conversation_context.history else []
+            context['conversation_context_short'] = f"Recent queries: {len(recent)} | " + \
+                "; ".join([f"Q: {e['user_query'][:50]}" for e in recent])
+        
+        if progress_callback:
+            context['progress_callback'] = progress_callback
+        
+        # Increment query counter for this session
+        self.query_counter += 1
+        query_id = f"q{self.query_counter}"
+        context['query_id'] = query_id
+        
+        print(f"[Agent] Processing query {query_id}: {user_message[:50]}...")
+        
         # CRITICAL: Check if we're awaiting time preference BEFORE intent parsing
         # This happens when the system estimated query time and needs user input
         if context and context.get('awaiting_time_preference'):
             print("[Agent] Processing user's time preference response (skipping intent parsing)")
             
-            # Parse user's time input (e.g., "5 minutes" → 5, "10" → 10, "proceed" → None)
-            user_time_limit = self._parse_time_preference(user_message)
-            
             # Get the original intent_result from context
             original_intent = context.get('original_intent_result', {})
             
+            # Check if user said "proceed" (accept the estimated time)
+            user_message_lower = user_message.lower().strip()
+            if user_message_lower in ['proceed', 'yes', 'ok', 'go ahead', 'continue']:
+                # User accepts the estimated time - use it as the limit
+                estimated_time = original_intent.get('estimated_time_minutes')
+                if estimated_time:
+                    user_time_limit = estimated_time
+                    add_system_log(f"User said '{user_message}' - accepting estimated time: {user_time_limit} minutes", 'info')
+                else:
+                    # Fallback to default if no estimate available
+                    from .query_constants import DEFAULT_TIME_LIMIT_SECONDS
+                    user_time_limit = DEFAULT_TIME_LIMIT_SECONDS / 60.0
+                    add_system_log(f"User said '{user_message}' but no estimate available - using default: {user_time_limit:.1f} minutes", 'info')
+            else:
+                # Use intent parser's LLM-powered time extraction (for "5 minutes", "2 min", etc.)
+                user_time_limit = self.intent_parser._extract_time_constraint(user_message)
+                add_system_log(f"User specified time limit: {user_time_limit} minutes (extracted by LLM)", 'info')
+            
             # Attach user time limit to intent_result
             original_intent['user_time_limit_minutes'] = user_time_limit
-            
-            add_system_log(f"User specified time limit: {user_time_limit} minutes", 'info')
             
             # Clear the awaiting flag
             context['awaiting_time_preference'] = False
@@ -201,6 +304,17 @@ class AnimationAgent:
                 )
         
         # STEP 1: Classify intent (only if NOT awaiting time preference)
+        try:
+            try:
+                model_name = getattr(self.intent_parser.llm, 'model', None) or getattr(self.intent_parser.llm, 'model_name', 'gpt-4o-mini')
+                msgs = [{"role": "user", "content": user_message[:1000]}, {"role": "user", "content": str(context)[:1000]}]
+                token_count = log_token_usage(model_name, msgs, label="core_intent_pre")
+                add_system_log(f"[token_instrumentation][CoreAgent] intent_parser model={model_name} tokens={token_count}", 'debug')
+            except Exception:
+                pass
+        except Exception:
+            pass
+
         intent_result = self.intent_parser.parse_intent(user_message, context)
         
         print(f"[Agent] Intent: {intent_result['intent_type']} (confidence: {intent_result['confidence']:.2f})")
@@ -302,7 +416,7 @@ class AnimationAgent:
         if 'create a profile of this data as json file' in lower or 'generate a profile of this data as json file' in lower:
             print(f"[Agent] Processing dataset profiling request with DatasetProfilerAgent: {text[:80]}...")
             try:
-                result = self.dataset_profiler.dataset_profile(
+                result = self.dataset_profiler_agent.dataset_profile(
                     user_query=user_message,
                     context=context
                 )
@@ -325,6 +439,110 @@ class AnimationAgent:
         with actual data-querying logic (or call to a dedicated QA/summarizer
         """
         print(f"[Agent] Handling PARTICULAR (specific inquiry) intent")
+        
+        # FAST-PATH: Check for high-confidence cached result (≥0.95) and return immediately
+        # This skips all code generation and LLM calls for near-identical queries
+        if intent_result.get('reusable_cached_data'):
+            cached_info = intent_result['reusable_cached_data']
+            confidence = cached_info.get('confidence', 0.0)
+            
+            if confidence >= 0.95:
+                # High confidence - return cached result immediately without code generation
+                add_system_log(
+                    f"[FAST-PATH] High-confidence cached result found (confidence={confidence:.2f} ≥ 0.95). "
+                    f"Returning cached result immediately without code generation.",
+                    'info'
+                )
+                
+                # Retrieve the full cached result from conversation history
+                if self.conversation_context:
+                    prev_query_id = cached_info.get('query_id')
+                    cached_result = None
+                    
+                    # Find the previous result in history
+                    for entry in self.conversation_context.history:
+                        if entry.get('query_id') == prev_query_id:
+                            cached_result = entry.get('result', {})
+                            break
+                    
+                    if cached_result and cached_result.get('status') == 'success':
+                        add_system_log(
+                            f"[FAST-PATH] Reusing cached result from query {prev_query_id}: "
+                            f"{cached_info.get('reasoning', 'high similarity match')}",
+                            'success'
+                        )
+                        
+                        # Report progress for UI
+                        if progress_callback:
+                            progress_callback('cached_result_reused', {
+                                'query_id': prev_query_id,
+                                'confidence': confidence,
+                                'reasoning': cached_info.get('reasoning', 'Near-identical query detected'),
+                                'message': f'Found cached result from previous query (confidence: {confidence:.2f}). Returning immediately.'
+                            })
+                        
+                        # Return the cached result directly (add a flag so UI can indicate reuse)
+                        reused_result = {
+                            'type': 'particular_insight',
+                            'status': 'success',
+                            'intent': intent_result,
+                            'intent_result': intent_result,
+                            'insight_result': cached_result,
+                            'insight': cached_result.get('insight'),
+                            'data_summary': cached_result.get('data_summary', {}),
+                            'visualization': cached_result.get('visualization', ''),
+                            'code_file': cached_result.get('query_code_file'),
+                            'insight_file': cached_result.get('insight_file'),
+                            'plot_file': cached_result.get('plot_files', [None])[0] if cached_result.get('plot_files') else None,
+                            'plot_files': cached_result.get('plot_files', []),
+                            'confidence': cached_result.get('confidence', confidence),
+                            'cached_from_query_id': prev_query_id,
+                            'cache_confidence': confidence,
+                            'cache_reasoning': cached_info.get('reasoning', 'High similarity match')
+                        }
+                        
+                        # Still save this query to context (marks that we answered it via cache)
+                        if self.conversation_context:
+                            try:
+                                query_id_to_save = context.get('query_id', f"q{self.query_counter}")
+                                # Create a lightweight result entry that references the cached result
+                                cache_reference_result = {
+                                    'status': 'success',
+                                    'cached_from': prev_query_id,
+                                    'cache_confidence': confidence,
+                                    'insight': cached_result.get('insight'),
+                                    'data_summary': cached_result.get('data_summary', {}),
+                                    'query_code_file': cached_result.get('query_code_file'),
+                                    'data_cache_file': cached_result.get('data_cache_file'),
+                                    'plot_files': cached_result.get('plot_files', [])
+                                }
+                                self.conversation_context.add_query_result(
+                                    query_id=query_id_to_save,
+                                    user_query=query,
+                                    result=cache_reference_result
+                                )
+                                print(f"[Agent] Saved cache reference to conversation context (query_id={query_id_to_save}, cached_from={prev_query_id})")
+                            except Exception as e:
+                                print(f"[Agent] Warning: Could not save cache reference: {e}")
+                        
+                        return reused_result
+                    else:
+                        add_system_log(
+                            f"[FAST-PATH] Could not retrieve cached result for query {prev_query_id}. Falling back to normal flow.",
+                            'warning'
+                        )
+                else:
+                    add_system_log(
+                        "[FAST-PATH] No conversation context available. Falling back to normal flow.",
+                        'warning'
+                    )
+            else:
+                # Medium confidence (0.7-0.95) - continue with current behavior (LLM generates lightweight code)
+                add_system_log(
+                    f"[CACHE-HINT] Medium-confidence cached data found (confidence={confidence:.2f}, 0.7 ≤ c < 0.95). "
+                    f"Will pass to generator LLM to create lightweight NPZ-loading code.",
+                    'info'
+                )
         
         # Report that we're starting insight extraction
         if progress_callback:
@@ -369,16 +587,23 @@ class AnimationAgent:
                 })
             
             # Set context flags for the next user message
+            # CRITICAL: Store estimated_time_minutes in intent_result so it's available when user responds
+            intent_result_with_time = intent_result.copy() if intent_result else {}
+            intent_result_with_time['estimated_time_minutes'] = estimated_time
+            intent_result_with_time['time_estimation_reasoning'] = time_reasoning
+            
             context['awaiting_time_preference'] = True
             context['original_query'] = query
-            context['original_intent_result'] = intent_result
+            context['original_intent_result'] = intent_result_with_time
             
             # Set flag and return early - user needs to provide time preference
+            # CRITICAL: Return intent_result_with_time (includes estimated_time_minutes)
             return {
                 'type': 'awaiting_time_preference',
                 'status': 'awaiting_time_preference',
                 'query': query,
                 'intent_result': intent_result,
+                'original_intent_result': intent_result_with_time,  # Include for routes.py to store
                 'estimated_time_minutes': estimated_time,
                 'time_reasoning': time_reasoning,
                 'message': f'This query is estimated to take ~{estimated_time} minutes. Please specify your time preference (e.g., "5 minutes", "10 minutes", or "proceed").'
@@ -387,6 +612,44 @@ class AnimationAgent:
         # Report insight generation complete
         if progress_callback:
             progress_callback('insight_generated', insight_result)
+        
+        # Save successful results to conversation context for future queries
+        if insight_result.get('status') == 'success' and self.conversation_context:
+            try:
+                # Include NPZ file path in result for reusability detection
+                if 'data_cache_file' not in insight_result and insight_result.get('query_code_file'):
+                    # Try to infer NPZ path from query code path
+                    # Query code path typically: <...>/ai_data/codes/<dataset_id>/query_<timestamp>.py
+                    # The NPZs live at: <...>/ai_data/data_cache/<dataset_id>/data_<timestamp>.npz
+                    from pathlib import Path
+                    code_path = Path(insight_result['query_code_file'])
+                    try:
+                        # Move up to ai_data directory (3 levels up from codes/<dataset_id>/file)
+                        base_ai_data = code_path.parent.parent.parent
+                        data_cache_dir = base_ai_data / 'data_cache' / code_path.parent.name
+                        if not data_cache_dir.exists():
+                            # Fallback: older layout (codes/data_cache/<dataset>) or sibling 'data_cache' under codes
+                            alt_candidate = code_path.parent.parent / 'data_cache' / code_path.parent.name
+                            if alt_candidate.exists():
+                                data_cache_dir = alt_candidate
+
+                        if data_cache_dir.exists():
+                            npz_candidates = sorted(data_cache_dir.glob('data_*.npz'), reverse=True)
+                            if npz_candidates:
+                                insight_result['data_cache_file'] = str(npz_candidates[0].resolve())
+                    except Exception:
+                        # Non-fatal: inference failed, continue without attaching
+                        pass
+                
+                query_id_to_save = context.get('query_id', f"q{self.query_counter}")
+                self.conversation_context.add_query_result(
+                    query_id=query_id_to_save,
+                    user_query=query,
+                    result=insight_result
+                )
+                print(f"[Agent] Saved query result to conversation context (query_id={query_id_to_save})")
+            except Exception as e:
+                print(f"[Agent] Warning: Could not save query result to conversation context: {e}")
                 
         if insight_result.get('status') == 'success':
             return {
@@ -472,35 +735,6 @@ class AnimationAgent:
                         'message': insight_result.get('message', 'Failed to generate insight'),
                         'error': insight_result.get('error')
                     }
-    
-    def _parse_time_preference(self, user_message: str) -> int:
-        """
-        Parse user's time preference from their message.
-        
-        Args:
-            user_message: User's response like "5 minutes", "10", "proceed"
-            
-        Returns:
-            Integer minutes, or None if user said "proceed" or couldn't parse
-        """
-        import re
-        
-        # Normalize message
-        msg_lower = user_message.lower().strip()
-        
-        # Check for "proceed" or "continue" or "default"
-        if any(word in msg_lower for word in ['proceed', 'continue', 'default', 'ok', 'yes']):
-            return None  # Use default/no limit
-        
-        # Try to extract number (with or without "minutes")
-        # Patterns: "5", "5 minutes", "ten", "10min", etc.
-        number_match = re.search(r'(\d+)\s*(?:min|minute|minutes)?', msg_lower)
-        if number_match:
-            return int(number_match.group(1))
-        
-        # Fallback: couldn't parse, return None
-        add_system_log(f"Could not parse time preference from: {user_message}, using default", 'warning')
-        return None
     
     def _handle_request_help(self, query: str, context: dict) -> dict:
         """Handle REQUEST_HELP intent."""

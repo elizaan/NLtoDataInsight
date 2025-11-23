@@ -13,6 +13,12 @@ import subprocess
 from pathlib import Path
 from datetime import datetime
 
+# Import constants
+from .query_constants import DEFAULT_TIME_LIMIT_SECONDS
+from .insight_finalizer import InsightFinalizerAgent
+# Token instrumentation (estimates tokens and appends to ai_data/token_usage.log)
+from .token_instrumentation import estimate_tokens_for_messages, log_token_usage
+
 # Import system log function properly
 add_system_log = None
 try:
@@ -94,6 +100,9 @@ class DatasetInsightGenerator:
         add_system_log(f"Output dirs initialized: {self.base_output_dir}", "info")
         
         self.conversation_history = []
+        
+        # NEW: Dataset profile will be set by core_agent after profiling
+        self.dataset_profile = None
     
     def _get_dataset_dirs(self, dataset_id: str) -> Dict[str, Path]:
         """Get directory paths for a specific dataset"""
@@ -188,7 +197,27 @@ class DatasetInsightGenerator:
             geo_file_path = (repo_src_path / 'datasets' / geo_filename).resolve()
             geo_file_path_str = str(geo_file_path)
         except Exception:
-          geo_file_path_str = geo_filename
+            geo_file_path_str = geo_filename
+
+        # Build time constraint section for system prompt - LLM DECIDES OPTIMIZATION
+        if user_time_limit:
+            time_constraint_section = f'''**TIME CONSTRAINT**: User specified {user_time_limit} minutes.
+
+**DATA SCALE CONTEXT:**
+- Total data points: {total_data_points:,}
+- Spatial dimensions: {x} × {y} × {z} = {total_voxels:,} points per timestep
+- Temporal: {total_timesteps} timesteps ({time_units})
+- Available time: {user_time_limit * 60} seconds
+
+**YOU DECIDE:** Choose the quality level that balances speed and correctness for THIS specific query:
+- For simple statistics (min/max/mean): More aggressive subsampling may be acceptable
+- For visualizations or spatial patterns: Need better resolution to see features
+- Consider query complexity, data characteristics, and time budget
+- Set query timeout to {user_time_limit * 60 * 0.8:.0f} seconds (80% of limit for buffer)
+
+**EXPLAIN YOUR CHOICE** in the insight text (e.g., "I chose ..... because...")'''
+        else:
+            time_constraint_section = '**NO TIME CONSTRAINT** specified. '
 
         # Build system prompt - LLM DECIDES EVERYTHING
         system_prompt = f"""You are an expert data analyst with full autonomy to solve the user's question.
@@ -202,7 +231,23 @@ class DatasetInsightGenerator:
 
           **CONVERSATION CONTEXT:**
           {conversation_context if conversation_context else "This is the first query in this conversation."}
-
+"""
+        
+        # NEW: Inject cached dataset profile if available
+        if self.dataset_profile:
+            profile_section = f"""
+          **DATASET PROFILE (PRE-COMPUTED, PERMANENT KNOWLEDGE):**
+          This profile was generated once and cached. Use it to make intelligent decisions.
+          
+          {json.dumps(self.dataset_profile, indent=2)}
+          
+          **HOW TO USE THIS PROFILE:**
+          - Check 'benchmark_results' to understand performance results for empirical tests done on this dataset
+          - Be aware of 'potential_issues' when interpreting results
+"""
+            system_prompt += profile_section
+        
+        system_prompt += f"""
           **PRE-INSIGHT LLM ANALYSIS (from intent parser / extractor):**
           {pre_insight_summary}
 
@@ -212,7 +257,7 @@ class DatasetInsightGenerator:
           2. **Extract the specific values** you need (e.g., if previous query found variable = y, use that exact value)
           3. **Check if previous query saved an npz file** with rich metadata
           4. **Load and inspect the npz file** to see what data is already available
-                5. **Reuse saved data** instead of re-querying the dataset
+          5. **Reuse saved data** instead of re-querying the dataset
 
                 **How to Load and Use Previous NPZ Files:**
 
@@ -225,26 +270,26 @@ class DatasetInsightGenerator:
                 print("Available keys:", data.files)  # Shows what's saved
 
 
-                # Example: "When was max temperature seen?"
+                # Example: "When was minimum target seen?"
                 # Instead of re-scanning, just use the saved timestep:
-                print(f"Max occurred at timestep: {{timestep}}")
+                print(f"Min occurred at timestep: {{timestep}}")
                 # Convert to date using dataset temporal info
 
-                # Example: "Where was max temperature seen?"
+                # Example: "Where was minimum target seen?"
                 # Instead of re-scanning, find location in saved spatial data:
-                y_idx, x_idx = np.unravel_index(np.argmax(spatial_data), spatial_data.shape)
+                y_idx, x_idx = np.unravel_index(np.argmin(spatial_data), spatial_data.shape)
                 # Convert to lat/lon using helper functions
                 ```
 
                 **When to Load Previous NPZ vs Re-query:**
-                - If previous query found the exact value you need (max, min, etc.) → Load npz
-                - If npz contains target_timestep → Use it for "when?" queries
-                - If npz contains target_x, target_y → Use it for "where?" queries
-                - If current query needs different time range or region → Re-query
+                - If previous query found the exact value you need (max, min, stats, etc.) - Load npz
+                - If npz contains target_timestep - Use it for "when?" queries
+                - If npz contains target_x, target_y - Use it for "where?" queries
+                - If current query needs different time range or region - Re-query
 
                 Examples of context-aware queries:
-                - User asks: "what is the maximum x?" → You find that suppose m
-                - User then asks: "when/where was this highest x seen?" → You should:
+                - User asks: "what is the maximum x?" - You find that suppose m
+                - User then asks: "when/where was this highest x seen?" - You should:
                     - Check context: see that max_x = m was found AND npz file path
                     - **Load the npz file first**: `data = np.load(npz_path)`
                     - **Check if target_timestep exists**: if yes, use it directly!
@@ -354,12 +399,11 @@ data = ds.db.read(
     z= z_range
     # x,y,z reads prefer a non-zero-length range (start < end).
     #  OpenVisus bindings require start < end
-    quality=-6
+    quality=0 # choose appropriate quality based on time constraints
 )
 ```
 
 **IMPORTANT** 
-- DO NOT hardcode any specific lat/lon values in your prompt
 - USE YOUR KNOWLEDGE to estimate bounds for ANY geographic location mentioned
 - ALWAYS call latlon_to_xy() to get grid indices - never guess grid coordinates
 - If unsure about exact bounds, provide reasonable estimates (it's better than failing)
@@ -548,8 +592,6 @@ for t in range(timestep_start, timestep_end + 1):
     # Your data reading code
 `````
 
-
-
 **YOUR MISSION:**
 Answer the user's question by intelligently querying and visualizing this dataset.
 
@@ -566,31 +608,26 @@ You have TWO separate code scripts to write:
 **STEP 1: ANALYZE THE USER ASKED TIME**
 
 **USER TIME CONSTRAINT:**
-{f'''- User has provided a time limit of {user_time_limit} minutes. You MUST:
-  * Reduce spatial/temporal resolution (e.g., for openvisuspy play with quality values and reduce it to coarser levels like q=-10 or q=-12)
-  * Use aggressive aggregation (e.g., compute stats on subsampled data)
-  * Set query timeout to {user_time_limit * 60 * 0.7:.0f} seconds (70% of user limit to leave buffer for plotting)
-  * Balance speed vs accuracy based on this constraint
-''' if user_time_limit else '- No specific time constraint provided by user'}
+{time_constraint_section}
 
 
 **STEP 2: DECIDE YOUR STRATEGY**
 Consider:
 - within {user_time_limit} minutes, if {total_timesteps:,} timesteps is too many → How should you aggregate? (daily? weekly? monthly?)
   - choose time intervals very wisely for faster output
-- If spatial resolution is too high → What quality level? (q=-2 fine, q=-8 medium, q=-12 coarse)
+- If spatial resolution is too high → What quality/resolution level?
 - What's the smartest way to sample without losing the answer?
 
 Examples of intelligent strategies for very large spatial and temporal datasets:
-- Query asks "highest temperature date" with 10,366 hourly steps
+- Query asks "highest target date" with 10,366 hourly steps
   → BAD: Check all 10,366 (slow, cluttered)
   → GOOD: Aggregate by day/week/month, find max in each period, much faster
   
-- Query asks "temperature at specific location" 
+- Query asks "target at specific location" 
   → GOOD: Just query that one point at all times, fast
   
 - Query asks "global average over time"
-  → GOOD: Use coarse spatial resolution (q=-8), compute means, aggregate temporally wisely
+  → GOOD: Use coarse spatial resolution, compute means, aggregate temporally wisely
 
 **STEP 3: WRITE SMART QUERY CODE**
 Your code should:
@@ -626,7 +663,7 @@ try:
             x=[ds.db.getLogicBox()[0][0], ds.db.getLogicBox()[1][0]],  # Full x range (-1 means max)
             y=[ds.db.getLogicBox()[0][1], ds.db.getLogicBox()[1][1]],  # Full y range (-1 means max)
             z=[ds.db.getLogicBox()[0][2], ds.db.getLogicBox()[1][2]], 
-            quality=YOUR_CHOSEN_QUALITY  # YOU decide: -2, -6, -8, -10, -20?
+            quality=YOUR_CHOSEN_QUALITY 
         )
         
         # Compute what you need
@@ -662,24 +699,37 @@ except Exception as e:
 **STEP 1: UNDERSTAND PLOT HINTS**
 Plot hints: {plot_hints}
 
-Ask yourself:
-- What visualizations would best answer the user's question?
-- How many distinct plots should I create?
-- What should each plot show?
-
 **STEP 2: DECIDE PLOT STRATEGY**
-Examples:
-- Hint: "plot1 (1D): Temperature" → Time series of temperature
-- Hint: "plot2 (2D): Temperature, Date" → Heatmap or line plot
-- Multiple hints → Create ALL relevant plots (plot_1, plot_2, plot_3, ...)
+Ask yourself:
+- What visualizations would **best** answer the user's question?
+- How many distinct but on point plots should I create?
 
 **STEP 3: WRITE PLOT CODE**
 Your code should:
 1. Load data from `{data_cache_file_str}`
 2. Create meaningful plots based on plot hints and query
-3. Highlight key findings ( values, trends, anomalies)
-4. Save as: `{plot_dir_str}/plot_1_{timestamp}.png`, `plot_2_{timestamp}.png`, etc.
-5. Use matplotlib or plotly
+3. Highlight key findings (values, trends, anomalies)
+4. Use clear labels, legends, titles (with units, with proper x, y,z axes, colorbars)
+5. Save as: `{plot_dir_str}/plot_1_{timestamp}.png`, `plot_2_{timestamp}.png`, etc.
+
+**PACKAGE RESTRICTIONS:**
+You MUST ONLY use the following packages for plotting:
+- numpy (for array operations)
+- xarray (for netCDF data handling)
+- matplotlib (matplotlib.pyplot for plotting)
+- pandas (for data manipulation)
+- scipy (for scientific computations)
+- plotly (for interactive plots)
+- seaborn (for statistical visualizations)
+- folium (for map visualizations)
+- cartopy (cartopy.crs for map projections) 
+- geopandas (for geospatial data)
+- pillow/PIL (for image operations)
+- bokeh (for interactive plots)
+- netCDF4 (for netCDF file handling)
+
+DO NOT import or use any other packages
+If the plotting is challenging with available packages, do your best with what we have.
 
 **CRITICAL PLOTTING GUIDELINES:**
 
@@ -687,9 +737,14 @@ Your code should:
 - ALWAYS set appropriate axis limits based on your actual data range
 - For bar charts of min/max: set y-axis from slightly below min to slightly above max
 - For time series: ensure x-axis covers your time range
-- For heatmaps: use appropriate color scales (diverging for anomalies, sequential for values)
- - For heatmaps: use appropriate color scales (diverging for anomalies, sequential for values)
-    - When using matplotlib's imshow for heatmaps, ALWAYS set origin='lower' so that the array's row 0 is displayed at the bottom (this matches typical Cartesian coordinates). Also provide an explicit extent=[x_min, x_max, y_min, y_max] when mapping array indices to coordinate axes so tick labels and overlays align correctly. Only use origin='upper' if you intentionally want row 0 at the top and clearly document that choice.
+ - For heatmaps and image-like arrays: use appropriate color scales (diverging for anomalies, sequential for values).
+     - IMPORTANT: Treat array row-0 as the BOTTOM (not the top) by default across all visualizations. Make this the standard so overlays and annotations align intuitively with Cartesian/geographic coordinates.
+     - Implementation rules (apply one of the following consistently):
+        * matplotlib `imshow`: always pass `origin='lower'` and provide an explicit `extent=[x_min, x_max, y_min, y_max]` when mapping array indices to coordinate axes.
+        * seaborn `heatmap`: either plot `np.flipud(arr)` or use the returned `ax` and call `ax.invert_yaxis()` so the display matches `origin='lower'` semantics.
+        * pcolormesh/contourf: supply explicit X/Y coordinate arrays with Y increasing (northward/upwards) or, if supplying only the array, flip it with `np.flipud()` to maintain the row-0-bottom convention.
+        * quiver/streamplot: build X/Y coordinate arrays that match the heatmap's extent and orientation (use `np.meshgrid(x_coords, y_coords)` where `y_coords` is ascending). Do NOT assume array row ordering — derive coordinates from `x_range`/`y_range` or `extent`.
+     - Always document the chosen origin/orientation in the plot title or caption (e.g., "Plotted with origin='lower' — row 0 at bottom"). If you must use `origin='upper'`, explicitly justify and document it.
 - Use log scale if data spans several orders of magnitude
 - folow rule for other plots too
 
@@ -698,22 +753,33 @@ Your code should:
 - Check data shapes and values: `print(f"Shape: {{arr.shape}}, Range: [{{arr.min()}}, {{arr.max()}}]")`
 - This prevents plotting wrong arrays or misinterpreting data structure
 
-**Visualization Best Practices:**
-- **Bar charts**: Use for comparing discrete values (min vs max, different regions)
-  - Add value labels on bars: `plt.text(x, y, f'{{value:.2f}}', ha='center')`
-  - Set appropriate y-limits based on data range
-- **Time series**: Use for temporal trends
-  - Label axes clearly with units
-  - Mark important events (max, min, thresholds)
-- **Heatmaps/contour plots**: Use for 2D spatial or spatiotemporal data
-  - Include colorbar with units
-  - Consider geographic overlays if showing lat/lon
-- **Vector plots**: Use for velocity/flow fields
-  - Normalize arrow lengths for readability
-  - Use quiver or streamplot
-- **Scatter plots**: Use for correlations
-    - Add trend lines if applicable
-    - Highlight key data points (e.g., outliers)
+**CRITICAL: Dimension Labeling and Transparency:**
+When creating plots, you MUST explain resolution reductions value and coordinate mappings:
+
+1. **Resolution reduction transparency:**
+   - Original dataset: {x}×{y}×{z} = {total_voxels:,} spatial points
+   - If you used quality=-q
+   - **In insight**: Explain "plotted at reduced resolution (quality=-q) but coordinates show original grid"
+
+2. **Timestep selection transparency:**
+   - Dataset: {total_timesteps:,} timesteps, each = {time_units}
+   - User asked: "January 20, 2020" or "7 days"
+   - **You must explain:** "January 20 = timestep 24 (day 1, hour 24 after dataset start)"
+   - **If multi-day query:** "7 days = timesteps 0-167 (168 hourly timesteps), but I sampled every 6th timestep for speed"
+
+3. **3D to 2D reduction:**
+   - If dataset has z-levels but you plot 2D:
+     - **In code**: Document which z-slice: `# Using z=0 (surface level)`
+     - **In insight**: "Plotted surface layer (z=0). For full 3D view, need multiple z-slices or volume rendering"
+     - **Create multiple plots** if user asks about features that vary with depth
+
+4. **Spatial plot:**
+   - When plotting spatial data, always use the spatial index for axis labels but if the data Has geographic coordinates: {spatial_info.get('geographic_info', {}).get('has_geographic_info', 'no')}, consider adding a secondary axis or annotation indicating approximate lat/lon ranges covered.
+   - Use the `extent` parameter in `imshow` or similar functions to map array indices to spatial coordinates
+   - Set `origin='lower'` to match Cartesian coordinate conventions
+   - Clearly indicate any resolution reduction in the plot title or caption
+
+
 
 **Special Case: velocity Features (Eddies, Currents, Gyres, magnitudes)**
 
@@ -725,8 +791,10 @@ If user asks about complex features like:
 - for all this you have to use your knowledge of velocity components to decide what to plot and the dataset has to have relevant variables present in data
 
 
-**Plot Code Template (ADAPT THIS):**
+**Plot Code Template:**
 ```python
+
+# necessary imports, using matplotlib for example
 import numpy as np
 import matplotlib.pyplot as plt
 import json
@@ -734,10 +802,9 @@ import json
 # Load cached data
 data = np.load('{data_cache_file_str}')
 
-# YOUR PLOTTING LOGIC
-# Decide: How many plots? What does each show?
+# YOUR PLOTTING LOGIC from above instructions
 
-# Example: Plot 1 - Time series
+# Example: Plot 1 - Some visualization
 plt.figure(figsize=(12, 6))
 # YOUR PLOT CODE
 plt.savefig('{plot_dir_str}/plot_1_{timestamp}.png', dpi=150, bbox_inches='tight')
@@ -807,6 +874,7 @@ Common issues:
         plot_success = False
         query_output = None
         plot_files = []
+        plots_revised = False  # Track if plots were revised by finalizer
         insight_text = None
         final_answer = None
         
@@ -826,6 +894,15 @@ Common issues:
                 })
             
             try:
+                # Instrument token usage for this planned LLM call (best-effort)
+                try:
+                    model_name = getattr(self.llm, 'model', None) or getattr(self.llm, 'model_name', None) or getattr(self.llm, 'model_name_or_path', 'gpt-4o')
+                    token_count = log_token_usage(model_name, self.conversation_history, label=f"iteration_{iteration+1}_phase_{current_phase}")
+                    add_system_log(f"[token_instrumentation] model={model_name} tokens={token_count}", "debug")
+                except Exception:
+                    # Non-fatal if instrumentation fails
+                    pass
+
                 response = self.llm.invoke(self.conversation_history)
                 assistant_message = response.content
                 
@@ -848,14 +925,26 @@ Common issues:
                 })
                 
                 # PHASE 1: Query Code
-                if current_phase == "query" and "<query_code>" in assistant_message and "</query_code>" in assistant_message:
+                # Support both <query_code> tags and ```query_code markdown fences
+                has_xml_tags = "<query_code>" in assistant_message and "</query_code>" in assistant_message
+                has_markdown_fence = "```query_code" in assistant_message
+                
+                if current_phase == "query" and (has_xml_tags or has_markdown_fence):
                     query_attempts += 1
                     
-                    code_start = assistant_message.find("<query_code>") + 12
-                    code_end = assistant_message.find("</query_code>")
-                    code = assistant_message[code_start:code_end].strip()
+                    # Extract code based on format
+                    if has_xml_tags:
+                        code_start = assistant_message.find("<query_code>") + 12
+                        code_end = assistant_message.find("</query_code>")
+                        code = assistant_message[code_start:code_end].strip()
+                    elif has_markdown_fence:
+                        # Handle ```query_code format
+                        code_start = assistant_message.find("```query_code") + 13
+                        # Find closing ``` after the opening fence
+                        code_end = assistant_message.find("```", code_start)
+                        code = assistant_message[code_start:code_end].strip()
                     
-                    # Clean markdown
+                    # Clean markdown (in case there are nested backticks)
                     if code.startswith("```python"):
                         code = code[9:]
                     elif code.startswith("```"):
@@ -918,13 +1007,38 @@ Common issues:
                                 time.sleep(0.2)  # Wait 200ms and retry
                             
                             if not file_exists:
-                                add_system_log(f"✗ Query did not produce expected data cache: {data_cache_file}", "warning")
+                                add_system_log(f"Query did not produce expected data cache: {data_cache_file}", "warning")
                                 error_msg = f"Query finished but did not create data cache: {data_cache_file}. Stdout: {stdout} Stderr: {stderr}"
                                 parsed_stdout = None
+                            else:
+                                # Validate that the created npz contains at least one non-empty array.
+                                try:
+                                    import numpy as _np
+                                    _npz = _np.load(data_cache_file)
+                                    has_nonempty = False
+                                    for _k in getattr(_npz, 'files', []):
+                                        try:
+                                            _v = _npz[_k]
+                                            if hasattr(_v, 'size') and getattr(_v, 'size', 0) > 0:
+                                                has_nonempty = True
+                                                break
+                                        except Exception:
+                                            # Skip non-array entries or unexpected types
+                                            continue
+
+                                    if not has_nonempty:
+                                        add_system_log(f"Query created data cache but arrays are empty: {data_cache_file}", "warning")
+                                        error_msg = f"Query created data cache but arrays are empty: {data_cache_file}. Stdout: {stdout} Stderr: {stderr}"
+                                        parsed_stdout = None
+                                except Exception as _e:
+                                    add_system_log(f"Failed to validate data cache: {_e}", "warning")
+                                    error_msg = f"Failed to load/validate data cache: {_e}. Stdout: {stdout} Stderr: {stderr}"
+                                    parsed_stdout = None
 
                         # If we detected an error-like condition, prompt LLM to fix
                         if parsed_stdout is None and ('error_msg' in locals()):
-                            query_attempts += 1
+                            # Note: `query_attempts` is incremented when the LLM supplies code
+                            # (above). Do NOT increment again here to avoid double-counting.
                             if query_attempts >= max_query_attempts:
                                 add_system_log(f"✗ Query failed after {max_query_attempts} attempts", "error")
                                 return {
@@ -947,7 +1061,7 @@ Common issues:
                             # Include the last attempted query code for debugging
                             last_code_snippet = code if len(code) < 2000 else code[:1900] + "\n... (truncated)"
 
-                            feedback = f"""❌ QUERY CODE FAILED (Attempt {query_attempts}/{max_query_attempts})
+                            feedback = f""" QUERY CODE FAILED (Attempt {query_attempts}/{max_query_attempts})
 
 ERROR/NOTE:
 {error_msg}
@@ -1040,6 +1154,14 @@ Write your intelligent plot code in <plot_code></plot_code> tags.
                             # Append and call LLM synchronously
                             self.conversation_history.append(prompt)
                             try:
+                                # Instrument tokens for this follow-up LLM call
+                                try:
+                                    model_name = getattr(self.llm, 'model', None) or getattr(self.llm, 'model_name', None) or getattr(self.llm, 'model_name_or_path', 'gpt-4o')
+                                    token_count = log_token_usage(model_name, self.conversation_history, label=f"suggestion_iter_{iteration+1}")
+                                    add_system_log(f"[token_instrumentation] model={model_name} tokens={token_count}", "debug")
+                                except Exception:
+                                    pass
+
                                 response = self.llm.invoke(self.conversation_history)
                                 suggestion_text = response.content
                             except Exception as e:
@@ -1096,7 +1218,7 @@ Write your intelligent plot code in <plot_code></plot_code> tags.
                                 'confidence': 0.0
                             }
 
-                        add_system_log(f"✗ Query failed (attempt {query_attempts}/{max_query_attempts})", "warning")
+                        add_system_log(f"Query failed (attempt {query_attempts}/{max_query_attempts})", "warning")
                         
                         # Detect empty code error and provide specific feedback
                         if "Empty code" in error_msg or "empty response" in error_msg.lower():
@@ -1148,67 +1270,180 @@ Write your corrected query code in <query_code></query_code> tags.
                         })
                 
                 # PHASE 2: Plot Code
-                elif current_phase == "plot" and "<plot_code>" in assistant_message and "</plot_code>" in assistant_message:
-                    plot_attempts += 1
+                # Support both <plot_code> tags and ```plot_code markdown fences
+                elif current_phase == "plot":
+                    has_xml_tags_plot = "<plot_code>" in assistant_message and "</plot_code>" in assistant_message
+                    has_markdown_fence_plot = "```plot_code" in assistant_message
                     
-                    code_start = assistant_message.find("<plot_code>") + 11
-                    code_end = assistant_message.find("</plot_code>")
-                    code = assistant_message[code_start:code_end].strip()
-                    
-                    # Clean markdown
-                    if code.startswith("```python"):
-                        code = code[9:]
-                    elif code.startswith("```"):
-                        code = code[3:]
-                    if code.endswith("```"):
-                        code = code[:-3]
-                    code = code.strip()
-                    
-                    add_system_log(f"Executing plot code (attempt {plot_attempts}/{max_plot_attempts})", "info")
-                    
-                    # Execute plot code
-                    execution_result = self.executor.execute_code(code, str(plot_code_file))
-                    
-                    if execution_result["success"]:
-                        plot_success = True
-                        current_phase = "finalize"
+                    if has_xml_tags_plot or has_markdown_fence_plot:
+                        plot_attempts += 1
                         
-                        # Find generated plots
-                        plot_files = sorted(list(dirs['plots'].glob(f"plot_*_{timestamp}.png")))
-
-                        # Log where the plot files were saved (mirror the "Saved code to:" message for query/plot code)
-                        if plot_files:
-                            plot_paths = [str(p.resolve()) for p in plot_files]
-                            add_system_log(f"Saved plots to: {plot_dir_str} ({len(plot_paths)} files)", "info")
-                            # Also include explicit file names for easier debugging
-                            add_system_log(f"Plot files: {plot_paths}", "info")
-                        else:
-                            add_system_log(f"No plot files found in expected directory: {plot_dir_str}", "warning")
-
-                        add_system_log(f"Plot code succeeded! Found {len(plot_files)} plots.", "success")
+                        # Extract code based on format
+                        if has_xml_tags_plot:
+                            code_start = assistant_message.find("<plot_code>") + 11
+                            code_end = assistant_message.find("</plot_code>")
+                            code = assistant_message[code_start:code_end].strip()
+                        elif has_markdown_fence_plot:
+                            # Handle ```plot_code format
+                            code_start = assistant_message.find("```plot_code") + 12
+                            code_end = assistant_message.find("```", code_start)
+                            code = assistant_message[code_start:code_end].strip()
                         
-                        feedback = f"""PLOT CODE SUCCEEDED!
+                        # Clean markdown (in case there are nested backticks)
+                        if code.startswith("```python"):
+                            code = code[9:]
+                        elif code.startswith("```"):
+                            code = code[3:]
+                        if code.endswith("```"):
+                            code = code[:-3]
+                        code = code.strip()
+                        
+                        add_system_log(f"Executing plot code (attempt {plot_attempts}/{max_plot_attempts})", "info")
+                        
+                        # Execute plot code
+                        execution_result = self.executor.execute_code(code, str(plot_code_file))
+                        
+                        # CRITICAL: Detect Python tracebacks even when executor reports "success"
+                        # The executor may return success=True if the subprocess completed, but the
+                        # script may have crashed with a Python exception (NameError, ModuleNotFoundError, etc.)
+                        # before saving any plot files. We must detect these and treat them as failures.
+                        stdout = execution_result.get('stdout', '')
+                        stderr = execution_result.get('stderr', '')
+                        combined_output = stdout + '\n' + stderr
+                        
+                        has_traceback = (
+                            'Traceback (most recent call last):' in combined_output or
+                            'NameError:' in combined_output or
+                            'ModuleNotFoundError:' in combined_output or
+                            'ImportError:' in combined_output or
+                            'AttributeError:' in combined_output
+                        )
+                        
+                        if has_traceback:
+                            # Detected a Python exception - treat as failure regardless of executor success flag
+                            add_system_log(f"Detected Python exception in plot code output (attempt {plot_attempts}/{max_plot_attempts})", "warning")
+                            add_system_log(f"Traceback detected in output:\n{combined_output[:500]}", "error")
+                            
+                            if plot_attempts >= max_plot_attempts:
+                                add_system_log(f"Plot failed after {max_plot_attempts} attempts", "error")
+                                current_phase = "finalize"
+                                feedback = f"""PLOT CODE FAILED WITH PYTHON EXCEPTION (Attempt {plot_attempts}/{max_plot_attempts})
+
+DETECTED ERROR OUTPUT:
+{combined_output}
+
+Maximum attempts reached. Proceeding to finalize without plots.
+Provide <insight></insight> and <final_answer></final_answer> based on query results.
+"""
+                                self.conversation_history.append({
+                                    "role": "user",
+                                    "content": feedback
+                                })
+                            else:
+                                # Ask LLM to fix the code
+                                feedback = f"""PLOT CODE FAILED WITH PYTHON EXCEPTION (Attempt {plot_attempts}/{max_plot_attempts})
+
+ERROR OUTPUT:
+{combined_output}
+
+**ANALYZE THE ERROR:**
+- Missing import? (e.g., forgot to import datetime, numpy, matplotlib)
+- Wrong variable name? (e.g., typo in variable from npz file)
+- Wrong function call? (e.g., incorrect API usage)
+
+**FIX THE CODE:**
+Write corrected plot code in <plot_code></plot_code> tags.
+Make sure ALL necessary imports are included at the top.
+"""
+                                self.conversation_history.append({
+                                    "role": "user",
+                                    "content": feedback
+                                })
+                            # Continue to next iteration to get fixed code from LLM
+                            continue
+                        
+                        if execution_result["success"]:
+                            plot_success = True
+                            current_phase = "finalize"
+                            
+                            # Find generated plots
+                            plot_files = sorted(list(dirs['plots'].glob(f"plot_*_{timestamp}.png")))
+
+                            # Log where the plot files were saved (mirror the "Saved code to:" message for query/plot code)
+                            plot_paths = []
+                            if plot_files:
+                                plot_paths = [str(p.resolve()) for p in plot_files]
+                                add_system_log(f"Saved plots to: {plot_dir_str} ({len(plot_paths)} files)", "info")
+                                # Also include explicit file names for easier debugging
+                                add_system_log(f"Plot files: {plot_paths}", "info")
+                            else:
+                                add_system_log(f"No plot files found in expected directory: {plot_dir_str}", "warning")
+
+                            add_system_log(f"Plot code succeeded! Found {len(plot_files)} plots.", "success")
+                            
+                            # ====== NOW FINALIZE WITH InsightFinalizerAgent ======
+                            # Stop iteration and delegate to InsightFinalizerAgent for:
+                            # 1. Visual plot evaluation
+                            # 2. Semantic insight writing
+                            # 3. Optional plot revision (max 1 time)
+                            
+                            add_system_log("Calling InsightFinalizerAgent for visual evaluation and insight synthesis...", "info")
+                            
+                            
+                            
+                            finalizer = InsightFinalizerAgent(api_key=self.llm.openai_api_key)
+                            
+                            try:
+                                finalization_result = finalizer.finalize(
+                                    user_query=user_query,
+                                    dataset_info=dataset_info,
+                                    dataset_profile=self.dataset_profile,
+                                    query_code_file=query_code_file,
+                                    plot_code_file=plot_code_file,
+                                    data_cache_file=data_cache_file,
+                                    plot_files=plot_files,
+                                    query_output=query_output,
+                                    plot_output=execution_result['stdout'],
+                                    user_time_limit=user_time_limit,
+                                    executor=self.executor  # For optional plot revision
+                                )
+                                
+                                # Extract finalized results
+                                insight_text = finalization_result['insight_text']
+                                final_answer = finalization_result['final_answer']
+                                plot_files = finalization_result['plot_files']  # May be revised
+                                plots_revised = finalization_result.get('plots_revised', False)  # Track revision status
+                                
+                                # Save insight to file
+                                with open(insight_file, 'w', encoding='utf-8') as f:
+                                    f.write(insight_text)
+                                
+                                add_system_log(f"✓ Insight finalized and saved to {insight_file.name}", "success")
+                                
+                                # Break out of iteration loop - we're done!
+                                break
+                                
+                            except Exception as e:
+                                add_system_log(f"InsightFinalizerAgent failed: {e}, falling back to manual finalization", "error")
+                                import traceback
+                                traceback.print_exc()
+                                
+                                # Fallback: continue with old approach
+                                feedback = f"""PLOT CODE SUCCEEDED!
 
 OUTPUT:
 {execution_result['stdout']}
 
-Generated {len(plot_files)} plots:
-{[f.name for f in plot_files]}
+Generated {len(plot_files)} plots.
 
-**NOW FINALIZE:**
-1. Write natural language insight in <insight></insight> tags explaining your findings
-2. Write final JSON summary in <final_answer></final_answer> tags with:
-{{
-    "insight": "Your explanation",
-    "data_summary": {{...key findings...}},
-    "visualization_description": "What the plots show",
-    "confidence": 0.85
-}}
+Write:
+1. Insight in <insight></insight> tags
+2. Final answer in <final_answer></final_answer> tags with JSON structure
 """
-                        self.conversation_history.append({
-                            "role": "user",
-                            "content": feedback
-                        })
+                                self.conversation_history.append({
+                                    "role": "user",
+                                    "content": feedback
+                                })
                     
                     else:
                         # Plot failed
@@ -1335,7 +1570,13 @@ Write corrected plot code in <plot_code></plot_code> tags.
             
             except Exception as e:
                 add_system_log(f"Error in iteration: {str(e)}", "error")
-                traceback.print_exc()
+                try:
+                    # Ensure traceback module is available in this scope before printing
+                    import traceback as _tb
+                    _tb.print_exc()
+                except Exception:
+                    # Fallback: safe print of the exception string
+                    print("(traceback unavailable) ", str(e))
                 self.conversation_history.append({
                     "role": "user",
                     "content": f"System error: {str(e)}. Continue with your current task."
@@ -1344,11 +1585,24 @@ Write corrected plot code in <plot_code></plot_code> tags.
         # Build final result
         if final_answer:
             add_system_log(f"final answer before update: {final_answer}", "info")
+            # Ensure numeric (natural) ordering of plot files before returning
+            try:
+                import re
+                def _numeric_sort_key(p_name: str):
+                    nums = re.findall(r"(\d+)", p_name)
+                    if nums:
+                        return tuple(map(int, nums))
+                    return (0, p_name)
+                plot_files = sorted(plot_files, key=lambda p: _numeric_sort_key(str(p)))
+            except Exception:
+                plot_files = sorted(plot_files)
+
             final_answer.update({
                 'query_code_file': str(query_code_file) if query_success else None,
                 'plot_code_file': str(plot_code_file) if plot_success else None,
                 'insight_file': str(insight_file) if insight_text else None,
                 'plot_files': [str(f) for f in plot_files],
+                'plots_revised': plots_revised,  # Signal if plots were revised
                 'data_cache_file': str(data_cache_file) if query_success else None,
                 'num_plots': len(plot_files),
                 'query_attempts': query_attempts,

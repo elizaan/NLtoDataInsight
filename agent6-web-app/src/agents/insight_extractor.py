@@ -7,6 +7,9 @@ import traceback
 import json
 import re
 
+# Import constants
+from .query_constants import DEFAULT_TIME_LIMIT_SECONDS, TIME_ESTIMATION_BUFFER
+
 # Import the new DatasetInsightGenerator
 from .dataset_insight_generator import DatasetInsightGenerator
 
@@ -37,6 +40,9 @@ except ImportError:
 if add_system_log is None:
     def add_system_log(msg, lt='info'):
         print(f"[SYSTEM LOG] {msg}")
+
+# Token instrumentation helper
+from .token_instrumentation import log_token_usage
 
 
 class InsightExtractorAgent:
@@ -78,28 +84,36 @@ Your role is to analyze the query and determine:
 1. What variable(s) the user is asking about
 2. What type of analysis is needed (max/min, time series, spatial pattern, etc.)
 3. Whether this requires actual data querying/ writing a python code or can be answered from metadata information alone.
-4. Give plot suggestions: suggest as many (try more than one for better coverage) NICE, SIMPLE, INTUITIVE plots as they are relevant to dataset, most easily interpretable by domain scientists and appropriate for the query and dataset — do NOT limit the number or force a fixed mix of 1D/2D/3D. Multiple 1D/2D/3D/nD plots are allowed when appropriate.
 5. **ESTIMATE QUERY EXECUTION TIME**: Based on the dataset size, query complexity, spatial/temporal extent, and whether aggregation is needed, estimate how long this query will take to execute in minutes.
 
 
 **STEP 1: ANALYZE THE PROBLEM**
 - What does the user actually want to know?
 - What data is needed to answer this?
-- How much computation is this? (Is it {total_data_points:,} point at full resolution feasible?)
+- Does the dataset have the required variables to answer the query? Or can they be derived from existing variables?
+
 
 **STEP 2: TIME ESTIMATION GUIDELINES:**
-- Consider total data points: larger datasets = longer time
-- consider full resolution
+- Consider {dataset_profile_section} to understand dataset performance characteristics
 - Temporal range: more timesteps = more time
+- spatial extent: larger area = more time
+- How much computation is needed to answer {query} originally without any spatial, resolution, quality optimization? (Is it {total_data_points:,} point at full resolution feasible?)
+
+**STEP 3: PLOT SUGGESTIONS**
+- with the required/ derived variables needed to answer the query, which plots would best illustrate the insights?
+    - simple-easy but intuitive 2D/3D spatial field visualization
+    - Some more related, on point, 1D, 2D, ..ND plots that are most easily interpretable by domain scientists and appropriate for the query and dataset
+- for each type of plots add subplots if needed for more clarity and better understanding and tranperancy
+- Keep suggestions focused, on point, meaningful, easily digestable and not too many plots not even too less
 
 Output JSON with:
 {{
     "analysis_type": "data_query" | "metadata_only",
     "target_variables": ["variable_id1", "variable_id2", ...],
     "plot_hints": [
-        "plot1 (1D/2D, ... ND): variables: <comma-separated variable ids>",
+        "plot1 (1D/2D, ... ND): variables: <comma-separated variable ids>, plot_type: <type>, reasoning: <brief reasoning>",
         ......
-        "plotN (1D/2D, ... ND): variables: <comma-separated variable ids>"
+        "plotN (1D/2D, ... ND): variables: <comma-separated variable ids>, plot_type: <type>, reasoning: <brief reasoning>"
     ],
     "reasoning": "Brief explanation",
     "confidence": (0.0-1.0),
@@ -127,7 +141,8 @@ Rules:
         user_query: str, 
         intent_hints: dict, 
         dataset: dict,
-        progress_callback: callable = None
+        progress_callback: callable = None,
+        dataset_profile: Optional[dict] = None
     ) -> dict:
         """
         Main entry point for insight extraction
@@ -144,9 +159,19 @@ Rules:
                 'confidence': 0.85
             }
         """
-        add_system_log("Starting insight extraction...", 'info')
+        # add_system_log("Starting insight extraction...", 'info')
 
         try:
+            # CRITICAL: Check intent type first - don't extract insights for non-data queries
+            intent_type = intent_hints.get('intent_type', 'UNKNOWN')
+            if intent_type in ['UNRELATED', 'HELP', 'EXIT']:
+                add_system_log(f"Skipping insight extraction for {intent_type} intent", 'info')
+                return {
+                    'status': 'skip',
+                    'message': f'Intent type {intent_type} does not require insight extraction',
+                    'intent_type': intent_type
+                }
+            
             # Extract dataset information
             dataset_id = dataset.get('id', 'unknown')
             dataset_name = dataset.get('name', 'Unknown Dataset')
@@ -167,54 +192,137 @@ Rules:
             total_timesteps = int(temporal_info.get('total_time_steps', '100'))
             
             total_voxels = x * y * z
+
             total_data_points = total_voxels * total_timesteps
-            # Step 1: Initial analysis with LLM
-            add_system_log("Step 1: Analyzing query intent...", 'info')
-            
-            prompt_vars = {
-                "dataset_name": dataset_name,
-                "query": user_query,
-                "intent_type": intent_hints.get('intent_type', 'UNKNOWN'),
-                "prev_reasoning": intent_hints.get('reasoning', ''),
-                "variables": ', '.join(variable_names),
-                "spatial_info": json.dumps(spatial_info.get('dimensions', {})),
-                "time_range": json.dumps(time_range) if has_temporal_info == 'yes' else "No temporal info",
-                "dataset_size": dataset_size,
-                "total_data_points": total_data_points
-            }
 
-            # Call LLM for initial analysis
-            raw_response = self.chain.invoke(prompt_vars)
+            # If a precomputed dataset profile is provided (set by core agent), prefer
+            # any total_data_points reported there as it may reflect preprocessing,
+            # effective sampling, or other optimizations.
+            # Also attach the profile to the downstream generator for reuse.
+            if dataset_profile:
+                try:
+                    # Give the profile to the DatasetInsightGenerator so it can be used
+                    # during generation/finalization steps.
+                    self.insight_generator.dataset_profile = dataset_profile
+                    if isinstance(dataset_profile, dict) and dataset_profile.get('total_data_points'):
+                        total_data_points = int(dataset_profile.get('total_data_points'))
+                except Exception:
+                    pass
+            # Step 1: Check if we can skip expensive pre-insight analysis
+            # This happens when intent_parser detected reusable cached data
+            skip_pre_insight = False
+            analysis = None
             
-            # Parse response
-            analysis = self._parse_llm_response(raw_response)
-            
-            # Get the raw text for expandable log details
-            raw_text = getattr(raw_response, 'content', None) or str(raw_response)
-            
-            add_system_log(
-                f"Analysis: type={analysis.get('analysis_type')}, "
-                f"variables={analysis.get('target_variables')}, "
-                f"confidence={analysis.get('confidence', 0):.2f}",
-                'info',
-                details=raw_text  # Add full LLM response as expandable details
-            )
-
-            # Emit analysis as a progress update so callers (and UI) can display it
-            try:
+            if intent_hints.get('reusable_cached_data'):
+                # Intent parser found that previous query's NPZ can answer this
+                skip_pre_insight = True
+                cached_info = intent_hints['reusable_cached_data']
+                
+                add_system_log(
+                    f"Skipping pre-insight analysis - reusing cached data from query {cached_info['query_id']} "
+                    f"(confidence: {cached_info['confidence']:.2f})",
+                    'info'
+                )
+                
+                # Create a synthetic analysis result to maintain API compatibility
+                analysis = {
+                    'analysis_type': 'data_query',
+                    'target_variables': cached_info.get('cached_variables', []),
+                    'query_type': 'cached_data_reuse',
+                    'reasoning': cached_info['reasoning'],
+                    'confidence': cached_info['confidence'],
+                    'estimated_time_minutes': 0.5,  # Loading NPZ is fast
+                    'time_estimation_reasoning': 'Reusing cached data from previous query',
+                    'reusable_cached_data': cached_info,
+                    'plot_hints': []  # Will be determined by downstream generator
+                }
+                
+                # Emit as progress
                 if progress_callback and callable(progress_callback):
                     progress_callback('insight_analysis', analysis)
-            except Exception:
-                # Non-fatal: continue even if progress callback fails
-                pass
+            
+            if not skip_pre_insight:
+                # Step 1: Initial analysis with LLM
+                add_system_log("Analyzing query intent...", 'info')
+                
+                # Build dataset profile section for the prompt so the LLM can leverage
+                # cached, precomputed knowledge when estimating time and planning.
+                dataset_profile_section = ''
+                try:
+                    profile = dataset_profile or getattr(self.insight_generator, 'dataset_profile', None)
+                    if profile:
+                        dataset_profile_section = f"""
+DATASET PROFILE (PRE-COMPUTED, PERMANENT KNOWLEDGE):
+This profile was generated once and cached. Use it to make intelligent decisions.
 
-            # Also expose the raw LLM text as a separate progress message
-            try:
+{json.dumps(profile, indent=2)}
+
+HOW TO USE THIS PROFILE:
+- Check 'benchmark_results' to understand performance results for empirical tests done on this dataset
+- Be aware of 'potential_issues' when interpreting results
+"""
+                except Exception:
+                    dataset_profile_section = ''
+
+                prompt_vars = {
+                    "dataset_name": dataset_name,
+                    "query": user_query,
+                    "intent_type": intent_hints.get('intent_type', 'UNKNOWN'),
+                    "prev_reasoning": intent_hints.get('reasoning', ''),
+                    "variables": ', '.join(variable_names),
+                    "spatial_info": json.dumps(spatial_info.get('dimensions', {})),
+                    "time_range": json.dumps(time_range) if has_temporal_info == 'yes' else "No temporal info",
+                    "dataset_size": dataset_size,
+                    "total_data_points": total_data_points,
+                    "dataset_profile_section": dataset_profile_section
+                }
+
+                # Call LLM for initial analysis
+                try:
+                    try:
+                        model_name = getattr(self.llm, 'model', None) or getattr(self.llm, 'model_name', 'gpt-4o-mini')
+                        msgs = [
+                            {"role": "system", "content": self.system_prompt},
+                            {"role": "user", "content": f"Analyze this query: {user_query}. Context: {prompt_vars.get('dataset_profile_section','')[:1000]}"}
+                        ]
+                        token_count = log_token_usage(model_name, msgs, label="pre_insight_analysis")
+                        add_system_log(f"[token_instrumentation][InsightExtractor] model={model_name} tokens={token_count}", 'debug')
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+
+                raw_response = self.chain.invoke(prompt_vars)
+                
+                # Parse response
+                analysis = self._parse_llm_response(raw_response)
+                
+                # Get the raw text for expandable log details
                 raw_text = getattr(raw_response, 'content', None) or str(raw_response)
-                if progress_callback and callable(progress_callback):
-                    progress_callback('insight_raw', raw_text)
-            except Exception:
-                pass
+                
+                add_system_log(
+                    f"[Pre-Insight-Extractor] Analysis: type={analysis.get('analysis_type')}, "
+                    f"variables={analysis.get('target_variables')}, "
+                    f"confidence={analysis.get('confidence', 0):.2f}",
+                    'info',
+                    details=raw_text  # Add full LLM response as expandable details
+                )
+
+                # Emit analysis as a progress update so callers (and UI) can display it
+                try:
+                    if progress_callback and callable(progress_callback):
+                        progress_callback('insight_analysis', analysis)
+                except Exception:
+                    # Non-fatal: continue even if progress callback fails
+                    pass
+
+                # Also expose the raw LLM text as a separate progress message
+                try:
+                    raw_text = getattr(raw_response, 'content', None) or str(raw_response)
+                    if progress_callback and callable(progress_callback):
+                        progress_callback('insight_raw', raw_text)
+                except Exception:
+                    pass
             
             # Step 2: Check if we need to query actual data
             analysis_type = analysis.get('analysis_type', 'data_query')
@@ -266,25 +374,39 @@ Rules:
             
             # Step 2.5: Check if we need time clarification for data queries
             # If analysis suggests data_query and we don't have user_time_limit_minutes yet, 
-            # return early to ask user
+            # check against DEFAULT_TIME_LIMIT_SECONDS (500 sec = ~8 minutes)
             estimated_time = analysis.get('estimated_time_minutes')
             user_time_limit = intent_hints.get('user_time_limit_minutes')
             
+            # Convert default time limit from seconds to minutes for comparison
+            default_time_limit_minutes = DEFAULT_TIME_LIMIT_SECONDS / 60.0  # 500 sec = 8.33 min
+            
             if estimated_time is not None and user_time_limit is None:
-                # Need to ask user for time preference
-                add_system_log(
-                    f"Query estimated to take {estimated_time} minutes, requesting time clarification from user", 
-                    'info'
-                )
-                
-                return {
-                    'status': 'needs_time_clarification',
-                    'estimated_time_minutes': estimated_time,
-                    'time_estimation_reasoning': analysis.get('time_estimation_reasoning', 'Based on dataset size and query complexity'),
-                    'analysis': analysis,
-                    'message': f'This query is estimated to take approximately {estimated_time} minutes. Please specify your time preference.',
-                    'confidence': analysis.get('confidence', 0.7)
-                }
+                # User didn't specify time constraint
+                if estimated_time <= default_time_limit_minutes:
+                    # Within default limit - proceed without asking user
+                    add_system_log(
+                        f"Query estimated at {estimated_time:.1f} min (within default {default_time_limit_minutes:.1f} min limit), proceeding automatically",
+                        'info'
+                    )
+                    # Attach default limit so downstream code knows the constraint
+                    intent_hints['user_time_limit_minutes'] = default_time_limit_minutes
+                else:
+                    # Exceeds default limit - ask user for preference
+                    add_system_log(
+                        f"Query estimated at {estimated_time:.1f} min (exceeds default {default_time_limit_minutes:.1f} min limit), requesting user confirmation",
+                        'info'
+                    )
+                    
+                    return {
+                        'status': 'needs_time_clarification',
+                        'estimated_time_minutes': estimated_time,
+                        'default_time_limit_minutes': default_time_limit_minutes,
+                        'time_estimation_reasoning': analysis.get('time_estimation_reasoning', 'Based on dataset size and query complexity'),
+                        'analysis': analysis,
+                        'message': f'This query is estimated to take approximately {estimated_time:.1f} minutes. Our default limit is {default_time_limit_minutes:.1f} minutes. Would you like to proceed with optimization, or specify a different time preference?',
+                        'confidence': analysis.get('confidence', 0.7)
+                    }
             
             # Step 3: Query actual data using DatasetInsightGenerator
             add_system_log("Step 2: Querying actual dataset...", 'info')
@@ -537,6 +659,17 @@ Do NOT output JSON. Output natural language text only.
             ])
             
             metadata_chain = metadata_insight_prompt | self.llm
+            try:
+                try:
+                    model_name = getattr(self.llm, 'model', None) or getattr(self.llm, 'model_name', 'gpt-4o-mini')
+                    msgs = [{"role": "system", "content": "You are an expert scientific dataset analyst who provides clear, detailed insights based on dataset metadata."}, {"role": "user", "content": metadata_prompt}]
+                    token_count = log_token_usage(model_name, msgs, label="metadata_insight")
+                    add_system_log(f"[token_instrumentation][InsightExtractor] model={model_name} tokens={token_count}", 'debug')
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
             response = metadata_chain.invoke({})
             
             insight_text = getattr(response, 'content', None) or str(response)
