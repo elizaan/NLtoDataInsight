@@ -199,6 +199,20 @@ class DatasetInsightGenerator:
         except Exception:
             geo_file_path_str = geo_filename
 
+#         profile_section = f"""
+#           **DATASET PROFILE (PRE-COMPUTED, PERMANENT KNOWLEDGE):**
+#           This profile was generated once and cached. Use it to make intelligent decisions.
+          
+#           {json.dumps(self.dataset_profile, indent=2)}
+          
+#           **HOW TO USE THIS PROFILE:**
+#           - Check 'benchmark_results' to understand performance results for empirical tests done on this dataset
+#           - Be aware of 'potential_issues' when interpreting results
+# """
+        profile = None
+        if self.dataset_profile:
+            profile = json.dumps(self.dataset_profile, indent=2)
+            
         # Build time constraint section for system prompt - LLM DECIDES OPTIMIZATION
         if user_time_limit:
             time_constraint_section = f'''**TIME CONSTRAINT**: User specified {user_time_limit} minutes.
@@ -208,17 +222,12 @@ class DatasetInsightGenerator:
 - Spatial dimensions: {x} × {y} × {z} = {total_voxels:,} points per timestep
 - Temporal: {total_timesteps} timesteps ({time_units})
 - Available time: {user_time_limit * 60} seconds
-
-**YOU DECIDE:** Choose the quality level that balances speed and correctness for THIS specific query:
-- For simple statistics (min/max/mean): More aggressive subsampling may be acceptable
-- For visualizations or spatial patterns: Need better resolution to see features
-- Consider query complexity, data characteristics, and time budget
-- Set query timeout to {user_time_limit * 60 * 0.8:.0f} seconds (80% of limit for buffer)
-
-**EXPLAIN YOUR CHOICE** in the insight text (e.g., "I chose ..... because...")'''
+'''
         else:
             time_constraint_section = '**NO TIME CONSTRAINT** specified. '
 
+        
+        
         # Build system prompt - LLM DECIDES EVERYTHING
         system_prompt = f"""You are an expert data analyst with full autonomy to solve the user's question.
 
@@ -229,83 +238,58 @@ class DatasetInsightGenerator:
           - Intent Reasoning: {reasoning}
           - Plot Hints: {json.dumps(plot_hints, indent=2)}
 
-          **CONVERSATION CONTEXT:**
-          {conversation_context if conversation_context else "This is the first query in this conversation."}
+          ** Empirical ttest on dataset to understand performance characteristics: **
+            {profile if profile else 'No dataset profile available.'}
 """
         
-        # NEW: Inject cached dataset profile if available
-        if self.dataset_profile:
-            profile_section = f"""
-          **DATASET PROFILE (PRE-COMPUTED, PERMANENT KNOWLEDGE):**
-          This profile was generated once and cached. Use it to make intelligent decisions.
-          
-          {json.dumps(self.dataset_profile, indent=2)}
-          
-          **HOW TO USE THIS PROFILE:**
-          - Check 'benchmark_results' to understand performance results for empirical tests done on this dataset
-          - Be aware of 'potential_issues' when interpreting results
-"""
-            system_prompt += profile_section
+        
+        reusable_info = None
+        # cache info if any 
+        if intent_result.get('llm_pre_insight_analysis', {}).get('reusable_cached_data', []):
+            reusable_info = intent_result['llm_pre_insight_analysis']['reusable_cached_data']
+        # Path 2: Direct (skipped insight_extractor)
+        elif intent_result.get('reusable_cached_data'):  
+            reusable_info = intent_result['reusable_cached_data']
+        
+        cached_npz_file = reusable_info.get('npz_file', 'unknown')
+        matched_query = reusable_info.get('previous_query', 'unknown')
+        cache_section = f"""**CRITICAL: CACHED DATA AVAILABLE REUSE CACHED DATA**:
+            we have a cached data file: {cached_npz_file} available from a previous query: {matched_query} that can help to answer the user's question.
+            use the file to speed up your analysis and avoid re-querying the dataset.
+             
+**YOU MUST:**
+1. Load the NPZ file
+2. Inspect available keys: data.files
+3. Check shape of each array: data['key'].shape
+4. Write code based on ACTUAL structure, not assumptions
+
+**Example Pattern:**
+```python
+import numpy as np
+
+# Step 1: Load cached NPZ
+data = np.load('{cached_npz_file}')
+
+# Step 2: Inspect structure
+print("Available keys:", data.files)
+for key in data.files:
+    print(f"  {{key}}: shape={{data[key].shape}}, dtype={{data[key].dtype}}")
+# Step 3: Use the data based on actual structure
+    ```
+
+    in plot coding phase, use them correctly based on their actual shapes and contents.
+    This makes follow-up queries instant instead of timing out!
+
+    Previous query: "{reusable_info.get('previous_query')}"
+Current query: "{user_query}"
+Reasoning: {reusable_info.get('reasoning')}
+    """
+        system_prompt += cache_section
         
         system_prompt += f"""
-          **PRE-INSIGHT LLM ANALYSIS (from intent parser / extractor):**
-          {pre_insight_summary}
+        **CRITICAL: SAVE METADATA FOR FOLLOW-UP QUERIES**
 
-          **CRITICAL: Using Previous Results**
-          When answering the user's question, ALWAYS leverage any relevant results from previous queries in this conversation to find out if the query is a follow-up. Follow these steps:
-          1. **Check conversation context above** for relevant past results
-          2. **Extract the specific values** you need (e.g., if previous query found variable = y, use that exact value)
-          3. **Check if previous query saved an npz file** with rich metadata
-          4. **Load and inspect the npz file** to see what data is already available
-          5. **Reuse saved data** instead of re-querying the dataset
-
-                **How to Load and Use Previous NPZ Files:**
-
-                ```python
-                import numpy as np
-
-                # Example: Previous query saved '/path/to/data_TIMESTAMP.npz'
-                # Load it and inspect contents
-                data = np.load('/path/to/previous_query.npz')
-                print("Available keys:", data.files)  # Shows what's saved
-
-
-                # Example: "When was minimum target seen?"
-                # Instead of re-scanning, just use the saved timestep:
-                print(f"Min occurred at timestep: {{timestep}}")
-                # Convert to date using dataset temporal info
-
-                # Example: "Where was minimum target seen?"
-                # Instead of re-scanning, find location in saved spatial data:
-                y_idx, x_idx = np.unravel_index(np.argmin(spatial_data), spatial_data.shape)
-                # Convert to lat/lon using helper functions
-                ```
-
-                **When to Load Previous NPZ vs Re-query:**
-                - If previous query found the exact value you need (max, min, stats, etc.) - Load npz
-                - If npz contains target_timestep - Use it for "when?" queries
-                - If npz contains target_x, target_y - Use it for "where?" queries
-                - If current query needs different time range or region - Re-query
-
-                Examples of context-aware queries:
-                - User asks: "what is the maximum x?" - You find that suppose m
-                - User then asks: "when/where was this highest x seen?" - You should:
-                    - Check context: see that max_x = m was found AND npz file path
-                    - **Load the npz file first**: `data = np.load(npz_path)`
-                    - **Check if target_timestep exists**: if yes, use it directly!
-                    - Do NOT re-scan entire dataset - use the saved metadata!
-
-                - User asks: "where was that highest x seen?" → You should:
-                    - Load previous npz with target_x, target_y
-                    - Convert grid indices to lat/lon using xy_to_latlon() helper
-                    - Report approximate geographic location or even both
-
-                **IMPORTANT**: If conversation context contains values like "max", "min", "peak", "average" or any statistical values, etc., ALWAYS use them rather than recomputing!
-
-                **═══════════════════════════════════════════════════════════════════════**
-                **CRITICAL: SAVE METADATA FOR FOLLOW-UP QUERIES**
-
-                When finding extremes (max/min/peaks/ specific statistics), you MUST save additional metadata:
+        When finding extremes (max/min/peaks/ specific statistics), you MUST save additional metadata:
                 ```python
                 ```
 np.savez(
@@ -319,7 +303,7 @@ np.savez(
 )
 ```
 
-This makes follow-up queries instant instead of timing out!
+This will make follow-up queries to check if caching possible or not instead of timing out!
 **═══════════════════════════════════════════════════════════════════════**
 
 **DATASET INFORMATION:**
@@ -349,8 +333,6 @@ You have extensive knowledge of Earth geography including:
 - **Seas and water bodies**: Mediterranean Sea, Caribbean Sea, Arabian Sea, Bay of Bengal, Red Sea, etc.
 - **Ocean currents**: Gulf Stream, Kuroshio, Agulhas, Antarctic Circumpolar Current, etc.
 - **Oceanographic features**: Eddies, gyres, upwelling zones, fronts, rings
-- **Continental boundaries**: Coastlines, straits, channels, island chains
-- **Climate zones**: Tropics, subtropics, temperate, polar regions
 
 **How to Handle Geographic Queries:**
 
@@ -612,27 +594,19 @@ You have TWO separate code scripts to write:
 
 
 **STEP 2: DECIDE YOUR STRATEGY**
-Consider:
+- Choose the quality level that balances speed and correctness for THIS specific query:
+    - Use empirical test results to decide on quality/resolution decision from {profile} based on user query
+- Consider query complexity, data characteristics, and time budget
+- Set query timeout to {user_time_limit * 60 * 0.8:.0f} seconds (80% of limit for buffer)
 - within {user_time_limit} minutes, if {total_timesteps:,} timesteps is too many → How should you aggregate? (daily? weekly? monthly?)
   - choose time intervals very wisely for faster output
 - If spatial resolution is too high → What quality/resolution level?
-- What's the smartest way to sample without losing the answer?
-
-Examples of intelligent strategies for very large spatial and temporal datasets:
-- Query asks "highest target date" with 10,366 hourly steps
-  → BAD: Check all 10,366 (slow, cluttered)
-  → GOOD: Aggregate by day/week/month, find max in each period, much faster
-  
-- Query asks "target at specific location" 
-  → GOOD: Just query that one point at all times, fast
-  
-- Query asks "global average over time"
-  → GOOD: Use coarse spatial resolution, compute means, aggregate temporally wisely
+- What's the smartest way to sample without losing the answer's validity?
 
 **STEP 3: WRITE SMART QUERY CODE**
 Your code should:
 2. Apply YOUR intelligent sampling/aggregation strategy
-3. Extract minimal data needed for ALL plot hints
+3. Extract data needed for ALL plot hints
 4. **Save rich metadata** (see above) so follow-up queries are instant
 5. Save intermediate results to: `{data_cache_file_str}`
 6. Print JSON summary to stdout
@@ -744,9 +718,9 @@ If the plotting is challenging with available packages, do your best with what w
         * seaborn `heatmap`: either plot `np.flipud(arr)` or use the returned `ax` and call `ax.invert_yaxis()` so the display matches `origin='lower'` semantics.
         * pcolormesh/contourf: supply explicit X/Y coordinate arrays with Y increasing (northward/upwards) or, if supplying only the array, flip it with `np.flipud()` to maintain the row-0-bottom convention.
         * quiver/streamplot: build X/Y coordinate arrays that match the heatmap's extent and orientation (use `np.meshgrid(x_coords, y_coords)` where `y_coords` is ascending). Do NOT assume array row ordering — derive coordinates from `x_range`/`y_range` or `extent`.
-     - Always document the chosen origin/orientation in the plot title or caption (e.g., "Plotted with origin='lower' — row 0 at bottom"). If you must use `origin='upper'`, explicitly justify and document it.
 - Use log scale if data spans several orders of magnitude
 - folow rule for other plots too
+- Always document resolution reduction values in plot titles/captions
 
 **Data Validation:**
 - After loading npz file, ALWAYS inspect keys: `print("Available keys:", data.files)`
@@ -1411,7 +1385,10 @@ Make sure ALL necessary imports are included at the top.
                                 # Extract finalized results
                                 insight_text = finalization_result['insight_text']
                                 final_answer = finalization_result['final_answer']
-                                plot_files = finalization_result['plot_files']  # May be revised
+                                # Finalizer may return revised plot files; fall back to previously-detected plot_files
+                                plot_files = finalization_result.get('plot_files', plot_files)
+                                # Finalizer may also provide a revised plot_code_file (the revised code file path)
+                                plot_code_file = finalization_result.get('plot_code_file', plot_code_file)
                                 plots_revised = finalization_result.get('plots_revised', False)  # Track revision status
                                 
                                 # Save insight to file

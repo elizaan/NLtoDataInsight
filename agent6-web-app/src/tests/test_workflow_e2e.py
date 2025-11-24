@@ -146,7 +146,7 @@ def run_test_workflow():
         },
         {
             "id": "q2",
-            "query": "when was temperature for 2 days?",
+            "query": "what was temperature for 2 days?",
             "description": "Should reuse Q1's data (recent + contextually similar)"
         }
         # {

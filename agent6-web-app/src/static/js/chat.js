@@ -383,7 +383,7 @@ if (typeof window !== 'undefined') window.updateArtifactsPanelLayout = updateArt
                 
                 // Check if task is completed
                 if (status.status === 'completed') {
-                    console.log('✅ Task completed!', status.result);
+                    console.log(' Task completed!', status.result);
                     clearInterval(this.activePoll);
                     this.activePoll = null;
                     
@@ -565,14 +565,14 @@ if (typeof window !== 'undefined') window.updateArtifactsPanelLayout = updateArt
                                 this.addMessage(summaryStr, 'bot');
                             }
                         }
-                        console.log('✅ Insight messages added');
+                        console.log(' Insight messages added');
                     } else {
-                        console.warn('⚠️ Unknown assistant message type:', msg.type);
+                        console.warn(' Unknown assistant message type:', msg.type);
                     }
                 });
-                console.log('✅ All assistant_messages processed');
+                console.log('All assistant_messages processed');
             } else {
-                console.log('⚠️ No assistant_messages in response or not an array');
+                console.log(' No assistant_messages in response or not an array');
             }
             
             switch (data.type) {
