@@ -281,8 +281,8 @@ class AnimationAgent:
 2. **Cache Reusability**: Determine if any of the recent queries' cached NPZ data can be reused to answer the current query. Consider:
 
 1. **IDENTICAL** - Previous results fully answer current query
-2. **DERIVED_STAT** - Answer available in previous {recent_context} data_summary (no code needed!)
-3. **REUSABLE_NPZ** - Need to generate new code from cached NPZ
+2. **DERIVED_STAT** - Answer readily available in previous {recent_context} data_summary (no code needed!)
+3. **REUSABLE_NPZ** - Answer not readily available in previous {recent_context} data_summary but some of the required data is available in {recent_context} data_summary, which means new code needs to be generated from cached NPZ
 4. **NOT_REUSABLE** - Need to load new data
 
 **Key question for DERIVED_STAT:**
@@ -601,7 +601,7 @@ Queries are identical if they ask for the same analysis on the same data, even i
         if self.conversation_context and self.conversation_context.history:
             cache_info = self._resolve_and_check_recent_cache(user_message, context)
             
-            if cache_info.get('cache_level') in ['IDENTICAL']:
+            if cache_info and cache_info.get('cache_level') in ['IDENTICAL']:
                 cached_result = cache_info['cached_result']
                 prev_query_id = cache_info['query_id']
 
@@ -645,7 +645,7 @@ Queries are identical if they ask for the same analysis on the same data, even i
                     'cache_reasoning': cache_info['reasoning']
                 }
 
-            else:
+            elif cache_info and cache_info.get('cache_level') in ['DERIVED_STAT', 'REUSABLE_NPZ']:
                 # Recent cache found! Set reusable_cached_data for insight_extractor
                 add_system_log(
                     f"[Cache] Setting reusable_cached_data for insight_extractor",

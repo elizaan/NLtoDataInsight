@@ -151,11 +151,16 @@ def run_test_workflow():
         },
         {
             "id": "q3",
-            "query": "when was temperature highest?",
+            "query": "what was highest value?",
             "description": "Should reuse Q1's data if data has enough info (recent + contextually similar)"
         },
         {
             "id": "q4",
+            "query": "when was it highest?",
+            "description": "Should reuse Q1's data if data has enough info (recent + contextually similar)"
+        },
+        {
+            "id": "q5",
             "query": "where was temperature highest?",
             "description": "Should reuse Q1's data if data has enough info (recent + contextually similar)"
         },
