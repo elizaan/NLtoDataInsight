@@ -488,14 +488,208 @@ Queries are identical if they ask for the same analysis on the same data, even i
             return None
     
     
-    def process_query_with_intent(
-        self, 
-        user_message: str, 
-        context: dict = None,
-        progress_callback: callable = None
-    ) -> dict:
+    def _resolve_query_and_cache(
+        self,
+        user_message: str,
+        context: Dict[str, Any]
+    ) -> Dict[str, Any]:
         """
-        Process query with intent classification first.
+        Unified LLM resolver for query + time + cache.
+        
+        Handles:
+        1. Query reference resolution (it, same, etc.)
+        2. Time constraint extraction
+        3. Cache reusability considering time constraints
+        
+        Returns resolution result with resolved_query, time_limit, and cache_level.
+        """
+        # Check if we have conversation history
+        if not self.conversation_context or not self.conversation_context.history:
+            # First query ever - no resolution needed
+            return {
+                'resolved_query': user_message,
+                'user_time_limit_minutes': None,
+                'cache_level': 'NOT_REUSABLE',
+                'reasoning': 'First query in conversation'
+            }
+        
+        # Get recent queries with their metadata
+        recent_queries = self._get_recent_queries_in_session(max_count=5)
+        
+        if not recent_queries:
+            return {
+                'resolved_query': user_message,
+                'user_time_limit_minutes': None,
+                'cache_level': 'NOT_REUSABLE',
+                'reasoning': 'No recent queries in current session'
+            }
+        
+        # Build detailed context
+        recent_context_detailed = []
+        for i, entry in enumerate(recent_queries):
+            query_id = entry['query_id']
+            prev_user_query = entry['user_query']
+            result = entry['result']
+            data_summary = result.get('data_summary', {})
+            
+            # Extract time constraint info if present
+            time_constraint_info = ""
+            analysis = result.get('analysis', {})
+            if analysis.get('user_time_limit_minutes'):
+                time_constraint_info = f"\n  Time constraint used: {analysis['user_time_limit_minutes']} minutes"
+            
+            metadata_str = f"""Query {i+1} [{query_id}]: "{prev_user_query}"{time_constraint_info}
+    Status: {result.get('status')}
+    Data summary: {json.dumps(data_summary, indent=4)}
+    Has plots: {'Yes' if result.get('plot_files') else 'No'}
+    Has NPZ: {result.get('data_cache_file', 'No')}"""
+            
+            recent_context_detailed.append(metadata_str)
+        
+        recent_context = "\n\n".join(recent_context_detailed)
+        
+        # Check if awaiting time preference
+        awaiting_time = context.get('awaiting_time_preference', False)
+        original_query = context.get('original_query', '')
+        estimated_time = context.get('original_intent_result', {}).get('estimated_time_minutes')
+        
+        # Build prompt for unified resolution
+        prompt = f"""You are analyzing a user's message in a conversational data analysis system.
+
+    **Previous Queries:**
+    {recent_context}
+
+    {"**IMPORTANT CONTEXT:**" if awaiting_time else ""}
+    {f"System asked user about time preference for query: '{original_query}'" if awaiting_time else ""}
+    {f"Estimated time: {estimated_time} minutes" if awaiting_time and estimated_time else ""}
+
+    **Current User Message:** "{user_message}"
+
+    **Your Tasks:**
+
+    1. **Resolve Query References**: 
+    - If message has pronouns (it, that, same), resolve to explicit query, most of the time referring to most recent query, sometimes multiple refer to pronouns might refer to some earlier queries
+    - If awaiting time preference, combine with original query
+
+    2. **Extract Time Constraint**:
+    - Check if user specifies execution time (e.g., "5 minutes", "2 min", just "10")
+    - "proceed" / "ok" / "yes" = use estimated time ({estimated_time} min)
+    - No time mentioned = null
+
+    3. **Determine Cache Level**:
+    
+    **IDENTICAL**: 
+    - Same query as previous, no time constraint change
+    - Can return cached results directly
+
+    **DERIVED_STAT**:
+    - Answer readily available in previous recent context's data_summary
+    - No time constraint (doesn't need computation)
+    
+    **REUSABLE_NPZ**:
+    - Answer not readily available in previous recent context's data_summary 
+    - but some of the required data is available in previous recent context's data_summary
+    - Can use previous NPZ but needs different analysis
+    - No conflicting time constraint
+    
+    **NOT_REUSABLE**:
+    - Different data needed
+    - OR different time constraint than previous
+    - OR first occurrence of this query type
+
+    **CRITICAL: Time Constraint Logic**
+    - If user specifies different time constraint than previous query → NOT_REUSABLE
+    (Example: Q1 used 5 min, current asks for 2 min → need to recompute)
+    - If DERIVED_STAT, time constraint doesn't matter (just reading summary)
+    - If IDENTICAL and no new time constraint → reuse previous results
+
+    
+
+    **Output ONLY JSON:**
+    {{
+        "resolved_query": "explicit standalone query",
+        "user_time_limit_minutes": number or null,
+        "cache_level": "IDENTICAL" | "DERIVED_STAT" | "REUSABLE_NPZ" | "NOT_REUSABLE",
+        "reusable_from_query_id": "q1" or null,
+        "confidence": 0.0-1.0,
+        "reasoning": "explanation"
+    }}
+
+    NO markdown, just JSON."""
+        
+        try:
+            response = self.llm.invoke(prompt)
+            response_text = response.content.strip()
+            
+            # Clean response
+            if response_text.startswith('```'):
+                response_text = response_text.split('```')[1]
+                if response_text.startswith('json'):
+                    response_text = response_text[4:]
+                response_text = response_text.split('```')[0].strip()
+            
+            result = json.loads(response_text)
+            
+            # Validate and enrich result
+            cache_level = result.get('cache_level', 'NOT_REUSABLE')
+            
+            if cache_level != 'NOT_REUSABLE':
+                reusable_query_id = result.get('reusable_from_query_id')
+                
+                # Find the reusable entry
+                reusable_entry = None
+                for entry in recent_queries:
+                    if entry['query_id'] == reusable_query_id:
+                        reusable_entry = entry
+                        break
+                
+                if reusable_entry:
+                    # Attach cache info
+                    result['cache_info'] = {
+                        'query_id': reusable_query_id,
+                        'cached_result': reusable_entry['result'],
+                        'cached_summary': reusable_entry['result'].get('data_summary', {}),
+                        'npz_file': reusable_entry['result'].get('data_cache_file'),
+                        'previous_query': reusable_entry['user_query']
+                    }
+                    
+                    add_system_log(
+                        f"[Resolver] {cache_level} detected from {reusable_query_id}\n"
+                        f"  Resolved: {result['resolved_query']}\n"
+                        f"  Time: {result.get('user_time_limit_minutes')} min\n"
+                        f"  Reasoning: {result['reasoning']}",
+                        'success'
+                    )
+                else:
+                    # Couldn't find entry - downgrade to NOT_REUSABLE
+                    add_system_log(
+                        f"[Resolver] Could not find {reusable_query_id}, treating as NOT_REUSABLE",
+                        'warning'
+                    )
+                    result['cache_level'] = 'NOT_REUSABLE'
+            else:
+                add_system_log(
+                    f"[Resolver] NOT_REUSABLE\n"
+                    f"  Resolved: {result['resolved_query']}\n"
+                    f"  Time: {result.get('user_time_limit_minutes')} min\n"
+                    f"  Reasoning: {result['reasoning']}",
+                    'info'
+                )
+            
+            return result
+            
+        except Exception as e:
+            add_system_log(f"[Resolver] Failed: {e}", 'error')
+            return {
+                'resolved_query': user_message,
+                'user_time_limit_minutes': None,
+                'cache_level': 'NOT_REUSABLE',
+                'reasoning': f'Resolution failed: {e}'
+            }
+    
+    def process_query_with_intent(self, user_message, context, progress_callback=None):
+        """
+        Process query with unified resolution (query + time + cache).
         
         This is the NEW multi-agent entry point.
         
@@ -513,8 +707,7 @@ Queries are identical if they ask for the same analysis on the same data, even i
         if context is None:
             context = {}
         
-        #  Ensure dataset is in context (fallback to self._dataset if not provided)
-        # This allows callers to either pass dataset in context OR rely on set_dataset()
+        # Ensure dataset is in context (fallback to self._dataset if not provided)
         if 'dataset' not in context and self._dataset:
             context['dataset'] = self._dataset
         
@@ -528,251 +721,167 @@ Queries are identical if they ask for the same analysis on the same data, even i
         
         add_system_log(f"[Agent] Processing query {query_id}: {user_message[:50]}...")
         
-        # CRITICAL: Check if we're awaiting time preference BEFORE intent parsing
-        # This happens when the system estimated query time and needs user input
-        if context and context.get('awaiting_time_preference'):
-            add_system_log("[Agent] Processing user's time preference response (skipping intent parsing)")
-            
-            # Get the original intent_result from context
-            original_intent = context.get('original_intent_result', {})
-            
-            # Check if user said "proceed" (accept the estimated time)
-            user_message_lower = user_message.lower().strip()
-            if user_message_lower in ['proceed', 'yes', 'ok', 'go ahead', 'continue']:
-                # User accepts the estimated time - use it as the limit
-                estimated_time = original_intent.get('estimated_time_minutes')
-                if estimated_time:
-                    user_time_limit = estimated_time
-                    add_system_log(f"User said '{user_message}' - accepting estimated time: {user_time_limit} minutes", 'info')
-                else:
-                    # Fallback to default if no estimate available
-                    from .query_constants import DEFAULT_TIME_LIMIT_SECONDS
-                    user_time_limit = DEFAULT_TIME_LIMIT_SECONDS / 60.0
-                    add_system_log(f"User said '{user_message}' but no estimate available - using default: {user_time_limit:.1f} minutes", 'info')
-            else:
-                # Use intent parser's LLM-powered time extraction (for "5 minutes", "2 min", etc.)
-                user_time_limit = self.intent_parser._extract_time_constraint(user_message)
-                add_system_log(f"User specified time limit: {user_time_limit} minutes (extracted by LLM)", 'info')
-            
-            # Attach user time limit to intent_result
-            original_intent['user_time_limit_minutes'] = user_time_limit
-            
-            # Clear the awaiting flag
-            context['awaiting_time_preference'] = False
-            
-            # Call the appropriate handler with the updated intent (skip intent parsing!)
-            intent_type = original_intent.get('intent_type', 'PARTICULAR')
-            if intent_type == 'PARTICULAR':
-                return self._handle_particular_exploration(
-                    context.get('original_query', user_message), 
-                    original_intent, 
-                    context, 
-                    progress_callback
-                )
-            elif intent_type == 'NOT_PARTICULAR':
-                return self._handle_general_exploration(
-                    context.get('original_query', user_message),
-                    original_intent,
-                    context,
-                    progress_callback
-                )
-            else:
-                # Default to particular if unclear
-                return self._handle_particular_exploration(
-                    context.get('original_query', user_message),
-                    original_intent,
-                    context,
-                    progress_callback
-                )
+        # =====================================================================
+        # UNIFIED RESOLUTION: Query + Time + Cache
+        # =====================================================================
+        resolution = self._resolve_query_and_cache(user_message, context)
         
-        # STEP 1: Classify intent (only if NOT awaiting time preference)
+        resolved_query = resolution['resolved_query']
+        user_time_limit = resolution.get('user_time_limit_minutes')
+        cache_level = resolution['cache_level']
+        cache_info = resolution.get('cache_info')
+        
+        # Clear awaiting flag if it was set
+        if context.get('awaiting_time_preference'):
+            context['awaiting_time_preference'] = False
+            add_system_log(f"[Agent] Time preference resolved: {user_time_limit} min", 'info')
+        
+        # Attach time limit to context if present
+        if user_time_limit:
+            context['user_time_limit_minutes'] = user_time_limit
+        
+        # =====================================================================
+        # HANDLE CACHE LEVELS
+        # =====================================================================
+        if cache_level == 'IDENTICAL':
+            # Return cached results immediately
+            cached_result = cache_info['cached_result']
+            prev_query_id = cache_info['query_id']
+            
+            add_system_log(
+                f"[Cache TIER 1 - IDENTICAL] Returning results from {prev_query_id}",
+                'success'
+            )
+            
+            if progress_callback:
+                progress_callback('insight_generated', {
+                    'query_id': prev_query_id,
+                    'reasoning': resolution['reasoning'],
+                    'message': f'Found identical query from {prev_query_id}. Returning cached result.',
+                    'insight': cached_result.get('insight'),
+                    'data_summary': cached_result.get('data_summary', {}),
+                    'plot_files': cached_result.get('plot_files', []),
+                    'query_code_file': cached_result.get('query_code_file'),
+                    'plot_code_file': cached_result.get('plot_code_file'),
+                    'visualization': cached_result.get('visualization', ''),
+                    'num_plots': len(cached_result.get('plot_files', []))
+                })
+            
+            # Save reference to conversation history
+            if self.conversation_context:
+                cache_reference = {
+                    'status': 'success',
+                    'cached_from': prev_query_id,
+                    'cache_tier': 'identical',
+                    'insight': cached_result.get('insight'),
+                    'data_summary': cached_result.get('data_summary', {}),
+                    'plot_files': cached_result.get('plot_files', []),
+                    'query_code_file': cached_result.get('query_code_file', ''),
+                    'plot_code_file': cached_result.get('plot_code_file', '')
+                }
+                self.conversation_context.add_query_result(
+                    query_id=query_id,
+                    user_query=user_message,
+                    result=cache_reference
+                )
+            
+            # Return cached result directly
+            return {
+                'type': 'particular_insight',
+                'status': 'success',
+                'visualization': cached_result.get('visualization', ''),
+                'insight': cached_result.get('insight'),
+                'data_summary': cached_result.get('data_summary', {}),
+                'plot_files': cached_result.get('plot_files', []),
+                'query_code_file': cached_result.get('query_code_file', ''),
+                'plot_code_file': cached_result.get('plot_code_file', ''),
+                'cached_from_query_id': prev_query_id,
+                'cache_tier': 'identical',
+                'cache_reasoning': resolution.get('reasoning', '')
+            }
+        
+        elif cache_level in ['DERIVED_STAT', 'REUSABLE_NPZ']:
+            # Set cache info for downstream
+            context['reusable_cached_data'] = {
+                'cache_level': cache_level,
+                **cache_info,
+                'confidence': resolution['confidence'],
+                'reasoning': resolution['reasoning'],
+                'resolved_query': resolved_query
+            }
+            add_system_log(
+                f"[Cache] {cache_level} detected - passing to generator",
+                'info'
+            )
+        
+        # =====================================================================
+        # CONTINUE WITH NORMAL FLOW
+        # =====================================================================
+        # Use resolved query for intent parsing
         try:
             try:
                 model_name = getattr(self.intent_parser.llm, 'model', None) or getattr(self.intent_parser.llm, 'model_name', 'gpt-4o-mini')
-                msgs = [{"role": "user", "content": user_message[:1000]}, {"role": "user", "content": str(context)[:1000]}]
+                msgs = [{"role": "user", "content": resolved_query[:1000]}, {"role": "user", "content": str(context)[:1000]}]
                 token_count = log_token_usage(model_name, msgs, label="core_intent_pre")
                 add_system_log(f"[token_instrumentation][CoreAgent] intent_parser model={model_name} tokens={token_count}", 'debug')
             except Exception:
                 pass
         except Exception:
             pass
-
-        # TIER 1: Check recent queries (last 5 in session) for NPZ reuse
-        if self.conversation_context and self.conversation_context.history:
-            cache_info = self._resolve_and_check_recent_cache(user_message, context)
-            
-            if cache_info and cache_info.get('cache_level') in ['IDENTICAL']:
-                cached_result = cache_info['cached_result']
-                prev_query_id = cache_info['query_id']
-
-                if progress_callback:
-                    progress_callback('cached_result_identical', {
-                        'query_id': prev_query_id,
-                        'reasoning': cache_info['reasoning'],
-                        'message': f'Found identical query from {prev_query_id}. Returning cached result.'
-                    })
-
-                 # Save reference to conversation history
-                if self.conversation_context:
-                    cache_reference = {
-                        'status': 'success',
-                        'cached_from': prev_query_id,
-                        'cache_tier': 'identical',
-                        'insight_file': cached_result.get('insight'),
-                        'data_summary': cached_result.get('data_summary', {}),
-                        'plot_files': cached_result.get('plot_files', []),
-                        'query_code_file': cached_result.get('query_code_file', ''),
-                        'plot_code_file': cached_result.get('plot_code_file', '')
-                    }
-                    self.conversation_context.add_query_result(
-                        query_id=query_id,
-                        user_query=user_message,
-                        result=cache_reference
-                    )
-                # Return cached result directly
-                return {
-                    'type': 'particular_insight',
-                    'status': 'success',
-                    'visualization': cached_result.get('visualization', ''),
-                    'insight': cached_result.get('insight'),
-                    'insight_file': cached_result.get('insight'),
-                    'data_summary': cached_result.get('data_summary', {}),
-                    'plot_files': cached_result.get('plot_files', []),
-                    'query_code_file': cached_result.get('query_code_file', ''),
-                    'plot_code_file': cached_result.get('plot_code_file', ''),
-                    'cached_from_query_id': prev_query_id,
-                    'cache_tier': 'identical',
-                    'cache_reasoning': cache_info['reasoning']
-                }
-
-            elif cache_info and cache_info.get('cache_level') in ['DERIVED_STAT', 'REUSABLE_NPZ']:
-                # Recent cache found! Set reusable_cached_data for insight_extractor
-                add_system_log(
-                    f"[Cache] Setting reusable_cached_data for insight_extractor",
-                    'info'
-                )
-                
-                # Create a minimal intent_result with cache info
-                # This will be passed to intent_parser and enriched there
-                context['reusable_cached_data'] = cache_info
-                
-                # Use resolved query for intent parsing
-                resolved_query = cache_info.get('resolved_query', user_message)
-                add_system_log(f"[Cache] Using resolved query: {resolved_query}", 'info')
-                user_message = resolved_query
         
-        # TIER 2: Check ChromaDB for identical queries (return plots directly)
-        if not context.get('reusable_cached_data'):
-            identical_cache = self._check_identical_query_in_history(user_message)
-            
-            if identical_cache:
-                # IDENTICAL query found! Return cached result directly
-                cached_result = identical_cache['cached_result']
-                prev_query_id = identical_cache['query_id']
-                
-                if progress_callback:
-                    progress_callback('cached_result_identical', {
-                        'query_id': prev_query_id,
-                        'reasoning': identical_cache['reasoning'],
-                        'message': f'Found identical query from {prev_query_id}. Returning cached result.'
-                    })
-                
-                # Save reference to conversation history
-                if self.conversation_context:
-                    cache_reference = {
-                        'status': 'success',
-                        'cached_from': prev_query_id,
-                        'cache_tier': 'identical',
-                        'insight_file': cached_result.get('insight'),
-                        'data_summary': cached_result.get('data_summary', {}),
-                        'plot_files': cached_result.get('plot_files', []),
-                        'query_code_file': cached_result.get('query_code_file', ''),
-                        'plot_code_file': cached_result.get('plot_code_file', '')
-                    }
-                    self.conversation_context.add_query_result(
-                        query_id=query_id,
-                        user_query=user_message,
-                        result=cache_reference
-                    )
-                
-                # Return cached result directly
-                return {
-                    'type': 'particular_insight',
-                    'status': 'success',
-                    'insight': cached_result.get('insight'),
-                    'data_summary': cached_result.get('data_summary', {}),
-                    'visualization': cached_result.get('visualization', ''),
-                    'plot_files': cached_result.get('plot_files', []),
-                    'query_code_file': cached_result.get('query_code_file', ''),
-                    'plot_code_file': cached_result.get('plot_code_file', ''),
-                    'cached_from_query_id': prev_query_id,
-                    'cache_tier': 'identical',
-                    'cache_reasoning': identical_cache['reasoning']
-                }
+        intent_result = self.intent_parser.parse_intent(resolved_query, context)
         
-        # ====================================================================
-        # NO CACHE FOUND: Continue to intent parser
-        # ====================================================================
+        # Attach time limit to intent_result if present
+        if user_time_limit:
+            intent_result['user_time_limit_minutes'] = user_time_limit
         
-        # add_system_log("[Cache] Continuing to intent parser.", 'info')
+        add_system_log(
+            f"[Agent] Intent: {intent_result['intent_type']} (confidence: {intent_result['confidence']:.2f})",
+            'info'
+        )
         
-        
-        intent_result = self.intent_parser.parse_intent(user_message, context)
-        
-        add_system_log(f"[Agent] Intent: {intent_result['intent_type']} (confidence: {intent_result['confidence']:.2f})", 'info',  details = intent_result )
-        
-        # Report intent parsing progress
+        # Report progress
         if progress_callback:
             progress_callback('intent_parsed', intent_result)
         
-        # CRITICAL: If the intent parser is awaiting clarification, STOP here
-        # Do not proceed to insight generation until user responds
+        # =====================================================================
+        # CHECK FOR CLARIFICATIONS
+        # =====================================================================
         if intent_result.get('awaiting_clarification'):
-            print("[Agent] Intent parser is awaiting user clarification. Stopping processing.")
             return {
                 'status': 'awaiting_clarification',
                 'intent_result': intent_result,
                 'message': 'Awaiting user response to clarifying questions.'
             }
         
-        # STEP 2: Route based on intent
-        intent_type = intent_result['intent_type']
+        # =====================================================================
+        # ROUTE BASED ON INTENT TYPE
+        # =====================================================================
+        intent_type = intent_result.get('intent_type', 'PARTICULAR')
         
         if intent_type == 'PARTICULAR':
-            # Specific question about the dataset
-            return self._handle_particular_exploration(user_message, intent_result, context, progress_callback)
-        
+            return self._handle_particular_exploration(
+                resolved_query,
+                intent_result,
+                context,
+                progress_callback
+            )
         elif intent_type == 'NOT_PARTICULAR':
-            # General exploration - no specific question
-            return self._handle_general_exploration(user_message, intent_result, context, progress_callback)
-
-        elif intent_type == 'UNRELATED':
-            # Handle unrelated queries
-            return {
-                'status': 'unrelated',
-                'message': "I'm here to help you explore and analyze this dataset. Could you ask a data-related question?"
-            }
-            
-        elif intent_type == 'HELP':
-            # Provide help information
-            return self._handle_request_help(user_message, context)
-        
-        elif intent_type == 'EXIT':
-            # End conversation
-            return self._handle_exit(context)
-        
+            return self._handle_general_exploration(
+                resolved_query,
+                intent_result,
+                context,
+                progress_callback
+            )
         else:
-            # Unknown intent - fallback
-            return {
-                'status': 'error',
-                'message': f"Unknown intent type: {intent_type}",
-                'intent': intent_result
-            }
-        
-     # ========================================
-    # LANGCHAIN ORCHESTRATION METHODS (Legacy)
-    # These use LangChain's agent to orchestrate
-    # ========================================
+            # Default to particular
+            return self._handle_particular_exploration(
+                resolved_query,
+                intent_result,
+                context,
+                progress_callback
+            )
+    
     
     def process_query(self, user_message: str, context: dict = None) -> dict:
         """
@@ -835,44 +944,22 @@ Queries are identical if they ask for the same analysis on the same data, even i
     
     
     def _handle_particular_exploration(self, query: str, intent_result: dict, context: dict, progress_callback: callable = None) -> dict:
-        """
-        Handle PARTICULAR intent - user asked a specific question about the dataset.
-
-        This stub returns a placeholder 'answer' and a short message. Replace
-        with actual data-querying logic (or call to a dedicated QA/summarizer
-        """
+        """Handle PARTICULAR intent - user asked a specific question."""
+        
         print(f"[Agent] Handling PARTICULAR (specific inquiry) intent")
         
-        # Report that we're starting insight extraction
         if progress_callback:
             progress_callback('insight_extraction_started', {'query': query})
         
-        # CRITICAL: Check if user_time_limit_minutes is already in intent_result
-        # If yes, skip insight_extractor and go directly to generator
-        # This happens when user responded to time preference question
-        if intent_result.get('user_time_limit_minutes') is not None:
-            print(f"[Agent] User time limit already provided ({intent_result.get('user_time_limit_minutes')} minutes), skipping insight_extractor")
-            
-            # Use the existing generator from insight_extractor (already has API key)
-            # Don't create a new one - it won't have the API key!
-            insight_result = self.insight_extractor.insight_generator.generate_insight(
-                user_query=query,
-                intent_result=intent_result,
-                dataset_info=context.get('dataset'),
-                progress_callback=progress_callback
-            )
-        else:
-            # Normal flow: call insight_extractor first
-            insight_result = self.insight_extractor.extract_insights(
-                user_query=query,
-                intent_hints=intent_result,
-                dataset=context.get('dataset'),
-                progress_callback=progress_callback
-            )
-
-        print(f"insight result: {insight_result}")
+        # Always go through insight_extractor (it will handle time preference smartly)
+        insight_result = self.insight_extractor.extract_insights(
+            user_query=query,
+            intent_hints=intent_result,
+            dataset=context.get('dataset'),
+            progress_callback=progress_callback
+        )
         
-        # Check if we need time clarification (analysis returned with estimated_time_minutes)
+        # Check if we need time clarification
         if insight_result.get('status') == 'needs_time_clarification':
             estimated_time = insight_result.get('estimated_time_minutes', 'unknown')
             time_reasoning = insight_result.get('time_estimation_reasoning', '')
@@ -882,98 +969,44 @@ Queries are identical if they ask for the same analysis on the same data, even i
                     'query': query,
                     'estimated_time_minutes': estimated_time,
                     'reasoning': time_reasoning,
-                    'message': f'This query is estimated to take approximately {estimated_time} minutes. How much time would you like to allocate? (e.g., "5 minutes", "10 minutes", or "proceed" to use default)'
+                    'message': f'This query is estimated to take approximately {estimated_time} minutes. How much time would you like to allocate?'
                 })
             
-            # Set context flags for the next user message
-            # CRITICAL: Store estimated_time_minutes in intent_result so it's available when user responds
-            intent_result_with_time = intent_result.copy() if intent_result else {}
-            intent_result_with_time['estimated_time_minutes'] = estimated_time
-            intent_result_with_time['time_estimation_reasoning'] = time_reasoning
-            
+            # Store context for next message
             context['awaiting_time_preference'] = True
             context['original_query'] = query
-            context['original_intent_result'] = intent_result_with_time
+            context['original_intent_result'] = intent_result.copy()
+            context['original_intent_result']['estimated_time_minutes'] = estimated_time
+            context['original_intent_result']['time_estimation_reasoning'] = time_reasoning
             
-            # Set flag and return early - user needs to provide time preference
-            # CRITICAL: Return intent_result_with_time (includes estimated_time_minutes)
             return {
-                'type': 'awaiting_time_preference',
-                'status': 'awaiting_time_preference',
-                'query': query,
-                'intent_result': intent_result,
-                'original_intent_result': intent_result_with_time,  # Include for routes.py to store
+                'status': 'needs_time_clarification',
                 'estimated_time_minutes': estimated_time,
-                'time_reasoning': time_reasoning,
-                'message': f'This query is estimated to take ~{estimated_time} minutes. Please specify your time preference (e.g., "5 minutes", "10 minutes", or "proceed").'
+                'time_estimation_reasoning': time_reasoning,
+                'message': f'Estimated time: {estimated_time} minutes. Proceed or specify time limit?'
             }
         
+        # Save to conversation history
+        if self.conversation_context and insight_result.get('status') == 'success':
+            self.conversation_context.add_query_result(
+                query_id=context.get('query_id', f"q{self.query_counter}"),
+                user_query=query,
+                result=insight_result
+            )
+            add_system_log(f"[Agent] Saved query result to conversation context (query_id={context.get('query_id', f'q{self.query_counter}')})", 'info')
+        
+        
+        print(f"insight result: {insight_result}")
+        
         # Report insight generation complete
-        if progress_callback:
+        if progress_callback and insight_result.get('status') == 'success':
             progress_callback('insight_generated', insight_result)
         
-        # Save successful results to conversation context for future queries
-        if insight_result.get('status') == 'success' and self.conversation_context:
-            try:
-                # Include NPZ file path in result for reusability detection
-                if 'data_cache_file' not in insight_result and insight_result.get('query_code_file'):
-                    # Try to infer NPZ path from query code path
-                    # Query code path typically: <...>/ai_data/codes/<dataset_id>/query_<timestamp>.py
-                    # The NPZs live at: <...>/ai_data/data_cache/<dataset_id>/data_<timestamp>.npz
-                    from pathlib import Path
-                    code_path = Path(insight_result['query_code_file'])
-                    try:
-                        # Move up to ai_data directory (3 levels up from codes/<dataset_id>/file)
-                        base_ai_data = code_path.parent.parent.parent
-                        data_cache_dir = base_ai_data / 'data_cache' / code_path.parent.name
-                        if not data_cache_dir.exists():
-                            # Fallback: older layout (codes/data_cache/<dataset>) or sibling 'data_cache' under codes
-                            alt_candidate = code_path.parent.parent / 'data_cache' / code_path.parent.name
-                            if alt_candidate.exists():
-                                data_cache_dir = alt_candidate
-
-                        if data_cache_dir.exists():
-                            npz_candidates = sorted(data_cache_dir.glob('data_*.npz'), reverse=True)
-                            if npz_candidates:
-                                insight_result['data_cache_file'] = str(npz_candidates[0].resolve())
-                    except Exception:
-                        # Non-fatal: inference failed, continue without attaching
-                        pass
-                
-                query_id_to_save = context.get('query_id', f"q{self.query_counter}")
-                self.conversation_context.add_query_result(
-                    query_id=query_id_to_save,
-                    user_query=query,
-                    result=insight_result
-                )
-                print(f"[Agent] Saved query result to conversation context (query_id={query_id_to_save})")
-            except Exception as e:
-                print(f"[Agent] Warning: Could not save query result to conversation context: {e}")
-                
-        if insight_result.get('status') == 'success':
-            return {
-                        'type': 'particular_insight',
-                        'intent': intent_result,
-                        'intent_result': intent_result,  # Attach for routes.py
-                        'insight_result': insight_result,  # Attach full insight for routes.py
-                        'insight': insight_result.get('insight'),
-                        'data_summary': insight_result.get('data_summary', {}),
-                        'visualization': insight_result.get('visualization', ''),
-                        'code_file': insight_result.get('code_file'),
-                        'insight_file': insight_result.get('insight_file'),
-                        'plot_file': insight_result.get('plot_file'),
-                        'confidence': insight_result.get('confidence', 0)
-                    }
-        else:
-            return {
-                        'type': 'error',
-                        'intent_result': intent_result,  # Attach even on error
-                        'insight_result': insight_result,  # Attach even on error
-                        'message': insight_result.get('message', 'Failed to generate insight'),
-                        'error': insight_result.get('error')
-                    }
-
-     
+        # Return result
+        return {
+            'type': 'particular_insight',
+            **insight_result
+        }
     
     def _handle_show_example(self, intent_result: dict, context: dict) -> dict:
         """Handle SHOW_EXAMPLE intent."""
@@ -1021,9 +1054,10 @@ Queries are identical if they ask for the same analysis on the same data, even i
                         'insight': insight_result.get('insight'),
                         'data_summary': insight_result.get('data_summary', {}),
                         'visualization': insight_result.get('visualization', ''),
-                        'code_file': insight_result.get('code_file'),
-                        'insight_file': insight_result.get('insight_file'),
-                        'plot_file': insight_result.get('plot_file'),
+                        'query_code_file': insight_result.get('query_code_file'),
+                        'plot_code_file': insight_result.get('plot_code_file'),
+                        'plot_files': insight_result.get('plot_files', []),
+                        'num_plots': insight_result.get('num_plots', 0),
                         'confidence': insight_result.get('confidence', 0)
                     }
         else:

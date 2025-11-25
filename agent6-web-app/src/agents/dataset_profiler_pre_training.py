@@ -281,7 +281,7 @@ class DatasetProfilerPretraining:
         
         # COMPREHENSIVE quality levels to test (skip quality=0 full resolution - too large for memory)
         # Start from quality=-2 which is 4x downsampled and much more manageable
-        quality_levels_to_test = [-15, -12, -10, -8, -6, -4, -2, 0]
+        quality_levels_to_test = [-15, -12, -10, -8, -6, -5, -4, -2, -1, 0]
         
         # Import necessary modules for actual data loading
         try:
@@ -313,6 +313,14 @@ class DatasetProfilerPretraining:
             x_dim = spatial_dims.get('x', 100)
             y_dim = spatial_dims.get('y', 100)
             z_dim = spatial_dims.get('z', 1)
+            
+            # Get temporal dimension
+            t_dim = temporal_info.get('total_time_steps', 1)
+            if isinstance(t_dim, str):
+                try:
+                    t_dim = int(t_dim)
+                except:
+                    t_dim = 1
             
             # TEST SUITE 1: Single timestep, FULL spatial resolution, varying quality
             # This is pre-training - runs once per dataset, so we test with realistic full-size queries
@@ -363,7 +371,7 @@ class DatasetProfilerPretraining:
                     })
                     continue
             
-            # TEST SUITE 2: Multi-timestep tests (simulate 2-day and 7-day queries)
+            # TEST SUITE 2: Multi-timestep tests (simulate 2-day and 7-day, 30  queries)
             # Use fewer timesteps but FULL spatial resolution
             add_system_log(f"[Profiler] Test Suite 2: Multi-timestep aggregation tests (FULL spatial resolution, fewer timesteps)", "info")
             
@@ -392,7 +400,7 @@ class DatasetProfilerPretraining:
                     'test_type': f'multi_timestep_{scenario["name"]}_different_resolution_full_spatial_resolution'
                 }
                 
-                for quality in [-12, -10, -8, -6, -4, -2, 0]:  
+                for quality in quality_levels_to_test:  
                     try:
                         test_result = self._run_multi_timestep_benchmark(
                             dataset_info,
@@ -416,6 +424,7 @@ class DatasetProfilerPretraining:
                         else:
                             test_result['test_suite'] = f'multi_timestep_{scenario["name"]}'
                             benchmark_results['tests_performed'].append(test_result)
+                            add_system_log(f"[Profiler] Multi-timestep quality {quality}: {test_result['execution_time']:.2f}s for {scenario['count']} timesteps", "info")
                     except Exception as e:
                         error_msg = str(e)
                         add_system_log(f"[Profiler] Multi-timestep quality {quality} failed: {error_msg}, continuing...", "warning")
@@ -450,7 +459,7 @@ class DatasetProfilerPretraining:
                 }
                 
                 # Test with a few quality levels
-                for quality in [-12, -10, -8, -6, -4, 0]:
+                for quality in quality_levels_to_test:
                     try:
                         test_result = self._run_aggregation_benchmark(
                             dataset_info,
@@ -475,6 +484,7 @@ class DatasetProfilerPretraining:
                             test_result['test_suite'] = f'aggregation_{agg_test["op"]}_timestep_0_different_resolution_full_spatial_resolution'
                             test_result['aggregation_op'] = agg_test['op']
                             benchmark_results['tests_performed'].append(test_result)
+                            add_system_log(f"[Profiler] Aggregation {agg_test['op']} quality {quality}: {test_result['execution_time']:.2f}s", "info")
                     except Exception as e:
                         error_msg = str(e)
                         add_system_log(f"[Profiler] Aggregation {agg_test['op']} quality {quality} failed: {error_msg}, continuing...", "warning")
@@ -490,8 +500,267 @@ class DatasetProfilerPretraining:
                         })
                         continue
             
+            # TEST SUITE 4: Regional subset tests (smaller spatial regions)
+            add_system_log(f"[Profiler] Test Suite 4: Regional subset tests (reduced spatial extent)", "info")
+            
+            # Define regional subsets to test
+            regional_subsets = [
+                {'name': 'small_region', 'x_range': [0, min(200, x_dim)], 'y_range': [0, min(200, y_dim)]},
+                {'name': 'medium_region', 'x_range': [0, min(500, x_dim)], 'y_range': [0, min(500, y_dim)]},
+            ]
+            
+            for subset in regional_subsets:
+                test_region_subset = {
+                    'x_range': subset['x_range'],
+                    'y_range': subset['y_range'],
+                    'z_range': [0, z_dim],
+                    'timestep': 0,
+                    'test_type': f'regional_subset_{subset["name"]}'
+                }
+                
+                # Test all quality levels on subset
+                for quality in quality_levels_to_test:
+                    try:
+                        test_result = self._run_benchmark_query(
+                            dataset_info,
+                            test_variable,
+                            test_region_subset,
+                            quality,
+                            has_openvisus
+                        )
+                        
+                        if not test_result or (isinstance(test_result, dict) and test_result.get('error')):
+                            err = (test_result.get('error') if isinstance(test_result, dict) else 'Unknown error')
+                            benchmark_results['failed_tests'].append({
+                                'quality_level': quality,
+                                'test_suite': f'small_subset_{subset["name"]}_single_timestep',
+                                'failure_reason': err,
+                                'spatial_extent': subset,
+                                'recommendation': f'Even regional subset failed at quality {quality}'
+                            })
+                        else:
+                            test_result['test_suite'] = f'regional_subset_{subset["name"]}'
+                            test_result['spatial_extent'] = subset
+                            benchmark_results['tests_performed'].append(test_result)
+                            add_system_log(f"[Profiler] Regional {subset['name']} quality {quality}: {test_result['execution_time']:.2f}s", "info")
+                    
+                    except Exception as e:
+                        add_system_log(f"[Profiler] Regional subset {subset['name']} quality {quality} failed: {e}", "warning")
+                        benchmark_results['failed_tests'].append({
+                            'quality_level': quality,
+                            'test_suite': f'small_subset_{subset["name"]}_single_timestep',
+                            'failure_reason': str(e),
+                            'spatial_extent': subset
+                        })
+                        continue
+            
+            # TEST SUITE 5: Single timestep different spatial coverages
+            add_system_log(f"[Profiler] Test Suite 5: Single timestep with varying spatial coverage", "info")
+            
+            spatial_coverage_tests = [
+                {'name': 'tiny_10x10', 'x_range': [0, min(10, x_dim)], 'y_range': [0, min(10, y_dim)]},
+                {'name': 'small_100x100', 'x_range': [0, min(100, x_dim)], 'y_range': [0, min(100, y_dim)]},
+                {'name': 'large_1000x1000', 'x_range': [0, min(1000, x_dim)], 'y_range': [0, min(1000, y_dim)]},
+            ]
+            
+            for coverage in spatial_coverage_tests:
+                test_single_timestep = {
+                    'x_range': coverage['x_range'],
+                    'y_range': coverage['y_range'],
+                    'z_range': [0, z_dim],
+                    'timestep': 0,
+                    'test_type': f'single_timestep_{coverage["name"]}'
+                }
+                
+                for quality in quality_levels_to_test:
+                    try:
+                        test_result = self._run_benchmark_query(
+                            dataset_info,
+                            test_variable,
+                            test_single_timestep,
+                            quality,
+                            has_openvisus
+                        )
+                        
+                        if not test_result or (isinstance(test_result, dict) and test_result.get('error')):
+                            err = (test_result.get('error') if isinstance(test_result, dict) else 'Unknown error')
+                            benchmark_results['failed_tests'].append({
+                                'quality_level': quality,
+                                'test_suite': f'single_timestep_{coverage["name"]}',
+                                'failure_reason': err,
+                                'spatial_coverage': coverage
+                            })
+                        else:
+                            test_result['test_suite'] = f'single_timestep_{coverage["name"]}'
+                            test_result['spatial_coverage'] = coverage
+                            benchmark_results['tests_performed'].append(test_result)
+                            add_system_log(f"[Profiler] Single timestep {coverage['name']} quality {quality}: {test_result['execution_time']:.2f}s", "info")
+                    except Exception as e:
+                        add_system_log(f"[Profiler] Single timestep {coverage['name']} quality {quality} failed: {e}", "warning")
+                        benchmark_results['failed_tests'].append({
+                            'quality_level': quality,
+                            'test_suite': f'single_timestep_{coverage["name"]}',
+                            'failure_reason': str(e)
+                        })
+                        continue
+            
+            # TEST SUITE 6: Multiple timesteps with small spatial region
+            if t_dim > 1:
+                add_system_log(f"[Profiler] Test Suite 6: Multiple timesteps with reduced spatial extent", "info")
+                
+                timestep_tests = [
+                    {'name': '2_timesteps', 'timesteps': [0, min(1, t_dim-1)]},
+                    {'name': '5_timesteps', 'timesteps': list(range(0, min(5, t_dim)))},
+                    {'name': '10_timesteps', 'timesteps': list(range(0, min(10, t_dim)))},
+                ]
+                
+                # Use small spatial region for multiple timesteps
+                small_region = {
+                    'x_range': [0, min(100, x_dim)],
+                    'y_range': [0, min(100, y_dim)],
+                    'z_range': [0, z_dim],
+                }
+                
+                for ts_test in timestep_tests:
+                    for quality in quality_levels_to_test:
+                        total_time = 0
+                        total_points = 0
+                        all_succeeded = True
+                        
+                        try:
+                            # Test each timestep
+                            for ts in ts_test['timesteps']:
+                                test_multi_timestep = {**small_region, 'timestep': ts, 'test_type': f'multi_timestep_{ts_test["name"]}'}
+                                
+                                result = self._run_benchmark_query(
+                                    dataset_info,
+                                    test_variable,
+                                    test_multi_timestep,
+                                    quality,
+                                    has_openvisus
+                                )
+                                
+                                if not result or (isinstance(result, dict) and result.get('error')):
+                                    all_succeeded = False
+                                    break
+                                
+                                total_time += result.get('execution_time', 0)
+                                total_points += result.get('data_points', 0)
+                            
+                            if all_succeeded:
+                                combined_result = {
+                                    'quality_level': quality,
+                                    'execution_time': total_time,
+                                    'data_points': total_points,
+                                    'num_timesteps': len(ts_test['timesteps']),
+                                    'test_suite': f'multi_timestep_{ts_test["name"]}_small_region',
+                                    'timesteps': ts_test['timesteps'],
+                                    'spatial_region': small_region
+                                }
+                                benchmark_results['tests_performed'].append(combined_result)
+                                add_system_log(f"[Profiler] Multi-timestep {ts_test['name']} quality {quality}: {total_time:.2f}s", "info")
+                            else:
+                                benchmark_results['failed_tests'].append({
+                                    'quality_level': quality,
+                                    'test_suite': f'multi_timestep_{ts_test["name"]}_small_region',
+                                    'failure_reason': 'One or more timesteps failed'
+                                })
+                        except Exception as e:
+                            add_system_log(f"[Profiler] Multi-timestep {ts_test['name']} quality {quality} failed: {e}", "warning")
+                            benchmark_results['failed_tests'].append({
+                                'quality_level': quality,
+                                'test_suite': f'multi_timestep_{ts_test["name"]}_small_region',
+                                'failure_reason': str(e)
+                            })
+                            continue
+            
+            # TEST SUITE 7: Aggregation operations on small regions
+            add_system_log(f"[Profiler] Test Suite 7: Various aggregations on small spatial region", "info")
+            
+            aggregation_tests = [
+                {'op': 'mean', 'description': 'Average value'},
+                {'op': 'sum', 'description': 'Total sum'},
+                {'op': 'std', 'description': 'Standard deviation'},
+                {'op': 'min', 'description': 'Minimum value'},
+                {'op': 'max', 'description': 'Maximum value'},
+                {'op': 'median', 'description': 'Median value'},
+            ]
+            
+            # Use very small region for aggregations
+            tiny_region = {
+                'x_range': [0, min(50, x_dim)],
+                'y_range': [0, min(50, y_dim)],
+                'z_range': [0, z_dim],
+                'timestep': 0,
+            }
+            
+            for agg_test in aggregation_tests:
+                for quality in quality_levels_to_test:
+                    try:
+                        test_aggregation = {**tiny_region, 'test_type': f'aggregation_{agg_test["op"]}'}
+                        
+                        test_result = self._run_benchmark_query(
+                            dataset_info,
+                            test_variable,
+                            test_aggregation,
+                            quality,
+                            has_openvisus
+                        )
+                        
+                        if not test_result or (isinstance(test_result, dict) and test_result.get('error')):
+                            err = (test_result.get('error') if isinstance(test_result, dict) else 'Unknown error')
+                            benchmark_results['failed_tests'].append({
+                                'quality_level': quality,
+                                'test_suite': f'aggregation_small_region_{agg_test["op"]}',
+                                'aggregation_op': agg_test['op'],
+                                'failure_reason': err
+                            })
+                        else:
+                            # Compute aggregation on loaded data
+                            if 'data' in test_result:
+                                data = test_result['data']
+                                import numpy as np
+                                
+                                try:
+                                    if agg_test['op'] == 'mean':
+                                        agg_value = float(np.mean(data))
+                                    elif agg_test['op'] == 'sum':
+                                        agg_value = float(np.sum(data))
+                                    elif agg_test['op'] == 'std':
+                                        agg_value = float(np.std(data))
+                                    elif agg_test['op'] == 'min':
+                                        agg_value = float(np.min(data))
+                                    elif agg_test['op'] == 'max':
+                                        agg_value = float(np.max(data))
+                                    elif agg_test['op'] == 'median':
+                                        agg_value = float(np.median(data))
+                                    else:
+                                        agg_value = None
+                                    
+                                    test_result['aggregation_value'] = agg_value
+                                except Exception as agg_err:
+                                    add_system_log(f"[Profiler] Aggregation computation failed: {agg_err}", "warning")
+                            
+                            test_result['test_suite'] = f'aggregation_small_region_{agg_test["op"]}'
+                            test_result['aggregation_op'] = agg_test['op']
+                            test_result.pop('data', None)  # Remove raw data to save space
+                            benchmark_results['tests_performed'].append(test_result)
+                            add_system_log(f"[Profiler] Aggregation {agg_test['op']} quality {quality}: {test_result['execution_time']:.2f}s", "info")
+                    except Exception as e:
+                        add_system_log(f"[Profiler] Aggregation {agg_test['op']} quality {quality} failed: {e}", "warning")
+                        benchmark_results['failed_tests'].append({
+                            'quality_level': quality,
+                            'test_suite': f'aggregation_small_region_{agg_test["op"]}',
+                            'aggregation_op': agg_test['op'],
+                            'failure_reason': str(e)
+                        })
+                        continue
+            
             # Organize results by test suite
             benchmark_results = self._organize_benchmark_results(benchmark_results)
+            
+            # NEW: Compute accuracy vs execution time tradeoffs
+            benchmark_results = self._compute_accuracy_tradeoffs(benchmark_results)
             
             
         except Exception as e:
@@ -809,12 +1078,166 @@ class DatasetProfilerPretraining:
         benchmark_results['by_test_suite'] = by_suite
         return benchmark_results
     
+    def _compute_accuracy_tradeoffs(self, benchmark_results: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Compute accuracy vs execution time tradeoffs for each test suite.
+        
+        For each test suite (same x,y,z,timesteps but varying quality):
+        1. Calculate accuracy loss: (high_quality_points - low_quality_points) / high_quality_points
+        2. Calculate speedup: high_quality_time / low_quality_time
+        3. Generate recommendations for time budgets
+        
+        Adds:
+        - accuracy_tradeoffs: Per-suite analysis
+        - visualization_data: Plot-ready data for research papers
+        """
+        add_system_log("[Profiler] Computing accuracy vs execution time tradeoffs...", "info")
+        
+        tradeoff_analysis = {}
+        visualization_data = []
+        
+        by_suite = benchmark_results.get('by_test_suite', {})
+        
+        for suite_name, tests in by_suite.items():
+            if not tests:
+                continue
+            
+            # Sort by quality level (descending: 0, -2, -4, ... -15)
+            sorted_tests = sorted(tests, key=lambda t: t.get('quality_level', -99), reverse=True)
+            
+            if len(sorted_tests) < 2:
+                continue  # Need at least 2 quality levels to compare
+            
+            # Use highest quality as baseline (most accurate)
+            baseline = sorted_tests[0]
+            baseline_points = baseline.get('data_points', 0)
+            baseline_time = baseline.get('execution_time', 0.001)  # Avoid division by zero
+            
+            # Compute tradeoffs for each quality level
+            tradeoffs = []
+            for test in sorted_tests:
+                quality = test.get('quality_level')
+                points = test.get('data_points', 0)
+                time = test.get('execution_time', 0.001)
+                
+                # Accuracy loss (as percentage of resolution lost)
+                if baseline_points > 0:
+                    accuracy_retained_pct = (points / baseline_points) * 100
+                    accuracy_loss_pct = 100 - accuracy_retained_pct
+                else:
+                    accuracy_retained_pct = 100
+                    accuracy_loss_pct = 0
+                
+                # Speedup factor
+                if time > 0:
+                    speedup = baseline_time / time
+                else:
+                    speedup = 1.0
+                
+                # Efficiency score (higher is better): accuracy retained per second saved
+                time_saved = baseline_time - time
+                if time_saved > 0:
+                    efficiency = accuracy_retained_pct / time_saved
+                else:
+                    efficiency = 0
+                
+                tradeoff_entry = {
+                    'quality_level': quality,
+                    'execution_time_seconds': time,
+                    'data_points': points,
+                    'accuracy_retained_percent': round(accuracy_retained_pct, 2),
+                    'accuracy_loss_percent': round(accuracy_loss_pct, 2),
+                    'speedup_vs_baseline': round(speedup, 2),
+                    'efficiency_score': round(efficiency, 4)
+                }
+                
+                tradeoffs.append(tradeoff_entry)
+                
+                # Add to visualization data (plot-ready format)
+                visualization_data.append({
+                    'test_suite': suite_name,
+                    'quality_level': quality,
+                    'execution_time': time,
+                    'accuracy_retained': accuracy_retained_pct,
+                    'accuracy_loss': accuracy_loss_pct,
+                    'speedup': speedup,
+                    'data_points': points
+                })
+            
+            # Generate recommendations for different time budgets
+            recommendations = self._generate_quality_recommendations(tradeoffs, baseline_time)
+            
+            tradeoff_analysis[suite_name] = {
+                'baseline_quality': baseline.get('quality_level'),
+                'baseline_time_seconds': baseline_time,
+                'baseline_data_points': baseline_points,
+                'tradeoffs': tradeoffs,
+                'recommendations_by_time_budget': recommendations
+            }
+        
+        # Add to benchmark results
+        benchmark_results['accuracy_tradeoff_analysis'] = tradeoff_analysis
+        benchmark_results['visualization_data'] = visualization_data
+        
+        add_system_log(f"[Profiler] Computed tradeoffs for {len(tradeoff_analysis)} test suites", "success")
+        
+        return benchmark_results
+    
+    def _generate_quality_recommendations(self, tradeoffs: List[Dict], baseline_time: float) -> Dict[str, Any]:
+        """
+        Generate quality level recommendations for different time budgets.
+        
+        Args:
+            tradeoffs: List of tradeoff entries sorted by quality (high to low)
+            baseline_time: Baseline execution time (highest quality)
+        
+        Returns:
+            Recommendations dict mapping time budgets to optimal quality levels
+        """
+        recommendations = {}
+        
+        # Define time budget scenarios (as fraction of baseline)
+        time_budgets = [
+            ('10_percent', 0.1),
+            ('25_percent', 0.25),
+            ('50_percent', 0.5),
+            ('75_percent', 0.75)
+        ]
+        
+        for budget_name, budget_fraction in time_budgets:
+            target_time = baseline_time * budget_fraction
+            
+            # Find quality level closest to target time while preserving max accuracy
+            best_match = None
+            best_accuracy = 0
+            
+            for t in tradeoffs:
+                if t['execution_time_seconds'] <= target_time:
+                    if t['accuracy_retained_percent'] > best_accuracy:
+                        best_accuracy = t['accuracy_retained_percent']
+                        best_match = t
+            
+            if best_match:
+                recommendations[budget_name] = {
+                    'recommended_quality': best_match['quality_level'],
+                    'expected_time_seconds': best_match['execution_time_seconds'],
+                    'accuracy_retained_percent': best_match['accuracy_retained_percent'],
+                    'accuracy_loss_percent': best_match['accuracy_loss_percent']
+                }
+            else:
+                # No quality level fits this budget
+                recommendations[budget_name] = {
+                    'recommended_quality': tradeoffs[-1]['quality_level'] if tradeoffs else -15,
+                    'note': 'Even lowest quality exceeds this time budget'
+                }
+        
+        return recommendations
+    
     def _llm_synthesis(self, benchmark_results: Dict, dataset_info: Dict) -> Dict[str, Any]:
         """
         Stage 3: LLM-driven intelligent synthesis based on empirical data.
         
         The LLM interprets pattern analysis AND empirical benchmarks to provide:
-        - Scientific context and insights
         - Query optimization recommendations (evidence-based!)
         - Data quality assessment
         - Usage guidance
@@ -879,6 +1302,9 @@ Provide ONLY valid JSON with this structure:
   ],
   "potential_issues": [
     "<any data quality concerns or limitations>"
+  ],
+  "accuracy_tradeoffs": [
+    "<summary of accuracy vs time tradeoffs based on benchmarks>"
   ]
 }}
 

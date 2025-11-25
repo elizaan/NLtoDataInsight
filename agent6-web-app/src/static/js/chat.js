@@ -476,9 +476,15 @@ if (typeof window !== 'undefined') window.updateArtifactsPanelLayout = updateArt
                 }
                 // If progress message includes artifact references, render them
                 try {
+                    console.log('insight_generated msg.data keys:', msg.data ? Object.keys(msg.data) : 'null');
+                    console.log('insight_generated msg.data.plot_files:', msg.data ? msg.data.plot_files : 'N/A');
+                    console.log('insight_generated msg.data.query_code_file:', msg.data ? msg.data.query_code_file : 'N/A');
+                    console.log('insight_generated msg.data.plot_code_file:', msg.data ? msg.data.plot_code_file : 'N/A');
                     if (msg.data && (msg.data.plot_files || msg.data.query_code_file || msg.data.plot_code_file)) {
                         console.log('Progress message contains artifacts; rendering artifacts panel');
                         this.renderArtifacts(msg.data);
+                    } else {
+                        console.warn('insight_generated received but no artifact fields found in msg.data');
                     }
                 } catch (e) {
                     console.warn('Failed to render artifacts from progress message', e);

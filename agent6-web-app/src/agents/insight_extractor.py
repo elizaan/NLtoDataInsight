@@ -241,6 +241,20 @@ Rules:
                 if progress_callback and callable(progress_callback):
                     progress_callback('insight_analysis', analysis)
             
+            # Check if user already provided time preference
+            user_time_limit = intent_hints.get('user_time_limit_minutes')
+            skip_time_estimation = False
+            
+            if user_time_limit:
+                add_system_log(
+                    f"[InsightExtractor] User time preference provided: {user_time_limit} min - skipping time estimation",
+                    'info'
+                )
+                skip_time_estimation = True
+                # If we already have a time preference, we'll skip the estimation
+                # but we still need pre-insight analysis for other reasons
+
+            
             if not skip_pre_insight:
                 # Step 1: Initial analysis with LLM
                 add_system_log("Analyzing query intent...", 'info')
@@ -375,38 +389,44 @@ HOW TO USE THIS PROFILE:
             # Step 2.5: Check if we need time clarification for data queries
             # If analysis suggests data_query and we don't have user_time_limit_minutes yet, 
             # check against DEFAULT_TIME_LIMIT_SECONDS (500 sec = ~8 minutes)
-            estimated_time = analysis.get('estimated_time_minutes')
-            user_time_limit = intent_hints.get('user_time_limit_minutes')
+            if not skip_time_estimation:
+                estimated_time = analysis.get('estimated_time_minutes')
+                user_time_limit = intent_hints.get('user_time_limit_minutes')
+                
+                # Convert default time limit from seconds to minutes for comparison
+                default_time_limit_minutes = DEFAULT_TIME_LIMIT_SECONDS / 60.0  # 500 sec = 8.33 min
+                
+                if estimated_time is not None and user_time_limit is None:
+                    # User didn't specify time constraint
+                    if estimated_time <= default_time_limit_minutes:
+                        # Within default limit - proceed without asking user
+                        add_system_log(
+                            f"Query estimated at {estimated_time:.1f} min (within default {default_time_limit_minutes:.1f} min limit), proceeding automatically",
+                            'info'
+                        )
+                        # Attach default limit so downstream code knows the constraint
+                        intent_hints['user_time_limit_minutes'] = default_time_limit_minutes
+                    else:
+                        # Exceeds default limit - ask user for preference
+                        add_system_log(
+                            f"Query estimated at {estimated_time:.1f} min (exceeds default {default_time_limit_minutes:.1f} min limit), requesting user confirmation",
+                            'info'
+                        )
+                        
+                        return {
+                            'status': 'needs_time_clarification',
+                            'estimated_time_minutes': estimated_time,
+                            'default_time_limit_minutes': default_time_limit_minutes,
+                            'time_estimation_reasoning': analysis.get('time_estimation_reasoning', 'Based on dataset size and query complexity'),
+                            'analysis': analysis,
+                            'message': f'This query is estimated to take approximately {estimated_time:.1f} minutes. Our default limit is {default_time_limit_minutes:.1f} minutes. Would you like to proceed with optimization, or specify a different time preference?',
+                            'confidence': analysis.get('confidence', 0.7)
+                        }
+            else:
+                if analysis:
+                    analysis['user_time_limit_minutes'] = user_time_limit
+                    analysis['time_estimation_reasoning'] = f"User-specified time limit: {user_time_limit} minutes"
             
-            # Convert default time limit from seconds to minutes for comparison
-            default_time_limit_minutes = DEFAULT_TIME_LIMIT_SECONDS / 60.0  # 500 sec = 8.33 min
-            
-            if estimated_time is not None and user_time_limit is None:
-                # User didn't specify time constraint
-                if estimated_time <= default_time_limit_minutes:
-                    # Within default limit - proceed without asking user
-                    add_system_log(
-                        f"Query estimated at {estimated_time:.1f} min (within default {default_time_limit_minutes:.1f} min limit), proceeding automatically",
-                        'info'
-                    )
-                    # Attach default limit so downstream code knows the constraint
-                    intent_hints['user_time_limit_minutes'] = default_time_limit_minutes
-                else:
-                    # Exceeds default limit - ask user for preference
-                    add_system_log(
-                        f"Query estimated at {estimated_time:.1f} min (exceeds default {default_time_limit_minutes:.1f} min limit), requesting user confirmation",
-                        'info'
-                    )
-                    
-                    return {
-                        'status': 'needs_time_clarification',
-                        'estimated_time_minutes': estimated_time,
-                        'default_time_limit_minutes': default_time_limit_minutes,
-                        'time_estimation_reasoning': analysis.get('time_estimation_reasoning', 'Based on dataset size and query complexity'),
-                        'analysis': analysis,
-                        'message': f'This query is estimated to take approximately {estimated_time:.1f} minutes. Our default limit is {default_time_limit_minutes:.1f} minutes. Would you like to proceed with optimization, or specify a different time preference?',
-                        'confidence': analysis.get('confidence', 0.7)
-                    }
             
             # Step 3: Query actual data using DatasetInsightGenerator
             add_system_log("Step 2: Querying actual dataset...", 'info')

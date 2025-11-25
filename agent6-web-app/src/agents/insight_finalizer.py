@@ -369,9 +369,9 @@ DO NOT use packages that weren't in the original code unless absolutely necessar
 DO NOT try to access data fields that don't exist in the NPZ file (check what's available first).
 
 **PLOTTING GUIDELINES:**
-- Set appropriate axis limits based on actual data range
-- Include clear labels, titles, and legends
-
+**Axis Limits and Scales:**
+- ALWAYS set appropriate axis limits based on your actual data range
+- For bar charts of min/max: set y-axis from slightly below min to slightly above max
 - For time series: ensure x-axis covers your time range
  - For heatmaps and image-like arrays: use appropriate color scales (diverging for anomalies, sequential for values).
      - IMPORTANT: Treat array row-0 as the BOTTOM (not the top) by default across all visualizations. Make this the standard so overlays and annotations align intuitively with Cartesian/geographic coordinates.
@@ -380,9 +380,9 @@ DO NOT try to access data fields that don't exist in the NPZ file (check what's 
         * seaborn `heatmap`: either plot `np.flipud(arr)` or use the returned `ax` and call `ax.invert_yaxis()` so the display matches `origin='lower'` semantics.
         * pcolormesh/contourf: supply explicit X/Y coordinate arrays with Y increasing (northward/upwards) or, if supplying only the array, flip it with `np.flipud()` to maintain the row-0-bottom convention.
         * quiver/streamplot: build X/Y coordinate arrays that match the heatmap's extent and orientation (use `np.meshgrid(x_coords, y_coords)` where `y_coords` is ascending). Do NOT assume array row ordering — derive coordinates from `x_range`/`y_range` or `extent`.
-     - Always document the chosen origin/orientation in the plot title or caption (e.g., "Plotted with origin='lower' — row 0 at bottom"). If you must use `origin='upper'`, explicitly justify and document it.
 - Use log scale if data spans several orders of magnitude
 - folow rule for other plots too
+- Always document resolution reduction values in plot titles/captions
 
 **Data Validation:**
 - After loading npz file, ALWAYS inspect keys: `print("Available keys:", data.files)`

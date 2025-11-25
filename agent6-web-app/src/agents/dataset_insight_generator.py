@@ -1289,7 +1289,7 @@ Write your intelligent plot code in <plot_code></plot_code> tags.
                             is_timeout = False
 
                         if is_timeout:
-                            add_system_log(f"Query timed out after allowed runtime (500s). Aborting query and asking LLM for smaller alternatives.", "warning")
+                            add_system_log(f"Query timed out after allowed runtime. Aborting query and asking LLM for smaller alternatives.", "warning")
 
                             # Ask LLM to produce intelligent smaller-subset suggestions and a short insight message
                             prompt = {
@@ -1357,7 +1357,8 @@ Write your intelligent plot code in <plot_code></plot_code> tags.
                             # Return a final structured result indicating timeout and suggestions
                             return {
                                 'status': 'timeout',
-                                'message': insight_msg,
+                                'insight': insight_msg,  # Use 'insight' field so it displays in UI
+                                'message': insight_msg,  # Keep 'message' for backward compatibility
                                 'suggestions': suggestions_json if suggestions_json else suggestion_text,
                                 'query_code_file': str(query_code_file),
                                 'insight_file': str(insight_file),
