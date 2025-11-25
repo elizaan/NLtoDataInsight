@@ -19,13 +19,11 @@ from .conversation_context import ConversationContext, create_conversation_conte
 import os
 import sys
 import numpy as np
-import time
-import json
-import hashlib
-from datetime import datetime
+from typing import Optional, Dict, Any, List
+from datetime import datetime, timedelta
 from pathlib import Path
-
-
+import hashlib
+import json
 
 
 current_script_dir = os.path.dirname(os.path.abspath(__file__)) # Directory of this script
@@ -65,12 +63,6 @@ except Exception:
     def log_token_usage(model_name, messages, label=None):
         return 0
 
-
-# import renderInterface3
-
-import hashlib
-import json
-from datetime import datetime
 
 class AnimationAgent:
     @property
@@ -126,17 +118,10 @@ class AnimationAgent:
             set_agent,
             get_agent
         ]
+        
 
 
-
-        system_prompt = """You are an agent.
-
-        IMPORTANT RULES:
-        - Be concise and helpful
-        - Report progress at each step
-
-        You have access to these tools:
-        {tools}
+        system_prompt = """You are an agent. Be concise and helpful.
         """
         
         # Use the new create_agent function with correct parameters
@@ -168,31 +153,341 @@ class AnimationAgent:
                 enable_vector_db=True
             )
             self.query_counter = len(self.conversation_context.history)
-            print(f"[Agent] Conversation context initialized for dataset {dataset_id} ({self.query_counter} past queries)")
+            add_system_log(
+                f"[Agent] Conversation context initialized for {dataset_id} ({self.query_counter} past queries)",
+                'info'
+            )
         except Exception as e:
-            print(f"[Agent] Warning: Could not initialize conversation context: {e}")
+            add_system_log(f"[Agent] Warning: Could not initialize conversation context: {e}", 'error')
             self.conversation_context = None
             self.query_counter = 0
         
-        # NEW: Get or create dataset profile (one-time analysis, cached permanently)
+        # Get or create dataset profile (one-time analysis, cached permanently)
         try:
-            print(f"[Agent] Loading/generating dataset profile for {dataset_id}...")
+            add_system_log(f"[Agent] Loading/generating dataset profile for {dataset_id}...", 'info')
             self.dataset_profile = self.profiler.get_or_create_profile(dataset)
-            
-            # Log profile quality score for user visibility
-            quality_score = self.dataset_profile.get('llm_insights', {}).get('data_quality_score', 'N/A')
-            print(f"[Agent] Dataset profile loaded - Quality score: {quality_score}/10")
-            
             # Share profile with insight generators so they can use it
             self.insight_extractor.insight_generator.dataset_profile = self.dataset_profile
             
         except Exception as e:
-            print(f"[Agent] Warning: Could not load dataset profile: {e}")
+            add_system_log(f"[Agent] Warning: Could not load dataset profile: {e}", 'error')
             self.dataset_profile = None
         
-        print(f"[Agent] Dataset set: {self._dataset}")
         return True
+     
+    def _get_recent_queries_in_session(
+        self,
+        max_count: int = 5,
+        session_window_hours: int = 24
+    ) -> List[Dict[str, Any]]:
+        """
+        Get recent queries from the current session based on timestamp.
+        
+        Args:
+            max_count: Maximum number of recent queries to return
+            session_window_hours: Consider queries within this time window as "current session"
+        
+        Returns:
+            List of recent query entries
+        """
+        if not self.conversation_context or not self.conversation_context.history:
+            return []
+        
+        now = datetime.now()
+        session_cutoff = now - timedelta(hours=session_window_hours)
+        
+        # Filter queries within session window
+        recent_queries = []
+        for entry in reversed(self.conversation_context.history):  # Most recent first
+            try:
+                timestamp_str = entry.get('timestamp', '')
+                if timestamp_str:
+                    # Parse ISO format: "2025-11-22T20:22:46.654004"
+                    query_time = datetime.fromisoformat(timestamp_str)
+                    
+                    if query_time >= session_cutoff:
+                        recent_queries.append(entry)
+                        
+                        if len(recent_queries) >= max_count:
+                            break
+            except Exception as e:
+                add_system_log(f"[Cache] Warning: Could not parse timestamp: {e}", 'debug')
+                continue
+        
+        # Return in chronological order (oldest first)
+        return list(reversed(recent_queries))
+    
+    
+    def _resolve_and_check_recent_cache(
+        self,
+        user_query: str,
+        context: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
+        """
+        STEP 1: Resolve query references and check if recent cached NPZ can be reused.
+        
+        This checks last 5 queries in current session (based on timestamp).
+        
+        Returns:
+            Dict with 'reusable_cached_data' info if cache can be used, else None
+        """
+        if not self.conversation_context or not self.conversation_context.history:
+            add_system_log("[Cache] No conversation history - first query", 'debug')
+            return None
+        
+        # Get recent queries in current session
+        recent_queries = self._get_recent_queries_in_session(max_count=5)
+        
+        if not recent_queries:
+            add_system_log("[Cache] No recent queries in current session", 'debug')
+            return None
+        
+        add_system_log(
+            f"[Cache] Found {len(recent_queries)} recent queries in current session",
+            'info'
+        )
+        
+        # Build context with DETAILED metadata for each query
+        recent_context_detailed = []
+        for i, entry in enumerate(recent_queries):
+            query_id = entry['query_id']
+            prev_user_query = entry['user_query']
+            result = entry['result']
+            
+            # Extract metadata from result
+            data_summary = result.get('data_summary', {})
+           
+            # Format metadata
+            metadata_str = f"Query {i+1} [{query_id}]: \"{prev_user_query}\"\n"
+            metadata_str += f"  Status: {result.get('status', 'unknown')}\n"
+            metadata_str += f"  Data summary: {data_summary}\n"
+            metadata_str += f"  NPZ file: {'Yes' if result.get('data_cache_file') else 'No'}"
+            
+            recent_context_detailed.append(metadata_str)
 
+        recent_context = "\n\n".join(recent_context_detailed)
+        
+        # Use LLM to resolve references and check if cache can be reused
+        prompt = f"""You are analyzing a user's query in a conversation about dataset analysis and analyzing whether cached data from previous queries can answer the current query.
+
+**Recent Conversation contexts:**
+{recent_context}
+
+**Current Query:** "{user_query}"
+
+**Your Tasks:**
+1. **Resolve References**: If the current query contains pronouns (it, that, this, same), determine what they refer to by looking at recent queries.
+
+2. **Cache Reusability**: Determine if any of the recent queries' cached NPZ data can be reused to answer the current query. Consider:
+
+1. **IDENTICAL** - Previous results fully answer current query
+2. **DERIVED_STAT** - Answer readily available in previous {recent_context} data_summary (no code needed!)
+3. **REUSABLE_NPZ** - Answer not readily available in previous {recent_context} data_summary but some of the required data is available in {recent_context} data_summary, which means new code needs to be generated from cached NPZ
+4. **NOT_REUSABLE** - Need to load new data
+
+**Key question for DERIVED_STAT:**
+Can you answer the current query using ONLY the data_summary from a previous query?
+
+**Output ONLY valid JSON:**
+{{
+    "cache_level": "IDENTICAL" | "DERIVED_STAT" | "REUSABLE_NPZ" | "NOT_REUSABLE",
+    "resolved_query": "explicit standalone query with references resolved",
+    "can_reuse_cache": true/false,
+    "reusable_from_query_id": "q1" or null,
+    "confidence": 0.0-1.0,
+    "reasoning": "brief explanation of why cache can/cannot be reused"
+}}
+
+DO NOT include markdown code blocks, just raw JSON."""
+
+        
+        try:
+            response = self.llm.invoke(prompt)
+            response_text = response.content.strip()
+            
+            # Clean response
+            if response_text.startswith('```'):
+                response_text = response_text.split('```')[1]
+                if response_text.startswith('json'):
+                    response_text = response_text[4:]
+                response_text = response_text.split('```')[0].strip()
+            
+            result = json.loads(response_text)
+            
+            # Validate result
+            if not result.get('can_reuse_cache') or result.get('cache_level') == 'NOT_REUSABLE':
+                add_system_log("[Cache] LLM determined cache cannot be reused", 'info')
+                return None
+            
+            reusable_query_id = result.get('reusable_from_query_id')
+            if not reusable_query_id:
+                add_system_log("[Cache] LLM said cache reusable but didn't specify query_id", 'warning')
+                return None
+            
+            # Find the referenced query in recent history
+            reusable_entry = None
+            for entry in recent_queries:
+                if entry['query_id'] == reusable_query_id:
+                    reusable_entry = entry
+                    break
+            
+            if not reusable_entry:
+                add_system_log(
+                    f"[Cache] Could not find query {reusable_query_id} in recent history",
+                    'warning'
+                )
+                return None
+            
+            # Get NPZ file path
+            npz_file = reusable_entry['result'].get('data_cache_file')
+            if not npz_file or not Path(npz_file).exists():
+                add_system_log(
+                    f"[Cache] NPZ file not found for {reusable_query_id}: {npz_file}",
+                    'warning'
+                )
+                return None
+            
+            # Extract cached data info
+            data_summary = reusable_entry['result'].get('data_summary', {})
+            
+            cached_result = reusable_entry['result']
+            if result['cache_level'] == 'IDENTICAL':
+                add_system_log(
+                    f"[Cache TIER 1] IDENTICAL query detected from {reusable_query_id} - returning cached result directly!",
+                    'success'
+                )
+                # Return a cache_info that explicitly marks the level as IDENTICAL
+                # and references the correct originating query id so callers can
+                # short-circuit and return the cached result without further parsing.
+                cache_info = {
+                        'cache_level': 'IDENTICAL',
+                        'query_id': reusable_query_id,
+                        'cached_result': cached_result,
+                        'reasoning': result['reasoning'],
+                        'previous_query': reusable_entry['user_query']
+                }
+                return cache_info
+            
+            cache_info = {
+                'cache_level': result['cache_level'],
+                'query_id': reusable_query_id,
+                'npz_file': npz_file,
+                'cached_result': reusable_entry['result'],
+                'cached_summary': data_summary,
+                'confidence': result['confidence'],
+                'reasoning': result['reasoning'],
+                'previous_query': reusable_entry['user_query'],
+                'resolved_query': result['resolved_query']
+            }
+            
+            add_system_log(
+                f"[Cache TIER 1] Can reuse cached NPZ from {reusable_query_id}\n"
+                f"  Confidence: {result['confidence']:.2f}\n"
+                f"  Reasoning: {result['reasoning']}\n"
+                f"  NPZ: {Path(npz_file).name}",
+                'success'
+            )
+            
+            return cache_info
+            
+        except Exception as e:
+            add_system_log(f"[Cache] LLM analysis failed: {e}", 'warning')
+            return None
+    
+    def _check_identical_query_in_history(
+        self,
+        user_query: str
+    ) -> Optional[Dict[str, Any]]:
+        """
+        STEP 2: Use ChromaDB to find identical queries in full history.
+        
+        If found, return plots directly (bypass all LLMs).
+        
+        Returns:
+            Dict with cached result info if identical query found, else None
+        """
+        if not self.conversation_context or not self.conversation_context.collection:
+            return None
+        
+        add_system_log("[Cache] Checking ChromaDB for identical queries...", 'info')
+        
+        try:
+            # Use semantic search to find most similar queries
+            results = self.conversation_context.get_relevant_past_queries(
+                current_query=user_query,
+                top_k=5,
+                min_similarity=0.85  # High threshold for "identical"
+            )
+            
+            if not results:
+                add_system_log("[Cache] No highly similar queries found in history", 'debug')
+                return None
+            
+            # Check each result with LLM to determine if truly identical
+            for entry in results:
+                prev_query = entry['user_query']
+                vector_similarity = entry.get('similarity_score', 0)
+                
+                # Use LLM to determine if queries are identical
+                prompt = f"""Are these two queries asking for the EXACT same thing?
+
+Query 1: "{prev_query}"
+Query 2: "{user_query}"
+
+Answer with JSON:
+{{
+    "identical": true/false,
+    "reasoning": "brief explanation"
+}}
+
+Queries are identical if they ask for the same analysis on the same data, even if phrased differently."""
+                
+                try:
+                    response = self.llm.invoke(prompt)
+                    response_text = response.content.strip()
+                    
+                    if response_text.startswith('```'):
+                        response_text = response_text.split('```')[1]
+                        if response_text.startswith('json'):
+                            response_text = response_text[4:]
+                        response_text = response_text.split('```')[0].strip()
+                    
+                    llm_result = json.loads(response_text)
+                    
+                    if llm_result.get('identical'):
+                        # Found identical query! Return cached result
+                        query_id = entry['query_id']
+                        cached_result = entry['result']
+                        
+                        if cached_result.get('status') == 'success':
+                            add_system_log(
+                                f"[Cache TIER 2] IDENTICAL query found: {query_id}\n"
+                                f"  Vector similarity: {vector_similarity:.3f}\n"
+                                f"  LLM reasoning: {llm_result.get('reasoning')}\n"
+                                f"  → Returning cached plots directly!",
+                                'success'
+                            )
+                            
+                            return {
+                                'query_id': query_id,
+                                'cached_result': cached_result,
+                                'vector_similarity': vector_similarity,
+                                'reasoning': llm_result.get('reasoning'),
+                                'previous_query': prev_query
+                            }
+                
+                except Exception as e:
+                    add_system_log(f"[Cache] LLM comparison failed: {e}", 'debug')
+                    continue
+            
+            add_system_log("[Cache] No identical queries found", 'info')
+            return None
+            
+        except Exception as e:
+            add_system_log(f"[Cache] ChromaDB search failed: {e}", 'warning')
+            return None
+    
+    
     def process_query_with_intent(
         self, 
         user_message: str, 
@@ -212,29 +507,16 @@ class AnimationAgent:
         Returns:
             Result dictionary with intent and action taken
         """
-        print(f"[Agent] Processing query with intent classification: {user_message[:50]}...")
+        add_system_log(f"[Agent] Processing query with intent classification: {user_message[:50]}...")
         
         # Initialize context if not provided
         if context is None:
             context = {}
         
-        # CRITICAL: Ensure dataset is in context (fallback to self._dataset if not provided)
+        #  Ensure dataset is in context (fallback to self._dataset if not provided)
         # This allows callers to either pass dataset in context OR rely on set_dataset()
         if 'dataset' not in context and self._dataset:
             context['dataset'] = self._dataset
-        
-        # Attach conversation context and progress callback for intent parser
-        if self.conversation_context:
-            context['conversation_context_obj'] = self.conversation_context
-            context['conversation_context'] = self.conversation_context.get_context_summary(
-                current_query=user_message,
-                top_k=5,
-                use_semantic_search=True
-            )
-            # Shortened version for intent parser (to keep prompt small)
-            recent = self.conversation_context.history[-2:] if self.conversation_context.history else []
-            context['conversation_context_short'] = f"Recent queries: {len(recent)} | " + \
-                "; ".join([f"Q: {e['user_query'][:50]}" for e in recent])
         
         if progress_callback:
             context['progress_callback'] = progress_callback
@@ -244,12 +526,12 @@ class AnimationAgent:
         query_id = f"q{self.query_counter}"
         context['query_id'] = query_id
         
-        print(f"[Agent] Processing query {query_id}: {user_message[:50]}...")
+        add_system_log(f"[Agent] Processing query {query_id}: {user_message[:50]}...")
         
         # CRITICAL: Check if we're awaiting time preference BEFORE intent parsing
         # This happens when the system estimated query time and needs user input
         if context and context.get('awaiting_time_preference'):
-            print("[Agent] Processing user's time preference response (skipping intent parsing)")
+            add_system_log("[Agent] Processing user's time preference response (skipping intent parsing)")
             
             # Get the original intent_result from context
             original_intent = context.get('original_intent_result', {})
@@ -315,10 +597,129 @@ class AnimationAgent:
         except Exception:
             pass
 
+        # TIER 1: Check recent queries (last 5 in session) for NPZ reuse
+        if self.conversation_context and self.conversation_context.history:
+            cache_info = self._resolve_and_check_recent_cache(user_message, context)
+            
+            if cache_info and cache_info.get('cache_level') in ['IDENTICAL']:
+                cached_result = cache_info['cached_result']
+                prev_query_id = cache_info['query_id']
+
+                if progress_callback:
+                    progress_callback('cached_result_identical', {
+                        'query_id': prev_query_id,
+                        'reasoning': cache_info['reasoning'],
+                        'message': f'Found identical query from {prev_query_id}. Returning cached result.'
+                    })
+
+                 # Save reference to conversation history
+                if self.conversation_context:
+                    cache_reference = {
+                        'status': 'success',
+                        'cached_from': prev_query_id,
+                        'cache_tier': 'identical',
+                        'insight_file': cached_result.get('insight'),
+                        'data_summary': cached_result.get('data_summary', {}),
+                        'plot_files': cached_result.get('plot_files', []),
+                        'query_code_file': cached_result.get('query_code_file', ''),
+                        'plot_code_file': cached_result.get('plot_code_file', '')
+                    }
+                    self.conversation_context.add_query_result(
+                        query_id=query_id,
+                        user_query=user_message,
+                        result=cache_reference
+                    )
+                # Return cached result directly
+                return {
+                    'type': 'particular_insight',
+                    'status': 'success',
+                    'visualization': cached_result.get('visualization', ''),
+                    'insight': cached_result.get('insight'),
+                    'insight_file': cached_result.get('insight'),
+                    'data_summary': cached_result.get('data_summary', {}),
+                    'plot_files': cached_result.get('plot_files', []),
+                    'query_code_file': cached_result.get('query_code_file', ''),
+                    'plot_code_file': cached_result.get('plot_code_file', ''),
+                    'cached_from_query_id': prev_query_id,
+                    'cache_tier': 'identical',
+                    'cache_reasoning': cache_info['reasoning']
+                }
+
+            elif cache_info and cache_info.get('cache_level') in ['DERIVED_STAT', 'REUSABLE_NPZ']:
+                # Recent cache found! Set reusable_cached_data for insight_extractor
+                add_system_log(
+                    f"[Cache] Setting reusable_cached_data for insight_extractor",
+                    'info'
+                )
+                
+                # Create a minimal intent_result with cache info
+                # This will be passed to intent_parser and enriched there
+                context['reusable_cached_data'] = cache_info
+                
+                # Use resolved query for intent parsing
+                resolved_query = cache_info.get('resolved_query', user_message)
+                add_system_log(f"[Cache] Using resolved query: {resolved_query}", 'info')
+                user_message = resolved_query
+        
+        # TIER 2: Check ChromaDB for identical queries (return plots directly)
+        if not context.get('reusable_cached_data'):
+            identical_cache = self._check_identical_query_in_history(user_message)
+            
+            if identical_cache:
+                # IDENTICAL query found! Return cached result directly
+                cached_result = identical_cache['cached_result']
+                prev_query_id = identical_cache['query_id']
+                
+                if progress_callback:
+                    progress_callback('cached_result_identical', {
+                        'query_id': prev_query_id,
+                        'reasoning': identical_cache['reasoning'],
+                        'message': f'Found identical query from {prev_query_id}. Returning cached result.'
+                    })
+                
+                # Save reference to conversation history
+                if self.conversation_context:
+                    cache_reference = {
+                        'status': 'success',
+                        'cached_from': prev_query_id,
+                        'cache_tier': 'identical',
+                        'insight_file': cached_result.get('insight'),
+                        'data_summary': cached_result.get('data_summary', {}),
+                        'plot_files': cached_result.get('plot_files', []),
+                        'query_code_file': cached_result.get('query_code_file', ''),
+                        'plot_code_file': cached_result.get('plot_code_file', '')
+                    }
+                    self.conversation_context.add_query_result(
+                        query_id=query_id,
+                        user_query=user_message,
+                        result=cache_reference
+                    )
+                
+                # Return cached result directly
+                return {
+                    'type': 'particular_insight',
+                    'status': 'success',
+                    'insight': cached_result.get('insight'),
+                    'data_summary': cached_result.get('data_summary', {}),
+                    'visualization': cached_result.get('visualization', ''),
+                    'plot_files': cached_result.get('plot_files', []),
+                    'query_code_file': cached_result.get('query_code_file', ''),
+                    'plot_code_file': cached_result.get('plot_code_file', ''),
+                    'cached_from_query_id': prev_query_id,
+                    'cache_tier': 'identical',
+                    'cache_reasoning': identical_cache['reasoning']
+                }
+        
+        # ====================================================================
+        # NO CACHE FOUND: Continue to intent parser
+        # ====================================================================
+        
+        # add_system_log("[Cache] Continuing to intent parser.", 'info')
+        
+        
         intent_result = self.intent_parser.parse_intent(user_message, context)
         
-        print(f"[Agent] Intent: {intent_result['intent_type']} (confidence: {intent_result['confidence']:.2f})")
-        print("full intent result:", intent_result)
+        add_system_log(f"[Agent] Intent: {intent_result['intent_type']} (confidence: {intent_result['confidence']:.2f})", 'info',  details = intent_result )
         
         # Report intent parsing progress
         if progress_callback:
@@ -426,6 +827,8 @@ class AnimationAgent:
                 # (and the adapter in routes.py) can handle it.
                 print(f"[Agent] Dataset profiling invocation failed: {e}")
                 return {'status': 'error', 'message': f'Dataset profiling failed: {e}'}
+        
+
         # For all other queries, reuse the intent-based multi-agent flow so
         # callers don't need to call process_query_with_intent explicitly.
         return self.process_query_with_intent(user_message, context, context.get('progress_callback'))
@@ -439,110 +842,6 @@ class AnimationAgent:
         with actual data-querying logic (or call to a dedicated QA/summarizer
         """
         print(f"[Agent] Handling PARTICULAR (specific inquiry) intent")
-        
-        # FAST-PATH: Check for high-confidence cached result (≥0.95) and return immediately
-        # This skips all code generation and LLM calls for near-identical queries
-        if intent_result.get('reusable_cached_data'):
-            cached_info = intent_result['reusable_cached_data']
-            confidence = cached_info.get('confidence', 0.0)
-            
-            if confidence >= 0.95:
-                # High confidence - return cached result immediately without code generation
-                add_system_log(
-                    f"[FAST-PATH] High-confidence cached result found (confidence={confidence:.2f} ≥ 0.95). "
-                    f"Returning cached result immediately without code generation.",
-                    'info'
-                )
-                
-                # Retrieve the full cached result from conversation history
-                if self.conversation_context:
-                    prev_query_id = cached_info.get('query_id')
-                    cached_result = None
-                    
-                    # Find the previous result in history
-                    for entry in self.conversation_context.history:
-                        if entry.get('query_id') == prev_query_id:
-                            cached_result = entry.get('result', {})
-                            break
-                    
-                    if cached_result and cached_result.get('status') == 'success':
-                        add_system_log(
-                            f"[FAST-PATH] Reusing cached result from query {prev_query_id}: "
-                            f"{cached_info.get('reasoning', 'high similarity match')}",
-                            'success'
-                        )
-                        
-                        # Report progress for UI
-                        if progress_callback:
-                            progress_callback('cached_result_reused', {
-                                'query_id': prev_query_id,
-                                'confidence': confidence,
-                                'reasoning': cached_info.get('reasoning', 'Near-identical query detected'),
-                                'message': f'Found cached result from previous query (confidence: {confidence:.2f}). Returning immediately.'
-                            })
-                        
-                        # Return the cached result directly (add a flag so UI can indicate reuse)
-                        reused_result = {
-                            'type': 'particular_insight',
-                            'status': 'success',
-                            'intent': intent_result,
-                            'intent_result': intent_result,
-                            'insight_result': cached_result,
-                            'insight': cached_result.get('insight'),
-                            'data_summary': cached_result.get('data_summary', {}),
-                            'visualization': cached_result.get('visualization', ''),
-                            'code_file': cached_result.get('query_code_file'),
-                            'insight_file': cached_result.get('insight_file'),
-                            'plot_file': cached_result.get('plot_files', [None])[0] if cached_result.get('plot_files') else None,
-                            'plot_files': cached_result.get('plot_files', []),
-                            'confidence': cached_result.get('confidence', confidence),
-                            'cached_from_query_id': prev_query_id,
-                            'cache_confidence': confidence,
-                            'cache_reasoning': cached_info.get('reasoning', 'High similarity match')
-                        }
-                        
-                        # Still save this query to context (marks that we answered it via cache)
-                        if self.conversation_context:
-                            try:
-                                query_id_to_save = context.get('query_id', f"q{self.query_counter}")
-                                # Create a lightweight result entry that references the cached result
-                                cache_reference_result = {
-                                    'status': 'success',
-                                    'cached_from': prev_query_id,
-                                    'cache_confidence': confidence,
-                                    'insight': cached_result.get('insight'),
-                                    'data_summary': cached_result.get('data_summary', {}),
-                                    'query_code_file': cached_result.get('query_code_file'),
-                                    'data_cache_file': cached_result.get('data_cache_file'),
-                                    'plot_files': cached_result.get('plot_files', [])
-                                }
-                                self.conversation_context.add_query_result(
-                                    query_id=query_id_to_save,
-                                    user_query=query,
-                                    result=cache_reference_result
-                                )
-                                print(f"[Agent] Saved cache reference to conversation context (query_id={query_id_to_save}, cached_from={prev_query_id})")
-                            except Exception as e:
-                                print(f"[Agent] Warning: Could not save cache reference: {e}")
-                        
-                        return reused_result
-                    else:
-                        add_system_log(
-                            f"[FAST-PATH] Could not retrieve cached result for query {prev_query_id}. Falling back to normal flow.",
-                            'warning'
-                        )
-                else:
-                    add_system_log(
-                        "[FAST-PATH] No conversation context available. Falling back to normal flow.",
-                        'warning'
-                    )
-            else:
-                # Medium confidence (0.7-0.95) - continue with current behavior (LLM generates lightweight code)
-                add_system_log(
-                    f"[CACHE-HINT] Medium-confidence cached data found (confidence={confidence:.2f}, 0.7 ≤ c < 0.95). "
-                    f"Will pass to generator LLM to create lightweight NPZ-loading code.",
-                    'info'
-                )
         
         # Report that we're starting insight extraction
         if progress_callback:
@@ -776,5 +1075,5 @@ class AnimationAgent:
             'action': 'exit',
             'message': 'Thank you for using the system. Goodbye!'
         }
-    
+
    

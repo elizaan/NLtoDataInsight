@@ -110,7 +110,7 @@ class InsightFinalizerAgent:
         if plot_evaluation['needs_revision'] and not self.plot_revised and executor:
             add_system_log("Plot quality can be improved - requesting revision...", "info")
             
-            revised_plots_list, revision_success = self._revise_plots(
+            revised_plots_list, revision_success, revised_plot_code = self._revise_plots(
                 plot_code_file=plot_code_file,
                 data_cache_file=data_cache_file,
                 feedback=plot_evaluation['revision_feedback'],
@@ -119,6 +119,14 @@ class InsightFinalizerAgent:
             
             if revision_success and revised_plots_list and len(revised_plots_list) > 0:
                 plot_files = revised_plots_list
+                # If the reviser returned a revised plot-code file path, update it so callers
+                # (e.g., the generator) can present the revised code to the user.
+                try:
+                    if revised_plot_code:
+                        plot_code_file = revised_plot_code
+                except Exception:
+                    pass
+
                 plots_were_revised = True
                 self.plot_revised = True
                 add_system_log(f"Plot revision complete: {len(plot_files)} revised plots", "success")
@@ -148,6 +156,7 @@ class InsightFinalizerAgent:
             'insight_text': insight_text,
             'final_answer': final_answer,
             'plot_files': plot_files,
+            'plot_code_file': plot_code_file,
             'plot_evaluation': plot_evaluation,
             'plots_revised': plots_were_revised  # Signal to generator/UI
         }
@@ -307,7 +316,7 @@ Be strict but fair. Only set needs_revision=true if a SIGNIFICANT improvement is
                 current_code = f.read()
         except Exception:
             add_system_log("Could not read plot code file for revision", "error")
-            return ([], False)
+            return ([], False, None)
         
         # Extract original plot filenames from the current code to provide as examples
         import re
@@ -522,7 +531,7 @@ Output ONLY the complete Python code in <plot_code></plot_code> tags.
                         # Provide final feedback and return failure
                         feedback = f"PLOT REVISION FAILED AFTER {max_plot_attempts} ATTEMPTS. Last stderr:\n{combined_output}"
                         conv_hist.append({"role": "user", "content": feedback})
-                        return ([], False)
+                        return ([], False, None)
 
                     # Build targeted feedback for next attempt
                     if not result.get('success') and ('Empty code' in result.get('error', '') or 'Empty code' in stderr or 'empty response' in stderr.lower()):
@@ -563,19 +572,19 @@ Output ONLY the complete Python code in <plot_code></plot_code> tags.
 
                 if revised_plots:
                     add_system_log(f"Found {len(revised_plots)} revised plots: {[p.name for p in revised_plots]}", "success")
-                    return (revised_plots, True)
+                    return (revised_plots, True, revised_plot_file)
                 else:
                     add_system_log(f"Revision executed but no *_revised.png files found in {plot_dir} with timestamp {timestamp}", "warning")
                     # Prepare feedback and try again unless we're out of attempts
                     if plot_attempts >= max_plot_attempts:
                         add_system_log(f"Plot revision produced no files after {max_plot_attempts} attempts", "error")
-                        return ([], False)
+                        return ([], False, None)
                     conv_hist.append({"role": "user", "content": f"Revision executed but no *_revised.png files were created. Please ensure plt.savefig(..._revised.png) is called and files are written to the plots directory (expected timestamp: {timestamp})."})
                     continue
                 
         except Exception as e:
             add_system_log(f"Plot revision failed: {e}", "error")
-            return ([], False)
+            return ([], False, None)
     
     
     def _describe_plots(self, plot_files: List[Path]) -> str:

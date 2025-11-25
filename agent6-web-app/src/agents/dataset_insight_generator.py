@@ -3,7 +3,7 @@ Dataset Insight Generator - LLM-Driven Intelligence
 LLM decides strategy, aggregation, plots, and self-validates
 """
 from langchain_openai import ChatOpenAI
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 import json
 import os
 import sys
@@ -118,6 +118,212 @@ class DatasetInsightGenerator:
         
         return dirs
     
+    def _extract_cache_info(self, intent_result: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Extract cache info from intent_result (in either of two locations)"""
+        cache_info = intent_result.get('llm_pre_insight_analysis', {}).get('reusable_cached_data')
+        if not cache_info:
+            cache_info = intent_result.get('reusable_cached_data')
+        return cache_info
+
+    def _handle_derived_stat_cache(
+        self,
+        user_query: str,
+        cache_info: Dict[str, Any],
+        dataset_info: Dict[str, Any],
+        intent_result: Dict[str, Any],
+        progress_callback: callable = None
+    ) -> Dict[str, Any]:
+        """
+        Handle DERIVED_STAT cache: Generate insight from previous data_summary.
+        
+        NO code generation! Only create new insight text that answers current query
+        using previous query's data_summary.
+        
+        Example:
+            Q1: "show temp trend" → data_summary: {min: 3.2, max: 3.5, ...}
+            Q2: "what was max temp?" → Answer: "3.5" (from Q1's data_summary)
+        """
+        dataset_id = dataset_info.get('id', 'unknown')
+        prev_query_id = cache_info.get('query_id')
+        data_summary = cache_info.get('cached_summary', {})
+        prev_query = cache_info.get('previous_query', 'unknown')
+        
+        add_system_log(
+            f"[DERIVED_STAT] Answering from Q{prev_query_id}'s data_summary",
+            'info'
+        )
+        
+        # Get directories and paths
+        dirs = self._get_dataset_dirs(dataset_id)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        insight_file = dirs['insights'] / f"insight_{timestamp}.txt"
+        
+        # Use previous query's files (NO new code generation!)
+        prev_result = cache_info.get('cached_result', {})
+        prev_plot_files = prev_result.get('plot_files', [])
+        prev_query_code = prev_result.get('query_code_file', '')
+        prev_plot_code = prev_result.get('plot_code_file', '')
+        prev_npz_file = prev_result.get('data_cache_file', '')
+        
+        add_system_log(
+            f"[DERIVED_STAT] Reusing previous files:\n"
+            f"  Plots: {len(prev_plot_files)}\n"
+            f"  Query code: {Path(prev_query_code).name if prev_query_code else 'none'}\n"
+            f"  NPZ: {Path(prev_npz_file).name if prev_npz_file else 'none'}",
+            'info'
+        )
+        
+        # =========================================================================
+        # Generate insight using LLM + data_summary
+        # =========================================================================
+        
+        prompt = f"""You are a data scientist answering a query using existing data analysis.
+
+    **Context:**
+    A previous query "{prev_query}" already analyzed the data and produced:
+
+    **Data Summary:**
+    {json.dumps(data_summary, indent=2)}
+
+    **Current Query:**
+    "{user_query}"
+
+    **Your Task:**
+    Write a comprehensive, professional insight that answers the CURRENT query using information from the data summary above.
+
+    **Guidelines:**
+    1. Answer the current query directly and specifically
+    2. Reference relevant statistics from the data_summary
+    3. Explain what the numbers mean in context
+    4. Acknowledge what analysis was previously done
+    5. Be precise with numbers and units
+    6. Write in professional scientific tone
+
+    **Example:**
+
+    Previous Query: "show temperature trend in Agulhas region"
+    Data Summary: {{"temperature_range": {{"min": 18.2, "max": 24.7}}, "region": "Agulhas", "time_period": "Jan 2020"}}
+    Current Query: "what is the highest temperature?"
+
+    Good Answer:
+    "Based on the temperature analysis of the Agulhas region in January 2020, the highest temperature recorded was 24.7°C. This maximum value represents the peak thermal condition observed during the study period in this region, which is characterized by warm waters from the Agulhas Current system."
+
+    **Now generate your insight for the current query:**
+
+    Current Query: "{user_query}"
+
+    Write a comprehensive scientific insight (2-4 paragraphs):"""
+        
+        try:
+            # Call LLM to generate insight
+            response = self.llm.invoke(prompt)
+            insight_text = response.content.strip()
+            
+            # Save insight to file
+            insight_file.parent.mkdir(parents=True, exist_ok=True)
+            with open(insight_file, 'w', encoding='utf-8') as f:
+                f.write(insight_text)
+            
+            add_system_log(
+                f"[DERIVED_STAT] Generated insight ({len(insight_text)} chars)",
+                'success'
+            )
+            
+            # Return result using previous plots and codes
+            return {
+                'status': 'success',
+                'insight': insight_text,
+                'data_summary': data_summary,
+                'visualization': f"Visualizations from previous query '{prev_query}'",
+                'query_code_file': prev_query_code,
+                'plot_code_file': prev_plot_code,
+                'insight_file': str(insight_file),
+                'plot_files': prev_plot_files,
+                'data_cache_file': prev_npz_file,
+                'num_plots': len(prev_plot_files),
+                'confidence': cache_info.get('confidence', 0.9),
+                'cache_tier': 'derived_stat',
+                'cached_from_query_id': prev_query_id,
+                'analysis': {
+                    'analysis_type': 'derived_stat',
+                    'reasoning': cache_info.get('reasoning', ''),
+                    'previous_query': prev_query,
+                    'reused_plots': True,
+                    'reused_code': True
+                }
+            }
+            
+        except Exception as e:
+            add_system_log(f"[DERIVED_STAT] Failed: {e}", 'error')
+            return {
+                'status': 'error',
+                'message': f'Failed to generate insight from data_summary: {str(e)}',
+                'confidence': 0.0
+            }
+
+    def _build_reusable_npz_instruction(self, cache_info: Dict[str, Any]) -> str:
+        """
+        Build instruction for REUSABLE_NPZ cache level.
+        
+        Tells LLM to use cached NPZ intelligently:
+        - Can just read existing NPZ if info is there
+        - Can read NPZ + do new query if needed
+        """
+        npz_file = cache_info.get('npz_file')
+        prev_query = cache_info.get('previous_query', 'unknown')
+        data_summary = cache_info.get('cached_summary', {})
+        
+        instruction = f"""
+    ════════════════════════════════════════════════════════════════
+     **CRITICAL: REUSABLE CACHED NPZ AVAILABLE**
+    ════════════════════════════════════════════════════════════════
+
+    Previous query: "{prev_query}"
+    Cached NPZ: {npz_file}
+
+    Previous Data Summary:
+    {json.dumps(data_summary, indent=2)}
+
+    **YOUR OPTIONS:**
+
+    **Option 1: JUST READ the NPZ (if data is already there)**
+    If the NPZ contains what you need, just load and analyze it.
+    ```python
+    import numpy as np
+    data = np.load('{npz_file}')
+    # Inspect what's available
+    print("Available:", data.files)
+    # Use the data
+    variable = data['variable']  # or whatever key exists there
+    ```
+
+    **Option 2: READ NPZ + NEW QUERY (if you need additional data)**
+    Load cached data to get context (e.g., timestep of max), then query new variable.
+    ```python
+    import numpy as np
+    # 1. Load cached data
+    cached = np.load('{npz_file}')
+    variable = cached['variable']  # or whatever key exists there
+
+    # 2. Find what you need from cached data
+
+    # 3. Query NEW data at something found in cached data
+    import xarray as xr
+    ds = xr.open_zarr(dataset_path)
+    salinity = ds['Salinity'].isel(time=timestep).values
+    ```
+
+    **RULES:**
+    1. **ALWAYS inspect the NPZ first:** `print(data.files, data['key'].shape)`
+    2. **Be intelligent:** If data is in NPZ, use it! Don't re-query unnecessarily
+    3. **Save result to:** {cache_info.get('new_npz_file', 'data.npz')}
+
+    Previous query reasoning: {cache_info.get('reasoning', 'N/A')}
+    ════════════════════════════════════════════════════════════════
+    """
+        return instruction
+    
+    
     def generate_insight(
         self,
         user_query: str,
@@ -139,6 +345,32 @@ class DatasetInsightGenerator:
         dataset_name = dataset_info.get('name', 'Unknown Dataset')
         
         add_system_log(f"Starting LLM-driven insight generation for: {dataset_id}", "info")
+        
+        cache_info = self._extract_cache_info(intent_result)
+    
+        if cache_info:
+            cache_level = cache_info.get('cache_level')
+            
+            # DERIVED_STAT: Answer from data_summary (no code!)
+            if cache_level == 'DERIVED_STAT':
+                add_system_log(
+                    f"[Generator] DERIVED_STAT detected - answering from data_summary",
+                    'info'
+                )
+                return self._handle_derived_stat_cache(
+                    user_query=user_query,
+                    cache_info=cache_info,
+                    dataset_info=dataset_info,
+                    intent_result=intent_result,
+                    progress_callback=progress_callback
+                )
+            
+            # REUSABLE_NPZ: Will add instruction to prompt below
+            elif cache_level == 'REUSABLE_NPZ':
+                add_system_log(
+                    f"[Generator] REUSABLE_NPZ detected - will use cached NPZ",
+                    'info'
+                )
         
         # Get output directories
         dirs = self._get_dataset_dirs(dataset_id)
@@ -167,11 +399,6 @@ class DatasetInsightGenerator:
         # This will be injected into the system prompt so the generator LLM can leverage
         # previous analysis/provenance. Truncate very long texts to keep prompt size reasonable.
         pre_insight = intent_result.get('llm_pre_insight_analysis', None)
-        if pre_insight is None:
-            pre_insight_summary = "None"
-        else:
-            # keep a large but bounded portion (15k chars) to avoid excessively long prompts
-            pre_insight_summary = str(pre_insight)
         
         variables = dataset_info.get('variables', [])
         spatial_info = dataset_info.get('spatial_info', {})
@@ -199,6 +426,11 @@ class DatasetInsightGenerator:
         except Exception:
             geo_file_path_str = geo_filename
 
+
+        profile = None
+        if self.dataset_profile:
+            profile = json.dumps(self.dataset_profile, indent=2)
+            
         # Build time constraint section for system prompt - LLM DECIDES OPTIMIZATION
         if user_time_limit:
             time_constraint_section = f'''**TIME CONSTRAINT**: User specified {user_time_limit} minutes.
@@ -208,19 +440,20 @@ class DatasetInsightGenerator:
 - Spatial dimensions: {x} × {y} × {z} = {total_voxels:,} points per timestep
 - Temporal: {total_timesteps} timesteps ({time_units})
 - Available time: {user_time_limit * 60} seconds
-
-**YOU DECIDE:** Choose the quality level that balances speed and correctness for THIS specific query:
-- For simple statistics (min/max/mean): More aggressive subsampling may be acceptable
-- For visualizations or spatial patterns: Need better resolution to see features
-- Consider query complexity, data characteristics, and time budget
-- Set query timeout to {user_time_limit * 60 * 0.8:.0f} seconds (80% of limit for buffer)
-
-**EXPLAIN YOUR CHOICE** in the insight text (e.g., "I chose ..... because...")'''
+'''
         else:
             time_constraint_section = '**NO TIME CONSTRAINT** specified. '
 
+        
+        reusable_npz_instruction = ""
+        cache_info = self._extract_cache_info(intent_result)
+        if cache_info and cache_info.get('cache_level') == 'REUSABLE_NPZ':
+            # Add new NPZ path
+            cache_info['new_npz_file'] = data_cache_file_str
+            reusable_npz_instruction = self._build_reusable_npz_instruction(cache_info)
+
         # Build system prompt - LLM DECIDES EVERYTHING
-        system_prompt = f"""You are an expert data analyst with full autonomy to solve the user's question.
+        system_prompt = f"""You are an expert data scientist analyzing with full autonomy to solve the user's question.
 
           **USER QUESTION:** {user_query}
 
@@ -229,83 +462,15 @@ class DatasetInsightGenerator:
           - Intent Reasoning: {reasoning}
           - Plot Hints: {json.dumps(plot_hints, indent=2)}
 
-          **CONVERSATION CONTEXT:**
-          {conversation_context if conversation_context else "This is the first query in this conversation."}
+          ** Empirical ttest on dataset to understand performance characteristics: **
+            {profile if profile else 'No dataset profile available.'}
 """
-        
-        # NEW: Inject cached dataset profile if available
-        if self.dataset_profile:
-            profile_section = f"""
-          **DATASET PROFILE (PRE-COMPUTED, PERMANENT KNOWLEDGE):**
-          This profile was generated once and cached. Use it to make intelligent decisions.
-          
-          {json.dumps(self.dataset_profile, indent=2)}
-          
-          **HOW TO USE THIS PROFILE:**
-          - Check 'benchmark_results' to understand performance results for empirical tests done on this dataset
-          - Be aware of 'potential_issues' when interpreting results
-"""
-            system_prompt += profile_section
+        system_prompt += reusable_npz_instruction
         
         system_prompt += f"""
-          **PRE-INSIGHT LLM ANALYSIS (from intent parser / extractor):**
-          {pre_insight_summary}
+        **CRITICAL: SAVE METADATA FOR FOLLOW-UP QUERIES**
 
-          **CRITICAL: Using Previous Results**
-          When answering the user's question, ALWAYS leverage any relevant results from previous queries in this conversation to find out if the query is a follow-up. Follow these steps:
-          1. **Check conversation context above** for relevant past results
-          2. **Extract the specific values** you need (e.g., if previous query found variable = y, use that exact value)
-          3. **Check if previous query saved an npz file** with rich metadata
-          4. **Load and inspect the npz file** to see what data is already available
-          5. **Reuse saved data** instead of re-querying the dataset
-
-                **How to Load and Use Previous NPZ Files:**
-
-                ```python
-                import numpy as np
-
-                # Example: Previous query saved '/path/to/data_TIMESTAMP.npz'
-                # Load it and inspect contents
-                data = np.load('/path/to/previous_query.npz')
-                print("Available keys:", data.files)  # Shows what's saved
-
-
-                # Example: "When was minimum target seen?"
-                # Instead of re-scanning, just use the saved timestep:
-                print(f"Min occurred at timestep: {{timestep}}")
-                # Convert to date using dataset temporal info
-
-                # Example: "Where was minimum target seen?"
-                # Instead of re-scanning, find location in saved spatial data:
-                y_idx, x_idx = np.unravel_index(np.argmin(spatial_data), spatial_data.shape)
-                # Convert to lat/lon using helper functions
-                ```
-
-                **When to Load Previous NPZ vs Re-query:**
-                - If previous query found the exact value you need (max, min, stats, etc.) - Load npz
-                - If npz contains target_timestep - Use it for "when?" queries
-                - If npz contains target_x, target_y - Use it for "where?" queries
-                - If current query needs different time range or region - Re-query
-
-                Examples of context-aware queries:
-                - User asks: "what is the maximum x?" - You find that suppose m
-                - User then asks: "when/where was this highest x seen?" - You should:
-                    - Check context: see that max_x = m was found AND npz file path
-                    - **Load the npz file first**: `data = np.load(npz_path)`
-                    - **Check if target_timestep exists**: if yes, use it directly!
-                    - Do NOT re-scan entire dataset - use the saved metadata!
-
-                - User asks: "where was that highest x seen?" → You should:
-                    - Load previous npz with target_x, target_y
-                    - Convert grid indices to lat/lon using xy_to_latlon() helper
-                    - Report approximate geographic location or even both
-
-                **IMPORTANT**: If conversation context contains values like "max", "min", "peak", "average" or any statistical values, etc., ALWAYS use them rather than recomputing!
-
-                **═══════════════════════════════════════════════════════════════════════**
-                **CRITICAL: SAVE METADATA FOR FOLLOW-UP QUERIES**
-
-                When finding extremes (max/min/peaks/ specific statistics), you MUST save additional metadata:
+        When finding extremes (max/min/peaks/ specific statistics), you MUST save additional metadata:
                 ```python
                 ```
 np.savez(
@@ -319,7 +484,7 @@ np.savez(
 )
 ```
 
-This makes follow-up queries instant instead of timing out!
+This will make follow-up queries to check if caching possible or not instead of timing out!
 **═══════════════════════════════════════════════════════════════════════**
 
 **DATASET INFORMATION:**
@@ -349,8 +514,6 @@ You have extensive knowledge of Earth geography including:
 - **Seas and water bodies**: Mediterranean Sea, Caribbean Sea, Arabian Sea, Bay of Bengal, Red Sea, etc.
 - **Ocean currents**: Gulf Stream, Kuroshio, Agulhas, Antarctic Circumpolar Current, etc.
 - **Oceanographic features**: Eddies, gyres, upwelling zones, fronts, rings
-- **Continental boundaries**: Coastlines, straits, channels, island chains
-- **Climate zones**: Tropics, subtropics, temperate, polar regions
 
 **How to Handle Geographic Queries:**
 
@@ -612,27 +775,19 @@ You have TWO separate code scripts to write:
 
 
 **STEP 2: DECIDE YOUR STRATEGY**
-Consider:
+- Choose the quality level that balances speed and correctness for THIS specific query:
+    - Use empirical test results to decide on quality/resolution decision from {profile} based on user query
+- Consider query complexity, data characteristics, and time budget
+- Set query timeout to {user_time_limit * 60 * 0.8:.0f} seconds (80% of limit for buffer)
 - within {user_time_limit} minutes, if {total_timesteps:,} timesteps is too many → How should you aggregate? (daily? weekly? monthly?)
   - choose time intervals very wisely for faster output
 - If spatial resolution is too high → What quality/resolution level?
-- What's the smartest way to sample without losing the answer?
-
-Examples of intelligent strategies for very large spatial and temporal datasets:
-- Query asks "highest target date" with 10,366 hourly steps
-  → BAD: Check all 10,366 (slow, cluttered)
-  → GOOD: Aggregate by day/week/month, find max in each period, much faster
-  
-- Query asks "target at specific location" 
-  → GOOD: Just query that one point at all times, fast
-  
-- Query asks "global average over time"
-  → GOOD: Use coarse spatial resolution, compute means, aggregate temporally wisely
+- What's the smartest way to sample without losing the answer's validity?
 
 **STEP 3: WRITE SMART QUERY CODE**
 Your code should:
 2. Apply YOUR intelligent sampling/aggregation strategy
-3. Extract minimal data needed for ALL plot hints
+3. Extract data needed for ALL plot hints
 4. **Save rich metadata** (see above) so follow-up queries are instant
 5. Save intermediate results to: `{data_cache_file_str}`
 6. Print JSON summary to stdout
@@ -744,9 +899,9 @@ If the plotting is challenging with available packages, do your best with what w
         * seaborn `heatmap`: either plot `np.flipud(arr)` or use the returned `ax` and call `ax.invert_yaxis()` so the display matches `origin='lower'` semantics.
         * pcolormesh/contourf: supply explicit X/Y coordinate arrays with Y increasing (northward/upwards) or, if supplying only the array, flip it with `np.flipud()` to maintain the row-0-bottom convention.
         * quiver/streamplot: build X/Y coordinate arrays that match the heatmap's extent and orientation (use `np.meshgrid(x_coords, y_coords)` where `y_coords` is ascending). Do NOT assume array row ordering — derive coordinates from `x_range`/`y_range` or `extent`.
-     - Always document the chosen origin/orientation in the plot title or caption (e.g., "Plotted with origin='lower' — row 0 at bottom"). If you must use `origin='upper'`, explicitly justify and document it.
 - Use log scale if data spans several orders of magnitude
 - folow rule for other plots too
+- Always document resolution reduction values in plot titles/captions
 
 **Data Validation:**
 - After loading npz file, ALWAYS inspect keys: `print("Available keys:", data.files)`
@@ -1411,7 +1566,10 @@ Make sure ALL necessary imports are included at the top.
                                 # Extract finalized results
                                 insight_text = finalization_result['insight_text']
                                 final_answer = finalization_result['final_answer']
-                                plot_files = finalization_result['plot_files']  # May be revised
+                                # Finalizer may return revised plot files; fall back to previously-detected plot_files
+                                plot_files = finalization_result.get('plot_files', plot_files)
+                                # Finalizer may also provide a revised plot_code_file (the revised code file path)
+                                plot_code_file = finalization_result.get('plot_code_file', plot_code_file)
                                 plots_revised = finalization_result.get('plots_revised', False)  # Track revision status
                                 
                                 # Save insight to file

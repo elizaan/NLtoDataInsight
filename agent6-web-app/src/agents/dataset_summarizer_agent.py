@@ -55,9 +55,9 @@ class DatasetSummarizerAgent:
             documents_dir: Path to directory containing PDF research documents
         """
         self.llm = ChatOpenAI(
-            model="gpt-5",
+            model="gpt-4o",
             api_key=api_key,
-            temperature=0.3  # Slightly creative but still focused
+            temperature=0.1  # Slightly creative but still focused
         )
         
         self.output_parser = StrOutputParser()
@@ -67,8 +67,8 @@ class DatasetSummarizerAgent:
         self.vector_store = None
         self.embeddings = OpenAIEmbeddings(api_key=api_key)
         
-        # Load and index documents if available
-        self._load_documents()
+    # Defer loading/indexing documents until RAG is actually needed
+    # (lazy load to avoid expensive indexing at startup)
         
         # Define the summarization prompt
         self.system_prompt = """You are an expert oceanographic data scientist who explains complex datasets in an engaging, accessible way.
@@ -173,7 +173,7 @@ Return a well-structured paragraph summary that is informative and engaging.
             
             # Create vector store
             self.vector_store = FAISS.from_documents(splits, self.embeddings)
-            add_system_log(f"✓ Indexed {len(splits)} document chunks for RAG", 'success')
+            add_system_log(f"Indexed {len(splits)} document chunks for RAG", 'success')
             
         except Exception as e:
             add_system_log(f"Failed to load documents for RAG: {e}", 'error')
@@ -190,8 +190,13 @@ Return a well-structured paragraph summary that is informative and engaging.
         Returns:
             Concatenated research context string
         """
+        # Lazy-load documents / vector store if not already available.
         if not self.vector_store:
-            return "No research papers available for context."
+            # Attempt to load and index documents now. This avoids doing this work
+            # at import/agent-init time when summaries may be cached.
+            self._load_documents()
+            if not self.vector_store:
+                return "No research papers available for context."
         
         try:
             # Build search query from dataset metadata
@@ -304,7 +309,7 @@ Return a well-structured paragraph summary that is informative and engaging.
             # Generate summary
             try:
                 try:
-                    model_name = getattr(self.llm, 'model', None) or getattr(self.llm, 'model_name', 'gpt-5')
+                    model_name = getattr(self.llm, 'model', None) or getattr(self.llm, 'model_name', 'gpt-4o')
                     msgs = [
                         {"role": "system", "content": self.system_prompt},
                         {"role": "user", "content": f"Please provide a summary of this dataset. Dataset profile: {profile_str[:1000]}"}
@@ -322,7 +327,7 @@ Return a well-structured paragraph summary that is informative and engaging.
                 'user_query': user_query
             })
             
-            add_system_log("✓ Dataset summary generated successfully", 'success')
+            add_system_log("Dataset summary generated successfully", 'success')
             
             return {
                 'status': 'success',

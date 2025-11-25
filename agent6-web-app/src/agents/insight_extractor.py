@@ -227,7 +227,7 @@ Rules:
                 # Create a synthetic analysis result to maintain API compatibility
                 analysis = {
                     'analysis_type': 'data_query',
-                    'target_variables': cached_info.get('cached_variables', []),
+                    'data_summary': cached_info.get('cached_summary', {}),
                     'query_type': 'cached_data_reuse',
                     'reasoning': cached_info['reasoning'],
                     'confidence': cached_info['confidence'],
