@@ -118,7 +118,7 @@ class AnimationAgent:
             set_agent,
             get_agent
         ]
-
+        
 
 
         system_prompt = """You are an agent. Be concise and helpful.
@@ -278,48 +278,19 @@ class AnimationAgent:
 **Your Tasks:**
 1. **Resolve References**: If the current query contains pronouns (it, that, this, same), determine what they refer to by looking at recent queries.
 
-2. **Check Cache Reusability**: Determine if any previous query's cached NPZ data can answer the current query.
+2. **Cache Reusability**: Determine if any of the recent queries' cached NPZ data can be reused to answer the current query. Consider:
 
-**Cache CAN be reused if:**
-- Current query asks for **derived statistics** from already-loaded data
-  Examples: "when was max?", "where was highest?", "what was the average?"
-- Current query asks about **same variable(s) AND same/subset time period**
-  Examples: Previous loaded "temp Jan-March", current asks "temp in February"
-- Current query is just a **rephrasing** of a previous query
+1. **IDENTICAL** - Previous results fully answer current query
+2. **DERIVED_STAT** - Answer available in previous {recent_context} data_summary (no code needed!)
+3. **REUSABLE_NPZ** - Need to generate new code from cached NPZ
+4. **NOT_REUSABLE** - Need to load new data
 
-**Cache CANNOT be reused if:**
-- Current query asks about **different variable(s)**
-  Examples: Previous loaded "temperature", current asks "salinity"
-- Current query asks about **different or larger time period**
-  Examples: Previous loaded "March only", current asks "Jan-March"
-- Current query needs **different data that wasn't loaded**
-
-**Examples:**
-
-Example 1: Cache REUSABLE
-Previous: "show temperature trend in March 2020" (loaded: temp, March 2020)
-Current: "when was temperature highest?"
-→ can_reuse_cache: true, because "when highest" = argmax(temperature data from March)
-
-Example 2: Cache REUSABLE with coreference
-Previous Q1: "show variable x in March 2020" (loaded: x, March 2020)
-Previous Q2: "when was x highest?"
-Current: "where was it highest?"
-→ resolved_query: "where was variable x highest in March 2020?"
-→ can_reuse_cache: true, because Q1 has x data with spatial coordinates
-
-Example 3: Cache NOT reusable - different time
-Previous: "show temp in March 2020" (loaded: temp, March only)
-Current: "show temp from January to March 2020"
-→ can_reuse_cache: false, because previous only has March, not Jan-Feb
-
-Example 4: Cache NOT reusable - different variable
-Previous: "show temperature" (loaded: temperature)
-Current: "show salinity"
-→ can_reuse_cache: false, because different variable
+**Key question for DERIVED_STAT:**
+Can you answer the current query using ONLY the data_summary from a previous query?
 
 **Output ONLY valid JSON:**
 {{
+    "cache_level": "IDENTICAL" | "DERIVED_STAT" | "REUSABLE_NPZ" | "NOT_REUSABLE",
     "resolved_query": "explicit standalone query with references resolved",
     "can_reuse_cache": true/false,
     "reusable_from_query_id": "q1" or null,
@@ -344,7 +315,7 @@ DO NOT include markdown code blocks, just raw JSON."""
             result = json.loads(response_text)
             
             # Validate result
-            if not result.get('can_reuse_cache'):
+            if not result.get('can_reuse_cache') or result.get('cache_level') == 'NOT_REUSABLE':
                 add_system_log("[Cache] LLM determined cache cannot be reused", 'info')
                 return None
             
@@ -379,9 +350,29 @@ DO NOT include markdown code blocks, just raw JSON."""
             # Extract cached data info
             data_summary = reusable_entry['result'].get('data_summary', {})
             
+            cached_result = reusable_entry['result']
+            if result['cache_level'] == 'IDENTICAL':
+                add_system_log(
+                    f"[Cache TIER 1] IDENTICAL query detected from {reusable_query_id} - returning cached result directly!",
+                    'success'
+                )
+                # Return a cache_info that explicitly marks the level as IDENTICAL
+                # and references the correct originating query id so callers can
+                # short-circuit and return the cached result without further parsing.
+                cache_info = {
+                        'cache_level': 'IDENTICAL',
+                        'query_id': reusable_query_id,
+                        'cached_result': cached_result,
+                        'reasoning': result['reasoning'],
+                        'previous_query': reusable_entry['user_query']
+                }
+                return cache_info
+            
             cache_info = {
+                'cache_level': result['cache_level'],
                 'query_id': reusable_query_id,
                 'npz_file': npz_file,
+                'cached_result': reusable_entry['result'],
                 'cached_summary': data_summary,
                 'confidence': result['confidence'],
                 'reasoning': result['reasoning'],
@@ -610,7 +601,51 @@ Queries are identical if they ask for the same analysis on the same data, even i
         if self.conversation_context and self.conversation_context.history:
             cache_info = self._resolve_and_check_recent_cache(user_message, context)
             
-            if cache_info:
+            if cache_info.get('cache_level') in ['IDENTICAL']:
+                cached_result = cache_info['cached_result']
+                prev_query_id = cache_info['query_id']
+
+                if progress_callback:
+                    progress_callback('cached_result_identical', {
+                        'query_id': prev_query_id,
+                        'reasoning': cache_info['reasoning'],
+                        'message': f'Found identical query from {prev_query_id}. Returning cached result.'
+                    })
+
+                 # Save reference to conversation history
+                if self.conversation_context:
+                    cache_reference = {
+                        'status': 'success',
+                        'cached_from': prev_query_id,
+                        'cache_tier': 'identical',
+                        'insight_file': cached_result.get('insight'),
+                        'data_summary': cached_result.get('data_summary', {}),
+                        'plot_files': cached_result.get('plot_files', []),
+                        'query_code_file': cached_result.get('query_code_file', ''),
+                        'plot_code_file': cached_result.get('plot_code_file', '')
+                    }
+                    self.conversation_context.add_query_result(
+                        query_id=query_id,
+                        user_query=user_message,
+                        result=cache_reference
+                    )
+                # Return cached result directly
+                return {
+                    'type': 'particular_insight',
+                    'status': 'success',
+                    'visualization': cached_result.get('visualization', ''),
+                    'insight': cached_result.get('insight'),
+                    'insight_file': cached_result.get('insight'),
+                    'data_summary': cached_result.get('data_summary', {}),
+                    'plot_files': cached_result.get('plot_files', []),
+                    'query_code_file': cached_result.get('query_code_file', ''),
+                    'plot_code_file': cached_result.get('plot_code_file', ''),
+                    'cached_from_query_id': prev_query_id,
+                    'cache_tier': 'identical',
+                    'cache_reasoning': cache_info['reasoning']
+                }
+
+            else:
                 # Recent cache found! Set reusable_cached_data for insight_extractor
                 add_system_log(
                     f"[Cache] Setting reusable_cached_data for insight_extractor",
@@ -648,9 +683,11 @@ Queries are identical if they ask for the same analysis on the same data, even i
                         'status': 'success',
                         'cached_from': prev_query_id,
                         'cache_tier': 'identical',
-                        'insight': cached_result.get('insight'),
+                        'insight_file': cached_result.get('insight'),
                         'data_summary': cached_result.get('data_summary', {}),
-                        'plot_files': cached_result.get('plot_files', [])
+                        'plot_files': cached_result.get('plot_files', []),
+                        'query_code_file': cached_result.get('query_code_file', ''),
+                        'plot_code_file': cached_result.get('plot_code_file', '')
                     }
                     self.conversation_context.add_query_result(
                         query_id=query_id,
@@ -666,7 +703,8 @@ Queries are identical if they ask for the same analysis on the same data, even i
                     'data_summary': cached_result.get('data_summary', {}),
                     'visualization': cached_result.get('visualization', ''),
                     'plot_files': cached_result.get('plot_files', []),
-                    'plot_file': cached_result.get('plot_files', [None])[0] if cached_result.get('plot_files') else None,
+                    'query_code_file': cached_result.get('query_code_file', ''),
+                    'plot_code_file': cached_result.get('plot_code_file', ''),
                     'cached_from_query_id': prev_query_id,
                     'cache_tier': 'identical',
                     'cache_reasoning': identical_cache['reasoning']

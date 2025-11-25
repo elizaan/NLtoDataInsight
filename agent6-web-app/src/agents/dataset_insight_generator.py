@@ -3,7 +3,7 @@ Dataset Insight Generator - LLM-Driven Intelligence
 LLM decides strategy, aggregation, plots, and self-validates
 """
 from langchain_openai import ChatOpenAI
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 import json
 import os
 import sys
@@ -118,6 +118,212 @@ class DatasetInsightGenerator:
         
         return dirs
     
+    def _extract_cache_info(self, intent_result: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Extract cache info from intent_result (in either of two locations)"""
+        cache_info = intent_result.get('llm_pre_insight_analysis', {}).get('reusable_cached_data')
+        if not cache_info:
+            cache_info = intent_result.get('reusable_cached_data')
+        return cache_info
+
+    def _handle_derived_stat_cache(
+        self,
+        user_query: str,
+        cache_info: Dict[str, Any],
+        dataset_info: Dict[str, Any],
+        intent_result: Dict[str, Any],
+        progress_callback: callable = None
+    ) -> Dict[str, Any]:
+        """
+        Handle DERIVED_STAT cache: Generate insight from previous data_summary.
+        
+        NO code generation! Only create new insight text that answers current query
+        using previous query's data_summary.
+        
+        Example:
+            Q1: "show temp trend" → data_summary: {min: 3.2, max: 3.5, ...}
+            Q2: "what was max temp?" → Answer: "3.5" (from Q1's data_summary)
+        """
+        dataset_id = dataset_info.get('id', 'unknown')
+        prev_query_id = cache_info.get('query_id')
+        data_summary = cache_info.get('cached_summary', {})
+        prev_query = cache_info.get('previous_query', 'unknown')
+        
+        add_system_log(
+            f"[DERIVED_STAT] Answering from Q{prev_query_id}'s data_summary",
+            'info'
+        )
+        
+        # Get directories and paths
+        dirs = self._get_dataset_dirs(dataset_id)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        insight_file = dirs['insights'] / f"insight_{timestamp}.txt"
+        
+        # Use previous query's files (NO new code generation!)
+        prev_result = cache_info.get('cached_result', {})
+        prev_plot_files = prev_result.get('plot_files', [])
+        prev_query_code = prev_result.get('query_code_file', '')
+        prev_plot_code = prev_result.get('plot_code_file', '')
+        prev_npz_file = prev_result.get('data_cache_file', '')
+        
+        add_system_log(
+            f"[DERIVED_STAT] Reusing previous files:\n"
+            f"  Plots: {len(prev_plot_files)}\n"
+            f"  Query code: {Path(prev_query_code).name if prev_query_code else 'none'}\n"
+            f"  NPZ: {Path(prev_npz_file).name if prev_npz_file else 'none'}",
+            'info'
+        )
+        
+        # =========================================================================
+        # Generate insight using LLM + data_summary
+        # =========================================================================
+        
+        prompt = f"""You are a data scientist answering a query using existing data analysis.
+
+    **Context:**
+    A previous query "{prev_query}" already analyzed the data and produced:
+
+    **Data Summary:**
+    {json.dumps(data_summary, indent=2)}
+
+    **Current Query:**
+    "{user_query}"
+
+    **Your Task:**
+    Write a comprehensive, professional insight that answers the CURRENT query using information from the data summary above.
+
+    **Guidelines:**
+    1. Answer the current query directly and specifically
+    2. Reference relevant statistics from the data_summary
+    3. Explain what the numbers mean in context
+    4. Acknowledge what analysis was previously done
+    5. Be precise with numbers and units
+    6. Write in professional scientific tone
+
+    **Example:**
+
+    Previous Query: "show temperature trend in Agulhas region"
+    Data Summary: {{"temperature_range": {{"min": 18.2, "max": 24.7}}, "region": "Agulhas", "time_period": "Jan 2020"}}
+    Current Query: "what is the highest temperature?"
+
+    Good Answer:
+    "Based on the temperature analysis of the Agulhas region in January 2020, the highest temperature recorded was 24.7°C. This maximum value represents the peak thermal condition observed during the study period in this region, which is characterized by warm waters from the Agulhas Current system."
+
+    **Now generate your insight for the current query:**
+
+    Current Query: "{user_query}"
+
+    Write a comprehensive scientific insight (2-4 paragraphs):"""
+        
+        try:
+            # Call LLM to generate insight
+            response = self.llm.invoke(prompt)
+            insight_text = response.content.strip()
+            
+            # Save insight to file
+            insight_file.parent.mkdir(parents=True, exist_ok=True)
+            with open(insight_file, 'w', encoding='utf-8') as f:
+                f.write(insight_text)
+            
+            add_system_log(
+                f"[DERIVED_STAT] Generated insight ({len(insight_text)} chars)",
+                'success'
+            )
+            
+            # Return result using previous plots and codes
+            return {
+                'status': 'success',
+                'insight': insight_text,
+                'data_summary': data_summary,
+                'visualization': f"Visualizations from previous query '{prev_query}'",
+                'query_code_file': prev_query_code,
+                'plot_code_file': prev_plot_code,
+                'insight_file': str(insight_file),
+                'plot_files': prev_plot_files,
+                'data_cache_file': prev_npz_file,
+                'num_plots': len(prev_plot_files),
+                'confidence': cache_info.get('confidence', 0.9),
+                'cache_tier': 'derived_stat',
+                'cached_from_query_id': prev_query_id,
+                'analysis': {
+                    'analysis_type': 'derived_stat',
+                    'reasoning': cache_info.get('reasoning', ''),
+                    'previous_query': prev_query,
+                    'reused_plots': True,
+                    'reused_code': True
+                }
+            }
+            
+        except Exception as e:
+            add_system_log(f"[DERIVED_STAT] Failed: {e}", 'error')
+            return {
+                'status': 'error',
+                'message': f'Failed to generate insight from data_summary: {str(e)}',
+                'confidence': 0.0
+            }
+
+    def _build_reusable_npz_instruction(self, cache_info: Dict[str, Any]) -> str:
+        """
+        Build instruction for REUSABLE_NPZ cache level.
+        
+        Tells LLM to use cached NPZ intelligently:
+        - Can just read existing NPZ if info is there
+        - Can read NPZ + do new query if needed
+        """
+        npz_file = cache_info.get('npz_file')
+        prev_query = cache_info.get('previous_query', 'unknown')
+        data_summary = cache_info.get('cached_summary', {})
+        
+        instruction = f"""
+    ════════════════════════════════════════════════════════════════
+     **CRITICAL: REUSABLE CACHED NPZ AVAILABLE**
+    ════════════════════════════════════════════════════════════════
+
+    Previous query: "{prev_query}"
+    Cached NPZ: {npz_file}
+
+    Previous Data Summary:
+    {json.dumps(data_summary, indent=2)}
+
+    **YOUR OPTIONS:**
+
+    **Option 1: JUST READ the NPZ (if data is already there)**
+    If the NPZ contains what you need, just load and analyze it.
+    ```python
+    import numpy as np
+    data = np.load('{npz_file}')
+    # Inspect what's available
+    print("Available:", data.files)
+    # Use the data
+    variable = data['variable']  # or whatever key exists there
+    ```
+
+    **Option 2: READ NPZ + NEW QUERY (if you need additional data)**
+    Load cached data to get context (e.g., timestep of max), then query new variable.
+    ```python
+    import numpy as np
+    # 1. Load cached data
+    cached = np.load('{npz_file}')
+    variable = cached['variable']  # or whatever key exists there
+
+    # 2. Find what you need from cached data
+
+    # 3. Query NEW data at something found in cached data
+    import xarray as xr
+    ds = xr.open_zarr(dataset_path)
+    salinity = ds['Salinity'].isel(time=timestep).values
+    ```
+
+    **RULES:**
+    1. **ALWAYS inspect the NPZ first:** `print(data.files, data['key'].shape)`
+    2. **Be intelligent:** If data is in NPZ, use it! Don't re-query unnecessarily
+    3. **Save result to:** {cache_info.get('new_npz_file', 'data.npz')}
+
+    Previous query reasoning: {cache_info.get('reasoning', 'N/A')}
+    ════════════════════════════════════════════════════════════════
+    """
+        return instruction
+    
+    
     def generate_insight(
         self,
         user_query: str,
@@ -139,6 +345,32 @@ class DatasetInsightGenerator:
         dataset_name = dataset_info.get('name', 'Unknown Dataset')
         
         add_system_log(f"Starting LLM-driven insight generation for: {dataset_id}", "info")
+        
+        cache_info = self._extract_cache_info(intent_result)
+    
+        if cache_info:
+            cache_level = cache_info.get('cache_level')
+            
+            # DERIVED_STAT: Answer from data_summary (no code!)
+            if cache_level == 'DERIVED_STAT':
+                add_system_log(
+                    f"[Generator] DERIVED_STAT detected - answering from data_summary",
+                    'info'
+                )
+                return self._handle_derived_stat_cache(
+                    user_query=user_query,
+                    cache_info=cache_info,
+                    dataset_info=dataset_info,
+                    intent_result=intent_result,
+                    progress_callback=progress_callback
+                )
+            
+            # REUSABLE_NPZ: Will add instruction to prompt below
+            elif cache_level == 'REUSABLE_NPZ':
+                add_system_log(
+                    f"[Generator] REUSABLE_NPZ detected - will use cached NPZ",
+                    'info'
+                )
         
         # Get output directories
         dirs = self._get_dataset_dirs(dataset_id)
@@ -167,11 +399,6 @@ class DatasetInsightGenerator:
         # This will be injected into the system prompt so the generator LLM can leverage
         # previous analysis/provenance. Truncate very long texts to keep prompt size reasonable.
         pre_insight = intent_result.get('llm_pre_insight_analysis', None)
-        if pre_insight is None:
-            pre_insight_summary = "None"
-        else:
-            # keep a large but bounded portion (15k chars) to avoid excessively long prompts
-            pre_insight_summary = str(pre_insight)
         
         variables = dataset_info.get('variables', [])
         spatial_info = dataset_info.get('spatial_info', {})
@@ -199,16 +426,7 @@ class DatasetInsightGenerator:
         except Exception:
             geo_file_path_str = geo_filename
 
-#         profile_section = f"""
-#           **DATASET PROFILE (PRE-COMPUTED, PERMANENT KNOWLEDGE):**
-#           This profile was generated once and cached. Use it to make intelligent decisions.
-          
-#           {json.dumps(self.dataset_profile, indent=2)}
-          
-#           **HOW TO USE THIS PROFILE:**
-#           - Check 'benchmark_results' to understand performance results for empirical tests done on this dataset
-#           - Be aware of 'potential_issues' when interpreting results
-# """
+
         profile = None
         if self.dataset_profile:
             profile = json.dumps(self.dataset_profile, indent=2)
@@ -227,9 +445,15 @@ class DatasetInsightGenerator:
             time_constraint_section = '**NO TIME CONSTRAINT** specified. '
 
         
-        
+        reusable_npz_instruction = ""
+        cache_info = self._extract_cache_info(intent_result)
+        if cache_info and cache_info.get('cache_level') == 'REUSABLE_NPZ':
+            # Add new NPZ path
+            cache_info['new_npz_file'] = data_cache_file_str
+            reusable_npz_instruction = self._build_reusable_npz_instruction(cache_info)
+
         # Build system prompt - LLM DECIDES EVERYTHING
-        system_prompt = f"""You are an expert data analyst with full autonomy to solve the user's question.
+        system_prompt = f"""You are an expert data scientist analyzing with full autonomy to solve the user's question.
 
           **USER QUESTION:** {user_query}
 
@@ -241,50 +465,7 @@ class DatasetInsightGenerator:
           ** Empirical ttest on dataset to understand performance characteristics: **
             {profile if profile else 'No dataset profile available.'}
 """
-        
-        
-        reusable_info = None
-        # cache info if any 
-        if intent_result.get('llm_pre_insight_analysis', {}).get('reusable_cached_data', []):
-            reusable_info = intent_result['llm_pre_insight_analysis']['reusable_cached_data']
-        # Path 2: Direct (skipped insight_extractor)
-        elif intent_result.get('reusable_cached_data'):  
-            reusable_info = intent_result['reusable_cached_data']
-        
-        cached_npz_file = reusable_info.get('npz_file', 'unknown')
-        matched_query = reusable_info.get('previous_query', 'unknown')
-        cache_section = f"""**CRITICAL: CACHED DATA AVAILABLE REUSE CACHED DATA**:
-            we have a cached data file: {cached_npz_file} available from a previous query: {matched_query} that can help to answer the user's question.
-            use the file to speed up your analysis and avoid re-querying the dataset.
-             
-**YOU MUST:**
-1. Load the NPZ file
-2. Inspect available keys: data.files
-3. Check shape of each array: data['key'].shape
-4. Write code based on ACTUAL structure, not assumptions
-
-**Example Pattern:**
-```python
-import numpy as np
-
-# Step 1: Load cached NPZ
-data = np.load('{cached_npz_file}')
-
-# Step 2: Inspect structure
-print("Available keys:", data.files)
-for key in data.files:
-    print(f"  {{key}}: shape={{data[key].shape}}, dtype={{data[key].dtype}}")
-# Step 3: Use the data based on actual structure
-    ```
-
-    in plot coding phase, use them correctly based on their actual shapes and contents.
-    This makes follow-up queries instant instead of timing out!
-
-    Previous query: "{reusable_info.get('previous_query')}"
-Current query: "{user_query}"
-Reasoning: {reusable_info.get('reasoning')}
-    """
-        system_prompt += cache_section
+        system_prompt += reusable_npz_instruction
         
         system_prompt += f"""
         **CRITICAL: SAVE METADATA FOR FOLLOW-UP QUERIES**
