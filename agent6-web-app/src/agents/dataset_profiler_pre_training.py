@@ -515,7 +515,12 @@ class DatasetProfilerPretraining:
                     'y_range': subset['y_range'],
                     'z_range': [0, z_dim],
                     'timestep': 0,
-                    'test_type': f'regional_subset_{subset["name"]}_single_timestep'
+                    # Use explicit naming with region size to match stored profile keys
+                    'test_type': (
+                        'regional_subset_small_region(200x200x90)_single_timestep'
+                        if subset['name'] == 'small_region' else
+                        'regional_subset_medium_region(500x500x90)_single_timestep'
+                    )
                 }
                 
                 # Test all quality levels on subset
@@ -533,13 +538,21 @@ class DatasetProfilerPretraining:
                             err = (test_result.get('error') if isinstance(test_result, dict) else 'Unknown error')
                             benchmark_results['failed_tests'].append({
                                 'quality_level': quality,
-                                'test_suite': f'regional_subset_{subset["name"]}_single_timestep',
+                                'test_suite': (
+                                    'regional_subset_small_region(200x200x90)_single_timestep'
+                                    if subset['name'] == 'small_region' else
+                                    'regional_subset_medium_region(500x500x90)_single_timestep'
+                                ),
                                 'failure_reason': err,
                                 'spatial_extent': subset,
                                 'recommendation': f'Even regional subset failed at quality {quality}'
                             })
                         else:
-                            test_result['test_suite'] = f'regional_subset_{subset["name"]}_single_timestep'
+                            test_result['test_suite'] = (
+                                'regional_subset_small_region(200x200x90)_single_timestep'
+                                if subset['name'] == 'small_region' else
+                                'regional_subset_medium_region(500x500x90)_single_timestep'
+                            )
                             test_result['spatial_extent'] = subset
                             benchmark_results['tests_performed'].append(test_result)
                             add_system_log(f"[Profiler] Regional {subset['name']} quality {quality}: {test_result['execution_time']:.2f}s", "info")
@@ -548,7 +561,11 @@ class DatasetProfilerPretraining:
                         add_system_log(f"[Profiler] Regional subset {subset['name']} quality {quality} failed: {e}", "warning")
                         benchmark_results['failed_tests'].append({
                             'quality_level': quality,
-                            'test_suite': f'small_subset_{subset["name"]}_single_timestep',
+                            'test_suite': (
+                                'regional_subset_small_region(200x200x90)_single_timestep'
+                                if subset['name'] == 'small_region' else
+                                'regional_subset_medium_region(500x500x90)_single_timestep'
+                            ),
                             'failure_reason': str(e),
                             'spatial_extent': subset
                         })
@@ -569,6 +586,7 @@ class DatasetProfilerPretraining:
                     'y_range': coverage['y_range'],
                     'z_range': [0, z_dim],
                     'timestep': 0,
+                    # names like 'single_timestep_tiny_10x10x90' already match JSON
                     'test_type': f'single_timestep_{coverage["name"]}'
                 }
                 
@@ -630,7 +648,8 @@ class DatasetProfilerPretraining:
                         try:
                             # Test each timestep
                             for ts in ts_test['timesteps']:
-                                test_multi_timestep = {**small_region, 'timestep': ts, 'test_type': f'multi_timestep_{ts_test["name"]}'}
+                                # include spatial size in the test_suite name to match stored profile
+                                test_multi_timestep = {**small_region, 'timestep': ts, 'test_type': f'multi_timestep_{ts_test["name"]}_small_region(100x100x90)'}
                                 
                                 result = self._run_benchmark_query(
                                     dataset_info,
@@ -648,12 +667,13 @@ class DatasetProfilerPretraining:
                                 total_points += result.get('data_points', 0)
                             
                             if all_succeeded:
+                                # align test_suite naming with JSON: include timesteps count and region size
                                 combined_result = {
                                     'quality_level': quality,
                                     'execution_time': total_time,
                                     'data_points': total_points,
                                     'num_timesteps': len(ts_test['timesteps']),
-                                    'test_suite': f'multi_timestep_{ts_test["name"]}_small_region',
+                                    'test_suite': f"multi_timestep_{ts_test['name']}_small_region(100x100x90)",
                                     'timesteps': ts_test['timesteps'],
                                     'spatial_region': small_region
                                 }
@@ -662,14 +682,14 @@ class DatasetProfilerPretraining:
                             else:
                                 benchmark_results['failed_tests'].append({
                                     'quality_level': quality,
-                                    'test_suite': f'multi_timestep_{ts_test["name"]}_small_region',
+                                    'test_suite': f"multi_timestep_{ts_test['name']}_small_region(100x100x90)",
                                     'failure_reason': 'One or more timesteps failed'
                                 })
                         except Exception as e:
                             add_system_log(f"[Profiler] Multi-timestep {ts_test['name']} quality {quality} failed: {e}", "warning")
                             benchmark_results['failed_tests'].append({
                                 'quality_level': quality,
-                                'test_suite': f'multi_timestep_{ts_test["name"]}_small_region',
+                                'test_suite': f"multi_timestep_{ts_test['name']}_small_region(100x100x90)",
                                 'failure_reason': str(e)
                             })
                             continue
@@ -711,7 +731,7 @@ class DatasetProfilerPretraining:
                             err = (test_result.get('error') if isinstance(test_result, dict) else 'Unknown error')
                             benchmark_results['failed_tests'].append({
                                 'quality_level': quality,
-                                'test_suite': f'aggregation_small_region_{agg_test["op"]}',
+                                'test_suite': f'aggregation_small_region(50x50x90)_{agg_test["op"]}',
                                 'aggregation_op': agg_test['op'],
                                 'failure_reason': err
                             })
@@ -741,7 +761,8 @@ class DatasetProfilerPretraining:
                                 except Exception as agg_err:
                                     add_system_log(f"[Profiler] Aggregation computation failed: {agg_err}", "warning")
                             
-                            test_result['test_suite'] = f'aggregation_small_region_{agg_test["op"]}'
+                            # use parenthetical size notation to match profile keys
+                            test_result['test_suite'] = f'aggregation_small_region(50x50x90)_{agg_test["op"]}'
                             test_result['aggregation_op'] = agg_test['op']
                             test_result.pop('data', None)  # Remove raw data to save space
                             benchmark_results['tests_performed'].append(test_result)
@@ -750,7 +771,7 @@ class DatasetProfilerPretraining:
                         add_system_log(f"[Profiler] Aggregation {agg_test['op']} quality {quality} failed: {e}", "warning")
                         benchmark_results['failed_tests'].append({
                             'quality_level': quality,
-                            'test_suite': f'aggregation_small_region_{agg_test["op"]}',
+                            'test_suite': f'aggregation_small_region(50x50x90)_{agg_test["op"]}',
                             'aggregation_op': agg_test['op'],
                             'failure_reason': str(e)
                         })
