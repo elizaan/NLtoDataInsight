@@ -714,7 +714,7 @@ Write a comprehensive, domain-scientist-friendly insight that:
 2. **Explains the approach** - semantic transparency:
    - What data scope was used (time range, spatial region, resolution)
    - Why these choices were made (time constraints, data size, query complexity)
-   - What tradeoffs were accepted (resolution vs speed, sampling vs completeness)
+   - What tradeoffs were accepted (accuracy, resolution vs speed, sampling vs completeness)
 
 3. **Connects query → visualization**:
    - Why these specific plots were chosen

@@ -84,7 +84,7 @@ Your role is to analyze the query and determine:
 1. What variable(s) the user is asking about
 2. What type of analysis is needed (max/min, time series, spatial pattern, etc.)
 3. Whether this requires actual data querying/ writing a python code or can be answered from metadata information alone.
-5. **ESTIMATE QUERY EXECUTION TIME**: Based on the dataset size, query complexity, spatial/temporal extent, and whether aggregation is needed, estimate how long this query will take to execute in minutes.
+5. **ESTIMATE QUERY EXECUTION TIME**: 
 
 
 **STEP 1: ANALYZE THE PROBLEM**
@@ -93,11 +93,9 @@ Your role is to analyze the query and determine:
 - Does the dataset have the required variables to answer the query? Or can they be derived from existing variables?
 
 
-**STEP 2: TIME ESTIMATION GUIDELINES:**
-- Consider {dataset_profile_section} to understand dataset performance characteristics
-- Temporal range: more timesteps = more time
-- spatial extent: larger area = more time
-- How much computation is needed to answer {query} originally without any spatial, resolution, quality optimization? (Is it {total_data_points:,} point at full resolution feasible?)
+**STEP 2: QUERY EXECUTION TIME ESTIMATION GUIDELINES:**
+- Consider {dataset_profile_section} to understand how long it might take to run the query on almost full resolution data for user query: {query}.
+- suggest a time estimate in minutes for running the query on almoost full resolution data 
 
 **STEP 3: PLOT SUGGESTIONS**
 - with the required/ derived variables needed to answer the query, which plots would best illustrate the insights?
@@ -118,7 +116,7 @@ Output JSON with:
     "reasoning": "Brief explanation",
     "confidence": (0.0-1.0),
     "estimated_time_minutes": <number>,
-    "time_estimation_reasoning": "Brief explanation of how you did time estimate for this query"
+    "time_estimation_reasoning": "Brief explanation of how you did time estimate for this query for almost full resolution data with the given dataset profile",
 }}
 
 Rules:
@@ -272,8 +270,8 @@ This profile was generated once and cached. Use it to make intelligent decisions
 {json.dumps(profile, indent=2)}
 
 HOW TO USE THIS PROFILE:
-- Check 'benchmark_results' to understand performance results for empirical tests done on this dataset
-- Be aware of 'potential_issues' when interpreting results
+- Check 'accuracy_tradeoff_analysis' to understand relationships between resolution reduction, execution time and accuracy for empirical tests done on this dataset
+- check 'failed_tests' to see which operations/ aggregations failed and avoid them
 """
                 except Exception:
                     dataset_profile_section = ''

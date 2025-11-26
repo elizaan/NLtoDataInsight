@@ -330,7 +330,7 @@ class DatasetProfilerPretraining:
                 'y_range': [0, y_dim],
                 'z_range': [0, z_dim],
                 'timestep': 0,
-                'test_type': 'single_timestep_different_resolution_full_spatial_resolution'
+                'test_type': 'single_timestep_full_region'
             }
             
             for quality in quality_levels_to_test:
@@ -348,13 +348,13 @@ class DatasetProfilerPretraining:
                         add_system_log(f"[Profiler] ✗ Quality {quality} FAILED: {err}", "warning")
                         benchmark_results['failed_tests'].append({
                             'quality_level': quality,
-                            'test_suite': 'single_timestep_different_resolution_full_spatial_resolution',
+                            'test_suite': 'single_timestep_full_region',
                             'failure_reason': err,
                             'user_impact': 'Query would fail or timeout on actual data',
                             'recommendation': 'Avoid this quality level for real queries'
                         })
                     else:
-                        test_result['test_suite'] = 'single_timestep_different_resolution_full_spatial_resolution'
+                        test_result['test_suite'] = 'single_timestep_full_region'
                         benchmark_results['tests_performed'].append(test_result)
                         add_system_log(f"[Profiler] Quality {quality}: {test_result['execution_time']:.2f}s, {test_result['data_points']:,} points", "info")
                 except Exception as e:
@@ -364,7 +364,7 @@ class DatasetProfilerPretraining:
                     # Record the failure so LLM knows this quality level is too expensive
                     benchmark_results['failed_tests'].append({
                         'quality_level': quality,
-                        'test_suite': 'single_timestep_different_resolution_full_spatial_resolution',
+                        'test_suite': 'single_timestep_full_region',
                         'failure_reason': error_msg,
                         'user_impact': 'Query would fail or timeout - too expensive for users',
                         'recommendation': 'Avoid this quality level - causes memory/buffer allocation errors'
@@ -397,7 +397,7 @@ class DatasetProfilerPretraining:
                     'y_range': [0, y_dim],
                     'z_range': [0, z_dim],
                     'timestep_count': scenario['count'],
-                    'test_type': f'multi_timestep_{scenario["name"]}_different_resolution_full_spatial_resolution'
+                    'test_type': f'multi_timestep_{scenario["name"]}_full_region'
                 }
                 
                 for quality in quality_levels_to_test:  
@@ -416,13 +416,13 @@ class DatasetProfilerPretraining:
                             add_system_log(f"[Profiler] Multi-timestep quality {quality} FAILED: {err}", "warning")
                             benchmark_results['failed_tests'].append({
                                 'quality_level': quality,
-                                'test_suite': f'multi_timestep_{scenario["name"]}_different_resolution_full_spatial_resolution',
+                                'test_suite': f'multi_timestep_{scenario["name"]}_full_region',
                                 'failure_reason': err,
                                 'user_impact': f'Multi-timestep query would fail on actual data with {scenario["count"]} timesteps',
                                 'recommendation': f'Avoid quality {quality} for {scenario["count"]}-timestep aggregations'
                             })
                         else:
-                            test_result['test_suite'] = f'multi_timestep_{scenario["name"]}'
+                            test_result['test_suite'] = f'multi_timestep_{scenario["name"]}_full_region'
                             benchmark_results['tests_performed'].append(test_result)
                             add_system_log(f"[Profiler] Multi-timestep quality {quality}: {test_result['execution_time']:.2f}s for {scenario['count']} timesteps", "info")
                     except Exception as e:
@@ -432,7 +432,7 @@ class DatasetProfilerPretraining:
                         # Record failure for LLM analysis
                         benchmark_results['failed_tests'].append({
                             'quality_level': quality,
-                            'test_suite': f'multi_timestep_{scenario["name"]}_different_resolution_full_spatial_resolution',
+                            'test_suite': f'multi_timestep_{scenario["name"]}_full_region',
                             'failure_reason': error_msg,
                             'user_impact': 'Multi-timestep query would fail - too memory intensive',
                             'recommendation': f'Avoid quality {quality} for {scenario["count"]}-timestep aggregations'
@@ -455,7 +455,7 @@ class DatasetProfilerPretraining:
                     'z_range': [0, z_dim],
                     'timestep': 0,
                     'aggregation': agg_test['op'],
-                    'test_type': f'aggregation_{agg_test["op"]}_timestep_0_different_resolution_full_spatial_resolution'
+                    'test_type': f'aggregation_{agg_test["op"]}_timestep_0_full_region'
                 }
                 
                 # Test with a few quality levels
@@ -474,14 +474,14 @@ class DatasetProfilerPretraining:
                             add_system_log(f"[Profiler] Aggregation {agg_test['op']} quality {quality} FAILED: {err}", "warning")
                             benchmark_results['failed_tests'].append({
                                 'quality_level': quality,
-                                'test_suite': f'aggregation_{agg_test["op"]}_timestep_0_different_resolution_full_spatial_resolution',
+                                'test_suite': f'aggregation_{agg_test["op"]}_timestep_0_full_region',
                                 'aggregation_op': agg_test['op'],
                                 'failure_reason': err,
                                 'user_impact': f'{agg_test["op"]} aggregation would fail on actual data',
                                 'recommendation': f'Use more aggressive quality level for {agg_test["op"]} operations when running on real data'
                             })
                         else:
-                            test_result['test_suite'] = f'aggregation_{agg_test["op"]}_timestep_0_different_resolution_full_spatial_resolution'
+                            test_result['test_suite'] = f'aggregation_{agg_test["op"]}_timestep_0_full_region'
                             test_result['aggregation_op'] = agg_test['op']
                             benchmark_results['tests_performed'].append(test_result)
                             add_system_log(f"[Profiler] Aggregation {agg_test['op']} quality {quality}: {test_result['execution_time']:.2f}s", "info")
@@ -492,7 +492,7 @@ class DatasetProfilerPretraining:
                         # Record failure for LLM analysis
                         benchmark_results['failed_tests'].append({
                             'quality_level': quality,
-                            'test_suite': f'aggregation_{agg_test["op"]}_timestep_0_different_resolution_full_spatial_resolution',
+                            'test_suite': f'aggregation_{agg_test["op"]}_timestep_0_full_region',
                             'aggregation_op': agg_test['op'],
                             'failure_reason': error_msg,
                             'user_impact': f'{agg_test["op"]} aggregation would fail - data too large',
@@ -515,7 +515,7 @@ class DatasetProfilerPretraining:
                     'y_range': subset['y_range'],
                     'z_range': [0, z_dim],
                     'timestep': 0,
-                    'test_type': f'regional_subset_{subset["name"]}'
+                    'test_type': f'regional_subset_{subset["name"]}_single_timestep'
                 }
                 
                 # Test all quality levels on subset
@@ -533,13 +533,13 @@ class DatasetProfilerPretraining:
                             err = (test_result.get('error') if isinstance(test_result, dict) else 'Unknown error')
                             benchmark_results['failed_tests'].append({
                                 'quality_level': quality,
-                                'test_suite': f'small_subset_{subset["name"]}_single_timestep',
+                                'test_suite': f'regional_subset_{subset["name"]}_single_timestep',
                                 'failure_reason': err,
                                 'spatial_extent': subset,
                                 'recommendation': f'Even regional subset failed at quality {quality}'
                             })
                         else:
-                            test_result['test_suite'] = f'regional_subset_{subset["name"]}'
+                            test_result['test_suite'] = f'regional_subset_{subset["name"]}_single_timestep'
                             test_result['spatial_extent'] = subset
                             benchmark_results['tests_performed'].append(test_result)
                             add_system_log(f"[Profiler] Regional {subset['name']} quality {quality}: {test_result['execution_time']:.2f}s", "info")
@@ -558,9 +558,9 @@ class DatasetProfilerPretraining:
             add_system_log(f"[Profiler] Test Suite 5: Single timestep with varying spatial coverage", "info")
             
             spatial_coverage_tests = [
-                {'name': 'tiny_10x10', 'x_range': [0, min(10, x_dim)], 'y_range': [0, min(10, y_dim)]},
-                {'name': 'small_100x100', 'x_range': [0, min(100, x_dim)], 'y_range': [0, min(100, y_dim)]},
-                {'name': 'large_1000x1000', 'x_range': [0, min(1000, x_dim)], 'y_range': [0, min(1000, y_dim)]},
+                {'name': 'tiny_10x10x90', 'x_range': [0, min(10, x_dim)], 'y_range': [0, min(10, y_dim)]},
+                {'name': 'small_100x100x90', 'x_range': [0, min(100, x_dim)], 'y_range': [0, min(100, y_dim)]},
+                {'name': 'large_1000x1000x90', 'x_range': [0, min(1000, x_dim)], 'y_range': [0, min(1000, y_dim)]},
             ]
             
             for coverage in spatial_coverage_tests:

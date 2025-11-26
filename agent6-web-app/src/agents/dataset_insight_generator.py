@@ -439,7 +439,7 @@ class DatasetInsightGenerator:
 - Total data points: {total_data_points:,}
 - Spatial dimensions: {x} × {y} × {z} = {total_voxels:,} points per timestep
 - Temporal: {total_timesteps} timesteps ({time_units})
-- Available time: {user_time_limit * 60} seconds
+- Available time: {user_time_limit * 60 * 0.9} seconds
 '''
         else:
             time_constraint_section = '**NO TIME CONSTRAINT** specified. '
@@ -461,9 +461,6 @@ class DatasetInsightGenerator:
           - Type: {intent_type}
           - Intent Reasoning: {reasoning}
           - Plot Hints: {json.dumps(plot_hints, indent=2)}
-
-          ** Empirical ttest on dataset to understand performance characteristics: **
-            {profile if profile else 'No dataset profile available.'}
 """
         system_prompt += reusable_npz_instruction
         
@@ -775,14 +772,21 @@ You have TWO separate code scripts to write:
 
 
 **STEP 2: DECIDE YOUR STRATEGY**
+- Set query timeout to {user_time_limit * 60 * 0.9:.0f} seconds (90% of limit for buffer)
 - Choose the quality level that balances speed and correctness for THIS specific query:
-    - Use empirical test results to decide on quality/resolution decision from {profile} based on user query
-- Consider query complexity, data characteristics, and time budget
-- Set query timeout to {user_time_limit * 60 * 0.8:.0f} seconds (80% of limit for buffer)
-- within {user_time_limit} minutes, if {total_timesteps:,} timesteps is too many → How should you aggregate? (daily? weekly? monthly?)
-  - choose time intervals very wisely for faster output
-- If spatial resolution is too high → What quality/resolution level?
-- What's the smartest way to sample without losing the answer's validity?
+    - we have done empirical tests on dataset performance in various profiles, you should use that knowledge from dataset profile: {profile}
+
+- Consider:
+    - Total data points: {total_data_points:,}
+    - Consider query complexity, data characteristics, and time budget
+    - Use empirical test results to decide on quality/resolution decision from dataset profile based on user query
+    - choose a tradeoff between speed and accuracy based on user time limit: {user_time_limit} minutes and 'accuracy_tradeoff_analysis' from dataset profile above
+
+- Decide:
+    - time sampling strategy: which timesteps to read (all? every Nth? specific ranges?)
+    - spatial quality/resolution level to read
+
+
 
 **STEP 3: WRITE SMART QUERY CODE**
 Your code should:
@@ -836,6 +840,7 @@ try:
         "status": "success",
         "strategy": "EXPLAIN YOUR STRATEGY",
         "data_points_processed": len(results),
+        "potential_accuracy": "ESTIMATE BASED ON STRATEGY and empirical tests from dataset profile",
         **YOUR_FINDINGS
     }}))
     
@@ -901,7 +906,7 @@ If the plotting is challenging with available packages, do your best with what w
         * quiver/streamplot: build X/Y coordinate arrays that match the heatmap's extent and orientation (use `np.meshgrid(x_coords, y_coords)` where `y_coords` is ascending). Do NOT assume array row ordering — derive coordinates from `x_range`/`y_range` or `extent`.
 - Use log scale if data spans several orders of magnitude
 - folow rule for other plots too
-- Always document resolution reduction values in plot titles/captions
+- Always document resolution reduction values (q=?) in plot titles/captions
 
 **Data Validation:**
 - After loading npz file, ALWAYS inspect keys: `print("Available keys:", data.files)`
@@ -1122,7 +1127,7 @@ Common issues:
                     # Calculate dynamic timeout based on user time limit
                     if user_time_limit:
                         # 70% of user time for query execution, rest for plotting/overhead
-                        execution_timeout = int(user_time_limit * 60 * 0.7)
+                        execution_timeout = int(user_time_limit * 60)
                     else:
                         execution_timeout = 500  # Default 500 seconds
                     
@@ -1143,7 +1148,7 @@ Common issues:
 
                         # If the script printed a JSON error or reported failure, treat as failure
                         if isinstance(parsed_stdout, dict) and (parsed_stdout.get('error') or parsed_stdout.get('status') in ['error', 'failed']):
-                            add_system_log("✗ Query printed error JSON despite exit code 0", "warning")
+                            add_system_log("Query printed error JSON despite exit code 0", "warning")
                             error_msg = json.dumps(parsed_stdout)
                             # Treat printed JSON error as a real failure so the retry/debug flow triggers
                             # (previously parsed_stdout remained a dict which bypassed the retry check)
@@ -1202,7 +1207,7 @@ Common issues:
                                     'confidence': 0.0
                                 }
 
-                            add_system_log(f"✗ Query failed (attempt {query_attempts}/{max_query_attempts})", "warning")
+                            add_system_log(f"Query failed (attempt {query_attempts}/{max_query_attempts})", "warning")
                             
                             # Report query failure to UI
                             if progress_callback:
@@ -1241,9 +1246,10 @@ Write your corrected query code in <query_code></query_code> tags.
                         else:
                             # Consider it a true success
                             query_output = stdout
+                            add_system_log(f"Query succeeded with output {query_output}", "success")
                             query_success = True
                             current_phase = "plot"
-                            add_system_log("✓ Query code succeeded! Moving to plot phase.", "success")
+                            add_system_log(" Query code succeeded! Moving to plot phase.", "success")
                             feedback = f""" QUERY CODE SUCCEEDED!
 
 OUTPUT:
@@ -1295,7 +1301,7 @@ Write your intelligent plot code in <plot_code></plot_code> tags.
                             prompt = {
                                 "role": "user",
                                 "content": (
-                                    "The data extraction script you generated timed out after 8 minutes while attempting the user's request.\n"
+                                    "The data extraction script you generated timed out while attempting the user's request.\n"
                                     f"User query: {user_query}\n"
                                     f"Dataset: {dataset_name} (timesteps={total_timesteps}, time_units={time_units})\n"
                                     "Please propose 2 concrete, actionable smaller queries the user can ask that are likely to complete quickly than 8 min.\n"
@@ -1341,7 +1347,7 @@ Write your intelligent plot code in <plot_code></plot_code> tags.
                             # Build insight message
                             if suggestions_json is None:
                                 insight_msg = (
-                                    "The data extraction timed out after 5 minutes. I couldn't parse structured suggestions from the LLM,\n"
+                                    "The data extraction timed out. I couldn't parse structured suggestions from the LLM,\n"
                                     "but here is the raw LLM output to help you pick a smaller request:\n\n" + suggestion_text
                                 )
                             else:
@@ -1489,7 +1495,7 @@ DETECTED ERROR OUTPUT:
 {combined_output}
 
 Maximum attempts reached. Proceeding to finalize without plots.
-Provide <insight></insight> and <final_answer></final_answer> based on query results.
+Provide <insight></insight> and <final_answer></final_answer> based on your query strategy, query results.
 """
                                 self.conversation_history.append({
                                     "role": "user",

@@ -165,8 +165,34 @@ class AnimationAgent:
         # Get or create dataset profile (one-time analysis, cached permanently)
         try:
             add_system_log(f"[Agent] Loading/generating dataset profile for {dataset_id}...", 'info')
-            self.dataset_profile = self.profiler.get_or_create_profile(dataset)
-            # Share profile with insight generators so they can use it
+            full_profile = self.profiler.get_or_create_profile(dataset)
+
+            # Create a small, in-memory condensed profile with only the
+            # fields we commonly need in downstream agents/UI. This keeps
+            # the in-memory object lightweight while the full profile JSON
+            # remains on disk in the profiler cache.
+            condensed_profile = None
+            try:
+                if isinstance(full_profile, dict):
+                    condensed_profile = {
+                        'dataset_id': full_profile.get('dataset_id') or dataset.get('id'),
+                        'dataset_name': full_profile.get('dataset_name') or dataset.get('name'),
+                        'profiled_at': full_profile.get('profiled_at'),
+                        'profile_version': full_profile.get('profile_version'),
+                        # Put the two requested benchmark pieces at top-level
+                        'failed_tests': full_profile.get('benchmark_results', {}).get('failed_tests', []),
+                        'accuracy_tradeoff_analysis': full_profile.get('benchmark_results', {}).get('accuracy_tradeoff_analysis', {})
+                    }
+                else:
+                    condensed_profile = None
+            except Exception as e:
+                add_system_log(f"[Agent] Warning: could not condense dataset profile: {e}", 'warning')
+                condensed_profile = None
+
+            # Store condensed profile in-memory for quick access by agents/UI
+            self.dataset_profile = condensed_profile
+
+            # Share condensed profile with insight generators so they can use it
             self.insight_extractor.insight_generator.dataset_profile = self.dataset_profile
             
         except Exception as e:
@@ -217,182 +243,6 @@ class AnimationAgent:
         # Return in chronological order (oldest first)
         return list(reversed(recent_queries))
     
-    
-    def _resolve_and_check_recent_cache(
-        self,
-        user_query: str,
-        context: Dict[str, Any]
-    ) -> Optional[Dict[str, Any]]:
-        """
-        STEP 1: Resolve query references and check if recent cached NPZ can be reused.
-        
-        This checks last 5 queries in current session (based on timestamp).
-        
-        Returns:
-            Dict with 'reusable_cached_data' info if cache can be used, else None
-        """
-        if not self.conversation_context or not self.conversation_context.history:
-            add_system_log("[Cache] No conversation history - first query", 'debug')
-            return None
-        
-        # Get recent queries in current session
-        recent_queries = self._get_recent_queries_in_session(max_count=5)
-        
-        if not recent_queries:
-            add_system_log("[Cache] No recent queries in current session", 'debug')
-            return None
-        
-        add_system_log(
-            f"[Cache] Found {len(recent_queries)} recent queries in current session",
-            'info'
-        )
-        
-        # Build context with DETAILED metadata for each query
-        recent_context_detailed = []
-        for i, entry in enumerate(recent_queries):
-            query_id = entry['query_id']
-            prev_user_query = entry['user_query']
-            result = entry['result']
-            
-            # Extract metadata from result
-            data_summary = result.get('data_summary', {})
-           
-            # Format metadata
-            metadata_str = f"Query {i+1} [{query_id}]: \"{prev_user_query}\"\n"
-            metadata_str += f"  Status: {result.get('status', 'unknown')}\n"
-            metadata_str += f"  Data summary: {data_summary}\n"
-            metadata_str += f"  NPZ file: {'Yes' if result.get('data_cache_file') else 'No'}"
-            
-            recent_context_detailed.append(metadata_str)
-
-        recent_context = "\n\n".join(recent_context_detailed)
-        
-        # Use LLM to resolve references and check if cache can be reused
-        prompt = f"""You are analyzing a user's query in a conversation about dataset analysis and analyzing whether cached data from previous queries can answer the current query.
-
-**Recent Conversation contexts:**
-{recent_context}
-
-**Current Query:** "{user_query}"
-
-**Your Tasks:**
-1. **Resolve References**: If the current query contains pronouns (it, that, this, same), determine what they refer to by looking at recent queries.
-
-2. **Cache Reusability**: Determine if any of the recent queries' cached NPZ data can be reused to answer the current query. Consider:
-
-1. **IDENTICAL** - Previous results fully answer current query
-2. **DERIVED_STAT** - Answer readily available in previous {recent_context} data_summary (no code needed!)
-3. **REUSABLE_NPZ** - Answer not readily available in previous {recent_context} data_summary but some of the required data is available in {recent_context} data_summary, which means new code needs to be generated from cached NPZ
-4. **NOT_REUSABLE** - Need to load new data
-
-**Key question for DERIVED_STAT:**
-Can you answer the current query using ONLY the data_summary from a previous query?
-
-**Output ONLY valid JSON:**
-{{
-    "cache_level": "IDENTICAL" | "DERIVED_STAT" | "REUSABLE_NPZ" | "NOT_REUSABLE",
-    "resolved_query": "explicit standalone query with references resolved",
-    "can_reuse_cache": true/false,
-    "reusable_from_query_id": "q1" or null,
-    "confidence": 0.0-1.0,
-    "reasoning": "brief explanation of why cache can/cannot be reused"
-}}
-
-DO NOT include markdown code blocks, just raw JSON."""
-
-        
-        try:
-            response = self.llm.invoke(prompt)
-            response_text = response.content.strip()
-            
-            # Clean response
-            if response_text.startswith('```'):
-                response_text = response_text.split('```')[1]
-                if response_text.startswith('json'):
-                    response_text = response_text[4:]
-                response_text = response_text.split('```')[0].strip()
-            
-            result = json.loads(response_text)
-            
-            # Validate result
-            if not result.get('can_reuse_cache') or result.get('cache_level') == 'NOT_REUSABLE':
-                add_system_log("[Cache] LLM determined cache cannot be reused", 'info')
-                return None
-            
-            reusable_query_id = result.get('reusable_from_query_id')
-            if not reusable_query_id:
-                add_system_log("[Cache] LLM said cache reusable but didn't specify query_id", 'warning')
-                return None
-            
-            # Find the referenced query in recent history
-            reusable_entry = None
-            for entry in recent_queries:
-                if entry['query_id'] == reusable_query_id:
-                    reusable_entry = entry
-                    break
-            
-            if not reusable_entry:
-                add_system_log(
-                    f"[Cache] Could not find query {reusable_query_id} in recent history",
-                    'warning'
-                )
-                return None
-            
-            # Get NPZ file path
-            npz_file = reusable_entry['result'].get('data_cache_file')
-            if not npz_file or not Path(npz_file).exists():
-                add_system_log(
-                    f"[Cache] NPZ file not found for {reusable_query_id}: {npz_file}",
-                    'warning'
-                )
-                return None
-            
-            # Extract cached data info
-            data_summary = reusable_entry['result'].get('data_summary', {})
-            
-            cached_result = reusable_entry['result']
-            if result['cache_level'] == 'IDENTICAL':
-                add_system_log(
-                    f"[Cache TIER 1] IDENTICAL query detected from {reusable_query_id} - returning cached result directly!",
-                    'success'
-                )
-                # Return a cache_info that explicitly marks the level as IDENTICAL
-                # and references the correct originating query id so callers can
-                # short-circuit and return the cached result without further parsing.
-                cache_info = {
-                        'cache_level': 'IDENTICAL',
-                        'query_id': reusable_query_id,
-                        'cached_result': cached_result,
-                        'reasoning': result['reasoning'],
-                        'previous_query': reusable_entry['user_query']
-                }
-                return cache_info
-            
-            cache_info = {
-                'cache_level': result['cache_level'],
-                'query_id': reusable_query_id,
-                'npz_file': npz_file,
-                'cached_result': reusable_entry['result'],
-                'cached_summary': data_summary,
-                'confidence': result['confidence'],
-                'reasoning': result['reasoning'],
-                'previous_query': reusable_entry['user_query'],
-                'resolved_query': result['resolved_query']
-            }
-            
-            add_system_log(
-                f"[Cache TIER 1] Can reuse cached NPZ from {reusable_query_id}\n"
-                f"  Confidence: {result['confidence']:.2f}\n"
-                f"  Reasoning: {result['reasoning']}\n"
-                f"  NPZ: {Path(npz_file).name}",
-                'success'
-            )
-            
-            return cache_info
-            
-        except Exception as e:
-            add_system_log(f"[Cache] LLM analysis failed: {e}", 'warning')
-            return None
     
     def _check_identical_query_in_history(
         self,
@@ -503,26 +353,96 @@ Queries are identical if they ask for the same analysis on the same data, even i
         
         Returns resolution result with resolved_query, time_limit, and cache_level.
         """
-        # Check if we have conversation history
-        if not self.conversation_context or not self.conversation_context.history:
-            # First query ever - no resolution needed
+        # # Check if we have conversation history
+        # if not self.conversation_context or not self.conversation_context.history:
+        #     # First query ever - no resolution needed
+        #     return {
+        #         'resolved_query': user_message,
+        #         'user_time_limit_minutes': None,
+        #         'cache_level': 'NOT_REUSABLE',
+        #         'reasoning': 'First query in conversation'
+        #     }
+        
+        # # Get recent queries with their metadata
+        # recent_queries = self._get_recent_queries_in_session(max_count=5)
+        
+        # if not recent_queries:
+        #     return {
+        #         'resolved_query': user_message,
+        #         'user_time_limit_minutes': None,
+        #         'cache_level': 'NOT_REUSABLE',
+        #         'reasoning': 'No recent queries in current session'
+        #     }
+        # Check for special case: awaiting time preference
+        # Initialize variables at the start to avoid scope issues
+        recent_queries = [] 
+        recent_context = ""
+        
+        awaiting_time = context.get('awaiting_time_preference', False)
+        original_query = context.get('original_query', '')
+        original_intent = context.get('original_intent_result', {})
+        estimated_time = original_intent.get('estimated_time_minutes')
+
+        # CRITICAL: Handle awaiting time preference even with no history
+        if awaiting_time and original_query:
+            add_system_log(
+                f"[Resolver] Awaiting time preference for: '{original_query}...'",
+                'info'
+            )
+            
+            # Build synthetic context for the original query
+            recent_context = f"""Previous Query [awaiting response]: "{original_query}"
+            Status: awaiting_time_preference
+            Estimated time: {estimated_time} minutes
+            Note: System asked user to provide time preference for this query."""
+            
+            # Mark that we're handling awaiting_time case
+            has_context = True
+            
+        elif not self.conversation_context or not self.conversation_context.history:
+            # First query ever - no resolution needed, no awaiting time
             return {
                 'resolved_query': user_message,
                 'user_time_limit_minutes': None,
                 'cache_level': 'NOT_REUSABLE',
                 'reasoning': 'First query in conversation'
             }
-        
-        # Get recent queries with their metadata
-        recent_queries = self._get_recent_queries_in_session(max_count=5)
-        
-        if not recent_queries:
-            return {
-                'resolved_query': user_message,
-                'user_time_limit_minutes': None,
-                'cache_level': 'NOT_REUSABLE',
-                'reasoning': 'No recent queries in current session'
-            }
+        else:
+            # Normal case: Get recent queries with their metadata
+            recent_queries = self._get_recent_queries_in_session(max_count=5)
+            
+            if not recent_queries:
+                return {
+                    'resolved_query': user_message,
+                    'user_time_limit_minutes': None,
+                    'cache_level': 'NOT_REUSABLE',
+                    'reasoning': 'No recent queries in current session'
+                }
+            
+            # Build detailed context from actual history
+            recent_context_detailed = []
+            for i, entry in enumerate(recent_queries):
+                query_id = entry['query_id']
+                prev_user_query = entry['user_query']
+                result = entry['result']
+                data_summary = result.get('data_summary', {})
+                
+                # Extract time constraint info if present
+                time_constraint_info = ""
+                analysis = result.get('analysis', {})
+                if analysis.get('user_time_limit_minutes'):
+                    time_constraint_info = f"\n  Time constraint used: {analysis['user_time_limit_minutes']} minutes"
+                
+                metadata_str = f"""Query {i+1} [{query_id}]: "{prev_user_query}"{time_constraint_info}
+            Status: {result.get('status')}
+            Data summary: {json.dumps(data_summary, indent=4)}
+            Has plots: {'Yes' if result.get('plot_files') else 'No'}
+            Has NPZ: {result.get('data_cache_file', 'No')}"""
+                
+                recent_context_detailed.append(metadata_str)
+            
+            recent_context = "\n\n".join(recent_context_detailed)
+            has_context = True
         
         # Build detailed context
         recent_context_detailed = []
@@ -559,11 +479,11 @@ Queries are identical if they ask for the same analysis on the same data, even i
     **Previous Queries:**
     {recent_context}
 
-    {"**IMPORTANT CONTEXT:**" if awaiting_time else ""}
-    {f"System asked user about time preference for query: '{original_query}'" if awaiting_time else ""}
-    {f"Estimated time: {estimated_time} minutes" if awaiting_time and estimated_time else ""}
-
-    **Current User Message:** "{user_message}"
+    {"**🚨 CRITICAL CONTEXT - USER IS RESPONDING TO TIME PREFERENCE REQUEST:**" if awaiting_time else ""}
+    {f"Original query was: '{original_query}'" if awaiting_time else ""}
+    {f"System estimated: {estimated_time} minutes" if awaiting_time and estimated_time else ""}
+    {f"Current message is user's TIME RESPONSE. Extract time and combine with original query." if awaiting_time else ""}
+        **Current User Message:** "{user_message}"
 
     **Your Tasks:**
 
@@ -575,6 +495,8 @@ Queries are identical if they ask for the same analysis on the same data, even i
     - Check if user specifies execution time (e.g., "5 minutes", "2 min", just "10")
     - "proceed" / "ok" / "yes" = use estimated time ({estimated_time} min)
     - No time mentioned = null
+    - be careful to only extract time relevant to execution time, not other times mentioned
+    - also be careful in which time unit is being used (seconds vs minutes vs hours), whatever is specified, convert to minutes
 
     3. **Determine Cache Level**:
     
@@ -730,6 +652,13 @@ Queries are identical if they ask for the same analysis on the same data, even i
         user_time_limit = resolution.get('user_time_limit_minutes')
         cache_level = resolution['cache_level']
         cache_info = resolution.get('cache_info')
+        add_system_log(
+            f"[Agent] Resolved Query: {resolved_query[:100]}...\n"
+            f"  Time Limit: {user_time_limit} minutes\n"
+            f"  Cache Level: {cache_level}\n"
+            f"  Reasoning: {resolution.get('reasoning', '')}",
+            "info"
+        )
         
         # Clear awaiting flag if it was set
         if context.get('awaiting_time_preference'):
@@ -979,11 +908,19 @@ Queries are identical if they ask for the same analysis on the same data, even i
             context['original_intent_result']['estimated_time_minutes'] = estimated_time
             context['original_intent_result']['time_estimation_reasoning'] = time_reasoning
             
+            # return {
+            #     'status': 'needs_time_clarification',
+            #     'estimated_time_minutes': estimated_time,
+            #     'time_estimation_reasoning': time_reasoning,
+            #     'message': f'Estimated time: {estimated_time} minutes. Proceed or specify time limit?'
+            # }
             return {
-                'status': 'needs_time_clarification',
+                'status': 'awaiting_time_preference',
                 'estimated_time_minutes': estimated_time,
                 'time_estimation_reasoning': time_reasoning,
-                'message': f'Estimated time: {estimated_time} minutes. Proceed or specify time limit?'
+                'message': f'Estimated time: {estimated_time} minutes. Proceed or specify time limit?',
+                'original_query': query,
+                'original_intent_result': intent_result
             }
         
         # Save to conversation history
