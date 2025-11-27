@@ -17,7 +17,12 @@ api_key.txt
 *.sqlite3
 
 # Generated data and uploads
-ai_data/
+ai_data/codes/
+ai_data/dataset_profiles/
+ai_data/generated_datasets/
+ai_data/insights/
+ai_data/data_cache/
+ai_data/plots/
 src/static/uploads/
 
 # Python bytecode
@@ -51,3 +56,8 @@ env/
 # OS files
 .DS_Store
 Thumbs.db
+# System files
+sys
+# Build files
+build/  
+.nfs*
