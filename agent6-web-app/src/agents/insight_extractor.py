@@ -97,21 +97,24 @@ Your role is to analyze the query and determine:
 
 
 **STEP 1: ANALYZE THE PROBLEM**
-- What does the user actually want to know?
-- What data variables, time ranges are needed to answer this?
+What does the user ACTUALLY want? Break down the query:
+- Which variables are needed?
+- What might be derived variables?
+- what might be the spatial extent? (does it cover full domain or a sub-region?)
+- What temporal range? (If dates/seasons mentioned, estimate timesteps)
+- What analysis complexity? (simple stats, trends, patterns, etc.)
 - Does the dataset have the required variables to answer the query? Or can they be derived from existing variables?
 
 
 **STEP 2: QUERY EXECUTION TIME ESTIMATION GUIDELINES:**
-- The empirical analysis provides insights on this dataset at different resolutions, time ranges, spatial extents
-- Understand how long it might take to run the user query on almost full/ near full resolution data
-- suggest a time estimate in minutes for running the query
+- The empirical analysis provides insights/some guidance on this dataset for one specific variable, at different resolutions, time ranges, spatial extents
+- use that as a reference to estimate how long it might take to run the user query on full resolutions
 - provide a brief reasoning in 'time_estimation_reasoning' for your time estimate, considering:
     - complexity of analysis (simple stats vs complex spatiotemporal patterns)
     - a rough but short approach on how you arrived at your time estimate (spatial extent, time extent, resolution, aggregation or not, etc), what factors you considered
     - add a buffer to your estimate to account for overheads and unexpected delays
     - how much approximate data needs to be read from disk and processed and is it reasonable
-    - what is the predicted accuracy tradeoff (rmse and percentage_average_error) in your estimate if any
+    - what is the predicted accuracy tradeoff (rmse and percentage_average_error) in your estimate if any, use appropriate unit based on the user query and dataset context, not from the empirical analysis directly
 
 **STEP 3: PLOT SUGGESTIONS**
 - with the required/ derived variables needed to answer the query, which plots would best illustrate the insights?
@@ -214,7 +217,7 @@ Rules:
             time_range = temporal_info.get('time_range', {})
             
             # Build analysis prompt for the CSV agent
-            analysis_prompt = f"""Analyze the performance test results to find operations most similar to this query:
+            analysis_prompt = f"""Analyze the empirical tests data to find operations most similar to this query:
 
 USER QUERY: {user_query}
 
@@ -222,13 +225,15 @@ Full DATASET CHARACTERISTICS:
 - Spatial dimensions: {dims.get('x', 'unknown')}x{dims.get('y', 'unknown')}x{dims.get('z', 1)}
 - Time steps: {temporal_info.get('total_time_steps', 'unknown')}
 
-Please:
-1. Find relevant test cases from the dataframe
-2. Report their execution times, spatial/temporal extents, operation types, different error metrics
-3. Estimate execution time for the user's query based on these similar operations
-4. Consider accuracy tradeoffs (RMSE, percentage_average_error) on data read times and resolution
+you should consider these points while analyzing the CSV data:
+1. The empirical analysis provides insights/some guidance on this dataset's one specific variable at different resolutions, time ranges, spatial extents
+2. the empirical analysis not necesasarily has concrete semantic information about the user query but it has performance data on similar kind of operations
+your task is to:
+3. your task is to summarize empirical performance data from the CSV that can help estimate/ how long it might take to run the user query : {user_query} on full resolutions and what are the accuracy tradeoffs
+4. report as much relevant empirical results as possible that can help estimate the query execution time on full/ near full resolution data
+5. Consider accuracy tradeoffs (RMSE, percentage_average_error) on data read times and resolution and report them too
 
-Format as a concise summary with specific numbers and row references from these empirical results."""
+Format as a concise summary with specific numbers and row references and return full row values with context from these empirical results."""
 
             # Query the CSV agent
             try:
@@ -244,7 +249,7 @@ Format as a concise summary with specific numbers and row references from these 
             
             csv_analysis = self.csv_agent.run(analysis_prompt)
             
-            add_system_log(f"CSV agent analysis: {len(csv_analysis)} chars", 'info')
+            add_system_log(f"Empirical result analysis: {len(csv_analysis)} chars", details=csv_analysis)
             return csv_analysis
             
         except Exception as e:
