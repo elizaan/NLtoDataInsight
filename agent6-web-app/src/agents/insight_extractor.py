@@ -79,17 +79,21 @@ USER QUERY: {query}
 
 INTENT PARSER AGENT's OUTPUT: {intent_type}. {prev_reasoning}. 
 
-DATASET INFORMATION:
+FULL DATASET INFORMATION:
 Available Variables: {variables}
 Spatial Extent: {spatial_info}
 Time Range: {time_range}
 Full Dataset Size: {dataset_size}
+Total Approximate Data Points in full dataset in full resolution: {total_data_points}
+
+EMPIRICAL ANALYSIS:
+{empirical_analysis}
 
 Your role is to analyze the query and determine:
 1. What variable(s) the user is asking about
 2. What type of analysis is needed (max/min, time series, spatial pattern, etc.)
 3. Whether this requires actual data querying/ writing a python code or can be answered from metadata information alone.
-5. **ESTIMATE QUERY EXECUTION TIME**: 
+5. **ESTIMATE QUERY EXECUTION TIME** using the EMPIRICAL ANALYSIS provided and dataset characteristics and the user query.
 
 
 **STEP 1: ANALYZE THE PROBLEM**
@@ -99,13 +103,12 @@ Your role is to analyze the query and determine:
 
 
 **STEP 2: QUERY EXECUTION TIME ESTIMATION GUIDELINES:**
-- the attached csv file contains empirical performance results for various operations on this dataset at different resolutions, time ranges, spatial extents
-- Consider  the attached CSV file to understand how long it might take to run the user query on almost full resolution data
-- suggest a time estimate in minutes for running the query on almost full resolution data
-- also provide a brief reasoning in 'time_estimation_reasoning'for your time estimate, considering:
-    - dataset size, spatial and temporal extent requested
+- The empirical analysis provides insights on this dataset at different resolutions, time ranges, spatial extents
+- Understand how long it might take to run the user query on almost full/ near full resolution data
+- suggest a time estimate in minutes for running the query
+- provide a brief reasoning in 'time_estimation_reasoning' for your time estimate, considering:
     - complexity of analysis (simple stats vs complex spatiotemporal patterns)
-    - a rough but short approach on how you arrived at your time estimate, what factors you considered
+    - a rough but short approach on how you arrived at your time estimate (spatial extent, time extent, resolution, aggregation or not, etc), what factors you considered
     - add a buffer to your estimate to account for overheads and unexpected delays
     - how much approximate data needs to be read from disk and processed and is it reasonable
     - what is the predicted accuracy tradeoff (rmse and percentage_average_error) in your estimate if any
@@ -146,6 +149,106 @@ Rules:
         ])
 
         self.chain = self.prompt | self.llm
+        # NEW: Store CSV dataframe and agent
+        self.performance_df = None
+        self.csv_agent = None
+
+    def _load_performance_csv(self, csv_path: str) -> bool:
+        """
+        Load the empirical performance CSV and create a pandas agent for analysis.
+        
+        Args:
+            csv_path: Path to the CSV file with performance test results
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            if not os.path.exists(csv_path):
+                add_system_log(f"Performance CSV not found: {csv_path}", 'warning')
+                return False
+            
+            # Load CSV into pandas
+            self.performance_df = pd.read_csv(csv_path)
+            add_system_log(f"Loaded performance CSV: {len(self.performance_df)} rows", 'info')
+            
+            # Create pandas dataframe agent for intelligent querying
+            self.csv_agent = create_pandas_dataframe_agent(
+                llm=self.llm,
+                df=self.performance_df,
+                verbose=True,
+                agent_type=AgentType.OPENAI_FUNCTIONS,
+                allow_dangerous_code=True,  # Required for pandas agent
+                max_iterations=5,
+                early_stopping_method="generate"
+            )
+            
+            add_system_log("Created pandas dataframe agent for performance analysis", 'success')
+            return True
+            
+        except Exception as e:
+            add_system_log(f"Failed to load performance CSV: {e}", 'error')
+            traceback.print_exc()
+            return False
+
+    def _analyze_csv_for_query(self, user_query: str, dataset: dict) -> str:
+        """
+        Use the pandas agent to intelligently analyze the CSV for relevant performance data.
+        
+        Args:
+            user_query: The user's query
+            dataset: Dataset metadata
+            
+        Returns:
+            Natural language summary of relevant performance data
+        """
+        if self.csv_agent is None or self.performance_df is None:
+            return "No empirical performance data available."
+        
+        try:
+            # Extract key characteristics from the dataset
+            spatial_info = dataset.get('spatial_info', {})
+            temporal_info = dataset.get('temporal_info', {})
+            
+            dims = spatial_info.get('dimensions', {})
+            time_range = temporal_info.get('time_range', {})
+            
+            # Build analysis prompt for the CSV agent
+            analysis_prompt = f"""Analyze the performance test results to find operations most similar to this query:
+
+USER QUERY: {user_query}
+
+Full DATASET CHARACTERISTICS:
+- Spatial dimensions: {dims.get('x', 'unknown')}x{dims.get('y', 'unknown')}x{dims.get('z', 1)}
+- Time steps: {temporal_info.get('total_time_steps', 'unknown')}
+
+Please:
+1. Find relevant test cases from the dataframe
+2. Report their execution times, spatial/temporal extents, operation types, different error metrics
+3. Estimate execution time for the user's query based on these similar operations
+4. Consider accuracy tradeoffs (RMSE, percentage_average_error) on data read times and resolution
+
+Format as a concise summary with specific numbers and row references from these empirical results."""
+
+            # Query the CSV agent
+            try:
+                try:
+                    model_name = getattr(self.llm, 'model', None) or getattr(self.llm, 'model_name', 'gpt-4o-mini')
+                    msgs = [{"role": "user", "content": analysis_prompt}]
+                    token_count = log_token_usage(model_name, msgs, label="csv_agent_query")
+                    add_system_log(f"[token_instrumentation][CSV_Agent] model={model_name} tokens={token_count}", 'debug')
+                except Exception:
+                    pass
+            except Exception:
+                pass
+            
+            csv_analysis = self.csv_agent.run(analysis_prompt)
+            
+            add_system_log(f"CSV agent analysis: {len(csv_analysis)} chars", 'info')
+            return csv_analysis
+            
+        except Exception as e:
+            add_system_log(f"CSV agent analysis failed: {e}", 'warning')
 
     def extract_insights(
         self, 
@@ -206,11 +309,15 @@ Rules:
             total_voxels = x * y * z
 
             total_data_points = total_voxels * total_timesteps
-            empirical_results = None
+            
+            csv_analysis = ""
             if dataset_profile and dataset_profile.endswith('.csv'):
-                self.insight_generator.dataset_profile = dataset_profile
-                empirical_results = pd.read_csv(dataset_profile)
-                
+                if self._load_performance_csv(dataset_profile):
+                    # Use the pandas agent to analyze relevant performance data
+                    csv_analysis = self._analyze_csv_for_query(user_query, dataset)
+                    add_system_log("Integrated CSV performance analysis", 'info')
+                else:
+                    csv_analysis = "Performance data unavailable"
             
             # Step 1: Check if we can skip expensive pre-insight analysis
             # This happens when intent_parser detected reusable cached data
@@ -273,7 +380,8 @@ Rules:
                     "spatial_info": json.dumps(spatial_info.get('dimensions', {})),
                     "time_range": json.dumps(time_range) if has_temporal_info == 'yes' else "No temporal info",
                     "dataset_size": dataset_size,
-                    "total_data_points": total_data_points
+                    "total_data_points": total_data_points,
+                    "empirical_analysis": csv_analysis
                 }
 
                 # Call LLM for initial analysis
