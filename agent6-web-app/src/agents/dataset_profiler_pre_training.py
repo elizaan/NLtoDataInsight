@@ -92,6 +92,14 @@ class DatasetProfilerPretraining:
             Profile dictionary with all analysis results
         """
         dataset_id = dataset_info.get('id', 'unknown')
+        # if we have a csv file of empirical results, load that instead of regenerating
+        csv_path = self.cache_dir / f"{dataset_id}.csv"
+        if csv_path.exists():
+            #return the full csv file path
+            add_system_log(f"[Profiler] Loaded cached CSV profile for {dataset_id}", "success")
+            return str(csv_path)
+
+        
         
         # Step 1: Try to load cached profile
         cached_profile = self._load_cached_profile(dataset_id, dataset_info)

@@ -404,6 +404,14 @@ def run_sweep(output_csv_path=None, qualities=None, timesteps=None, save_maps=Fa
         csv_writer.writeheader()
         csv_file.flush()
 
+    # formatting helpers used for CSV values (keep at function scope so both
+    # aggregated and per-timestep flows can reference them)
+    def fmt_temp(v, ndigits=6):
+        return None if v is None else f"{round(v, ndigits)}°C"
+
+    def fmt_pct(v, ndigits=6):
+        return None if v is None else f"{round(v, ndigits)}%"
+
     # Ensure local ranges exist if ds was already initialized earlier
     if 'x_range_local' not in locals():
         if x_range_override is not None:
@@ -445,18 +453,32 @@ def run_sweep(output_csv_path=None, qualities=None, timesteps=None, save_maps=Fa
     if range_spec is not None:
         start_ts, end_ts, interval_ts = range_spec
         # initialize aggregates for each quality
-        aggregates = {q: {'read_times': [], 'pre_points': 0, 'rmse_list': [], 'avg_abs_list': []} for q in qualities}
+        aggregates = {q: {'read_times': [], 'pre_points': 0, 'rmse_list': [], 'avg_abs_list': [], 'bias_list': [], 'median_list': [], 'pct_avg_list': [], 'min_list': [], 'max_list': []} for q in qualities}
+
+        # also track aggregated stats for the reference itself (always include)
+        ref_agg = {'read_times': [], 'pre_points': 0, 'rmse_list': [], 'avg_abs_list': [], 'bias_list': [], 'median_list': [], 'pct_avg_list': [], 'min_list': [], 'max_list': []}
 
         for t in timesteps_list:
             # read reference and prepare mask as in the single-step flow
             try:
+                t0 = perf_counter()
                 ref = ds.db.read(time=t, x=x_range_local, y=y_range_local, z=z_range_local, quality=ref_quality)
+                ref_dt = perf_counter() - t0
             except Exception as e:
                 print(f"Failed to read reference for t={t} in aggregated range: {e}")
                 # mark error for each quality and continue
                 for q in qualities:
                     aggregates[q]['read_times'].append(None)
+                # also mark a failed ref read
+                ref_agg['read_times'].append(None)
                 continue
+
+            # record ref timings / points
+            try:
+                ref_agg['read_times'].append(ref_dt)
+                ref_agg['pre_points'] += int(np.prod(ref.shape))
+            except Exception:
+                pass
 
             # prepare mask_for_ref for this timestep
             mask_for_ref = None
@@ -497,6 +519,53 @@ def run_sweep(output_csv_path=None, qualities=None, timesteps=None, save_maps=Fa
                 except Exception:
                     raise
 
+            # collect reference diagnostics (ref vs ref) for this timestep
+            try:
+                ref_diag = diagnostics_and_report(ref, ref, mask3d=mask_for_ref)
+                # If mask exists but selects zero points, fall back to unmasked diagnostics
+                if ref_diag.get('valid_count', 0) == 0:
+                    try:
+                        ref_diag_unmasked = diagnostics_and_report(ref, ref, mask3d=None)
+                        # merge values from unmasked where meaningful
+                        ref_diag = {**ref_diag, **{k: v for k, v in ref_diag_unmasked.items() if v is not None}}
+                    except Exception:
+                        pass
+
+                if ref_diag.get('rmse') is not None:
+                    ref_agg['rmse_list'].append(ref_diag.get('rmse'))
+                if ref_diag.get('avg_abs_error') is not None:
+                    ref_agg['avg_abs_list'].append(ref_diag.get('avg_abs_error'))
+                if ref_diag.get('bias') is not None:
+                    ref_agg['bias_list'].append(ref_diag.get('bias'))
+                if ref_diag.get('median_abs') is not None:
+                    ref_agg['median_list'].append(ref_diag.get('median_abs'))
+                if ref_diag.get('pct_avg_error') is not None:
+                    ref_agg['pct_avg_list'].append(ref_diag.get('pct_avg_error'))
+                # collect ocean extrema for ref if mask present and selects points,
+                # otherwise use full-sample extrema when fallback occurred
+                try:
+                    if mask_for_ref is not None:
+                        mb = np.array(mask_for_ref).astype(bool)
+                        vals = ref[mb]
+                        if vals.size:
+                            ref_agg['min_list'].append(float(np.nanmin(vals)))
+                            ref_agg['max_list'].append(float(np.nanmax(vals)))
+                        else:
+                            # fallback to full-sample extrema
+                            vals2 = ref
+                            if vals2.size:
+                                ref_agg['min_list'].append(float(np.nanmin(vals2)))
+                                ref_agg['max_list'].append(float(np.nanmax(vals2)))
+                    else:
+                        vals2 = ref
+                        if vals2.size:
+                            ref_agg['min_list'].append(float(np.nanmin(vals2)))
+                            ref_agg['max_list'].append(float(np.nanmax(vals2)))
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
             # for each quality read and accumulate times/diagnostics
             for q in qualities:
                 try:
@@ -515,7 +584,7 @@ def run_sweep(output_csv_path=None, qualities=None, timesteps=None, save_maps=Fa
                 aggregates[q]['pre_points'] += pre_points
                 aggregates[q]['read_times'].append(dt)
 
-                # compute diagnostics per-step and accumulate rmse/avg_abs
+                # compute diagnostics per-step and accumulate rmse/avg_abs and extrema
                 try:
                     if ref.shape != test.shape:
                         try:
@@ -525,28 +594,135 @@ def run_sweep(output_csv_path=None, qualities=None, timesteps=None, save_maps=Fa
                     else:
                         test_r = test
                     diag = diagnostics_and_report(ref, test_r, mask3d=mask_for_ref)
+                    # If mask exists but selects zero points, fall back to unmasked diagnostics
+                    if diag.get('valid_count', 0) == 0:
+                        try:
+                            diag_unmasked = diagnostics_and_report(ref, test_r, mask3d=None)
+                            diag = {**diag, **{k: v for k, v in diag_unmasked.items() if v is not None}}
+                        except Exception:
+                            pass
                     if diag.get('rmse') is not None:
                         aggregates[q]['rmse_list'].append(diag.get('rmse'))
                     if diag.get('avg_abs_error') is not None:
                         aggregates[q]['avg_abs_list'].append(diag.get('avg_abs_error'))
+                    if diag.get('bias') is not None:
+                        aggregates[q]['bias_list'].append(diag.get('bias'))
+                    if diag.get('median_abs') is not None:
+                        aggregates[q]['median_list'].append(diag.get('median_abs'))
+                    if diag.get('pct_avg_error') is not None:
+                        aggregates[q]['pct_avg_list'].append(diag.get('pct_avg_error'))
+                    # collect ocean extrema for this test if mask available
+                    try:
+                        if mask_for_ref is not None:
+                            mb = np.array(mask_for_ref).astype(bool)
+                            vals = test_r[mb]
+                            if vals.size:
+                                aggregates[q]['min_list'].append(float(np.nanmin(vals)))
+                                aggregates[q]['max_list'].append(float(np.nanmax(vals)))
+                            else:
+                                # fallback to full-sample extrema
+                                vals2 = test_r
+                                if vals2.size:
+                                    aggregates[q]['min_list'].append(float(np.nanmin(vals2)))
+                                    aggregates[q]['max_list'].append(float(np.nanmax(vals2)))
+                        else:
+                            vals2 = test_r
+                            if vals2.size:
+                                aggregates[q]['min_list'].append(float(np.nanmin(vals2)))
+                                aggregates[q]['max_list'].append(float(np.nanmax(vals2)))
+                    except Exception:
+                        pass
                 except Exception:
                     pass
 
-        # after iterating timesteps_list, write one summary row per quality
+        # after iterating timesteps_list, write a summary row for the reference
+        # followed by one summary row per quality
+        # reference row
+        ref_read_times = [r for r in ref_agg['read_times'] if r is not None]
+        if ref_read_times:
+            ref_total_read = round(float(sum(ref_read_times)), 6)
+        else:
+            ref_total_read = None
+
+        ref_mean_rmse = None
+        if ref_agg['rmse_list']:
+            ref_mean_rmse = float(np.mean(ref_agg['rmse_list']))
+        ref_mean_bias = None
+        if ref_agg['bias_list']:
+            ref_mean_bias = float(np.mean(ref_agg['bias_list']))
+        ref_mean_median = None
+        if ref_agg['median_list']:
+            ref_mean_median = float(np.mean(ref_agg['median_list']))
+        ref_mean_pct = None
+        if ref_agg['pct_avg_list']:
+            ref_mean_pct = float(np.mean(ref_agg['pct_avg_list']))
+
+        ref_min = None
+        ref_max = None
+        if ref_agg['min_list']:
+            ref_min = float(np.min(ref_agg['min_list']))
+        if ref_agg['max_list']:
+            ref_max = float(np.max(ref_agg['max_list']))
+
+        ref_csv_row = {
+            'quality/resolution': ref_quality,
+            'start_timestep': start_ts,
+            'end_timestep': end_ts,
+            'time_interval': interval_ts,
+            'x_range': str(x_range_local),
+            'y_range': str(y_range_local),
+            'z_range': str(z_range_local),
+            'total_read_time_seconds': ref_total_read,
+            'absolute_data_points': ref_agg['pre_points'],
+            'min_temperature_ocean': (fmt_temp(ref_min) if ref_min is not None else None),
+            'max_temperature_ocean': (fmt_temp(ref_max) if ref_max is not None else None),
+            'rmse': (fmt_temp(ref_mean_rmse) if ref_mean_rmse is not None else None),
+            'average_signed_error(bias)': (fmt_temp(ref_mean_bias) if ref_mean_bias is not None else None),
+            'median_absolute_error': (fmt_temp(ref_mean_median) if ref_mean_median is not None else None),
+            'average_absolute_error': (fmt_temp(float(np.mean(ref_agg['avg_abs_list']))) if ref_agg['avg_abs_list'] else None),
+            'percentage_average_error': (fmt_pct(ref_mean_pct) if ref_mean_pct is not None else None)
+        }
+        try:
+            csv_writer.writerow({k: ref_csv_row.get(k, None) for k in csv_keys})
+            csv_file.flush()
+        except Exception:
+            pass
+        results.append(ref_csv_row)
+
+        # per-quality rows
         for q in qualities:
             read_times = [r for r in aggregates[q]['read_times'] if r is not None]
             if read_times:
                 total_read = round(float(sum(read_times)), 6)
-                mean_read = float(np.mean(read_times))
-                med_read = float(np.median(read_times))
             else:
                 total_read = None
-                mean_read = None
-                med_read = None
 
             mean_rmse = None
             if aggregates[q]['rmse_list']:
                 mean_rmse = float(np.mean(aggregates[q]['rmse_list']))
+
+            mean_bias = None
+            if aggregates[q]['bias_list']:
+                mean_bias = float(np.mean(aggregates[q]['bias_list']))
+
+            mean_median = None
+            if aggregates[q]['median_list']:
+                mean_median = float(np.mean(aggregates[q]['median_list']))
+
+            mean_pct = None
+            if aggregates[q]['pct_avg_list']:
+                mean_pct = float(np.mean(aggregates[q]['pct_avg_list']))
+
+            q_min = None
+            q_max = None
+            if aggregates[q]['min_list']:
+                q_min = float(np.min(aggregates[q]['min_list']))
+            if aggregates[q]['max_list']:
+                q_max = float(np.max(aggregates[q]['max_list']))
+
+            avg_abs = None
+            if aggregates[q]['avg_abs_list']:
+                avg_abs = float(np.mean(aggregates[q]['avg_abs_list']))
 
             csv_row = {
                 'quality/resolution': q,
@@ -559,13 +735,13 @@ def run_sweep(output_csv_path=None, qualities=None, timesteps=None, save_maps=Fa
                 # store the total time across the range here
                 'total_read_time_seconds': total_read,
                 'absolute_data_points': aggregates[q]['pre_points'],
-                'min_temperature_ocean': None,
-                'max_temperature_ocean': None,
+                'min_temperature_ocean': (fmt_temp(q_min) if q_min is not None else None),
+                'max_temperature_ocean': (fmt_temp(q_max) if q_max is not None else None),
                 'rmse': (fmt_temp(mean_rmse) if mean_rmse is not None else None),
-                'average_signed_error(bias)': None,
-                'median_absolute_error': None,
-                'average_absolute_error': (round(float(np.mean(aggregates[q]['avg_abs_list'])), 8) if aggregates[q]['avg_abs_list'] else None),
-                'percentage_average_error': None
+                'average_signed_error(bias)': (fmt_temp(mean_bias) if mean_bias is not None else None),
+                'median_absolute_error': (fmt_temp(mean_median) if mean_median is not None else None),
+                'average_absolute_error': (fmt_temp(avg_abs) if avg_abs is not None else None),
+                'percentage_average_error': (fmt_pct(mean_pct) if mean_pct is not None else None)
             }
             try:
                 csv_writer.writerow({k: csv_row.get(k, None) for k in csv_keys})

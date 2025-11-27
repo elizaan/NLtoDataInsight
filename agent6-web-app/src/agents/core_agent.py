@@ -167,30 +167,7 @@ class AnimationAgent:
             add_system_log(f"[Agent] Loading/generating dataset profile for {dataset_id}...", 'info')
             full_profile = self.profiler.get_or_create_profile(dataset)
 
-            # Create a small, in-memory condensed profile with only the
-            # fields we commonly need in downstream agents/UI. This keeps
-            # the in-memory object lightweight while the full profile JSON
-            # remains on disk in the profiler cache.
-            condensed_profile = None
-            try:
-                if isinstance(full_profile, dict):
-                    condensed_profile = {
-                        'dataset_id': full_profile.get('dataset_id') or dataset.get('id'),
-                        'dataset_name': full_profile.get('dataset_name') or dataset.get('name'),
-                        'profiled_at': full_profile.get('profiled_at'),
-                        'profile_version': full_profile.get('profile_version'),
-                        # Put the two requested benchmark pieces at top-level
-                        'failed_tests': full_profile.get('benchmark_results', {}).get('failed_tests', []),
-                        'accuracy_tradeoff_analysis': full_profile.get('benchmark_results', {}).get('accuracy_tradeoff_analysis', {})
-                    }
-                else:
-                    condensed_profile = None
-            except Exception as e:
-                add_system_log(f"[Agent] Warning: could not condense dataset profile: {e}", 'warning')
-                condensed_profile = None
-
-            # Store condensed profile in-memory for quick access by agents/UI
-            self.dataset_profile = condensed_profile
+            self.dataset_profile = full_profile
 
             # Share condensed profile with insight generators so they can use it
             self.insight_extractor.insight_generator.dataset_profile = self.dataset_profile
@@ -885,7 +862,8 @@ Queries are identical if they ask for the same analysis on the same data, even i
             user_query=query,
             intent_hints=intent_result,
             dataset=context.get('dataset'),
-            progress_callback=progress_callback
+            progress_callback=progress_callback,
+            dataset_profile=self.dataset_profile
         )
         
         # Check if we need time clarification

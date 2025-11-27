@@ -1,11 +1,14 @@
 
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
+from langchain.agents.agent_typtes import AgentType
+from langchain_experimental.agents import create_pandas_dataframe_agent
 from typing import Optional, Dict, Any
 import os
 import traceback
 import json
 import re
+import pandas as pd
 
 # Import constants
 from .query_constants import DEFAULT_TIME_LIMIT_SECONDS, TIME_ESTIMATION_BUFFER
@@ -61,6 +64,8 @@ class InsightExtractorAgent:
             max_completion_tokens=3000
         )
         
+        
+        
         # Initialize the data insight generator
         self.insight_generator = DatasetInsightGenerator(
             api_key=api_key,
@@ -78,7 +83,7 @@ DATASET INFORMATION:
 Available Variables: {variables}
 Spatial Extent: {spatial_info}
 Time Range: {time_range}
-Dataset Size: {dataset_size}
+Full Dataset Size: {dataset_size}
 
 Your role is to analyze the query and determine:
 1. What variable(s) the user is asking about
@@ -89,18 +94,26 @@ Your role is to analyze the query and determine:
 
 **STEP 1: ANALYZE THE PROBLEM**
 - What does the user actually want to know?
-- What data is needed to answer this?
+- What data variables, time ranges are needed to answer this?
 - Does the dataset have the required variables to answer the query? Or can they be derived from existing variables?
 
 
 **STEP 2: QUERY EXECUTION TIME ESTIMATION GUIDELINES:**
-- Consider {dataset_profile_section} to understand how long it might take to run the query on almost full resolution data for user query: {query}.
-- suggest a time estimate in minutes for running the query on almoost full resolution data 
+- the attached csv file contains empirical performance results for various operations on this dataset at different resolutions, time ranges, spatial extents
+- Consider  the attached CSV file to understand how long it might take to run the user query on almost full resolution data
+- suggest a time estimate in minutes for running the query on almost full resolution data
+- also provide a brief reasoning in 'time_estimation_reasoning'for your time estimate, considering:
+    - dataset size, spatial and temporal extent requested
+    - complexity of analysis (simple stats vs complex spatiotemporal patterns)
+    - a rough but short approach on how you arrived at your time estimate, what factors you considered
+    - add a buffer to your estimate to account for overheads and unexpected delays
+    - how much approximate data needs to be read from disk and processed and is it reasonable
+    - what is the predicted accuracy tradeoff (rmse and percentage_average_error) in your estimate if any
 
 **STEP 3: PLOT SUGGESTIONS**
 - with the required/ derived variables needed to answer the query, which plots would best illustrate the insights?
     - simple-easy but intuitive 2D/3D spatial field visualization
-    - Some more related, on point, 1D, 2D, ..ND plots that are most easily interpretable by domain scientists and appropriate for the query and dataset
+    - Some more related, on point, 1D, 2D, ..ND plots that are highly intuitive to understand the user query, easily interpretable by domain scientists and appropriate for the query and dataset
 - for each type of plots add subplots if needed for more clarity and better understanding and tranperancy
 - Keep suggestions focused, on point, meaningful, easily digestable and not too many plots not even too less
 
@@ -116,7 +129,7 @@ Output JSON with:
     "reasoning": "Brief explanation",
     "confidence": (0.0-1.0),
     "estimated_time_minutes": <number>,
-    "time_estimation_reasoning": "Brief explanation of how you did time estimate for this query for almost full resolution data with the given dataset profile",
+    "time_estimation_reasoning": "Brief explanation about time estimation as discussed above",
 }}
 
 Rules:
@@ -124,7 +137,7 @@ Rules:
 - If query asks about dataset description, available variables → "metadata_only"
 - Match query terms to available variables (handle typos/synonyms)
 - Provide confidence score (0.0-1.0)
-- Always provide estimated_time_minutes for user query (can be rough estimate)
+- Always provide estimated_time_minutes and time_estimation_reasoning for user query based on the guidelines above
 """
 
         self.prompt = ChatPromptTemplate.from_messages([
@@ -140,7 +153,7 @@ Rules:
         intent_hints: dict, 
         dataset: dict,
         progress_callback: callable = None,
-        dataset_profile: Optional[dict] = None
+        dataset_profile: Optional[str] = None
     ) -> dict:
         """
         Main entry point for insight extraction
@@ -162,6 +175,7 @@ Rules:
         try:
             # CRITICAL: Check intent type first - don't extract insights for non-data queries
             intent_type = intent_hints.get('intent_type', 'UNKNOWN')
+           
             if intent_type in ['UNRELATED', 'HELP', 'EXIT']:
                 add_system_log(f"Skipping insight extraction for {intent_type} intent", 'info')
                 return {
@@ -192,20 +206,12 @@ Rules:
             total_voxels = x * y * z
 
             total_data_points = total_voxels * total_timesteps
-
-            # If a precomputed dataset profile is provided (set by core agent), prefer
-            # any total_data_points reported there as it may reflect preprocessing,
-            # effective sampling, or other optimizations.
-            # Also attach the profile to the downstream generator for reuse.
-            if dataset_profile:
-                try:
-                    # Give the profile to the DatasetInsightGenerator so it can be used
-                    # during generation/finalization steps.
-                    self.insight_generator.dataset_profile = dataset_profile
-                    if isinstance(dataset_profile, dict) and dataset_profile.get('total_data_points'):
-                        total_data_points = int(dataset_profile.get('total_data_points'))
-                except Exception:
-                    pass
+            empirical_results = None
+            if dataset_profile and dataset_profile.endswith('.csv'):
+                self.insight_generator.dataset_profile = dataset_profile
+                empirical_results = pd.read_csv(dataset_profile)
+                
+            
             # Step 1: Check if we can skip expensive pre-insight analysis
             # This happens when intent_parser detected reusable cached data
             skip_pre_insight = False
@@ -257,24 +263,6 @@ Rules:
                 # Step 1: Initial analysis with LLM
                 add_system_log("Analyzing query intent...", 'info')
                 
-                # Build dataset profile section for the prompt so the LLM can leverage
-                # cached, precomputed knowledge when estimating time and planning.
-                dataset_profile_section = ''
-                try:
-                    profile = dataset_profile or getattr(self.insight_generator, 'dataset_profile', None)
-                    if profile:
-                        dataset_profile_section = f"""
-DATASET PROFILE (PRE-COMPUTED, PERMANENT KNOWLEDGE):
-This profile was generated once and cached. Use it to make intelligent decisions.
-
-{json.dumps(profile, indent=2)}
-
-HOW TO USE THIS PROFILE:
-- Check 'accuracy_tradeoff_analysis' to understand relationships between resolution reduction, execution time and accuracy for empirical tests done on this dataset
-- check 'failed_tests' to see which operations/ aggregations failed and avoid them
-"""
-                except Exception:
-                    dataset_profile_section = ''
 
                 prompt_vars = {
                     "dataset_name": dataset_name,
@@ -285,8 +273,7 @@ HOW TO USE THIS PROFILE:
                     "spatial_info": json.dumps(spatial_info.get('dimensions', {})),
                     "time_range": json.dumps(time_range) if has_temporal_info == 'yes' else "No temporal info",
                     "dataset_size": dataset_size,
-                    "total_data_points": total_data_points,
-                    "dataset_profile_section": dataset_profile_section
+                    "total_data_points": total_data_points
                 }
 
                 # Call LLM for initial analysis
