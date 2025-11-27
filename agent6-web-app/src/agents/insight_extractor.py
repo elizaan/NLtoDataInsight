@@ -1,7 +1,7 @@
 
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
-from langchain.agents.agent_typtes import AgentType
+from langchain.agents.agent_types import AgentType
 from langchain_experimental.agents import create_pandas_dataframe_agent
 from typing import Optional, Dict, Any
 import os

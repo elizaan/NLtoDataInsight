@@ -23,6 +23,8 @@ ai_data/generated_datasets/
 ai_data/insights/
 ai_data/data_cache/
 ai_data/plots/
+ai_data/vector_db/
+ai_data/conversation_history/
 src/static/uploads/
 
 # Python bytecode
