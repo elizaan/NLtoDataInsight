@@ -492,6 +492,20 @@ class DatasetInsightGenerator:
 
 
         self.dataset_profile = empirical_test_results
+            
+#         # Build time constraint section for system prompt - LLM DECIDES OPTIMIZATION
+#         if user_time_limit:
+#             time_constraint_section = f'''**TIME CONSTRAINT**: User specified {user_time_limit} minutes.
+
+# **DATA SCALE CONTEXT:**
+# - Total data points: {total_data_points:,}
+# - Spatial dimensions: {x} × {y} × {z} = {total_voxels:,} points per timestep
+# - Temporal: {total_timesteps} timesteps ({time_units})
+# - Available time: {user_time_limit * 60 * 0.9} seconds
+# '''
+#         else:
+#             time_constraint_section = '**NO TIME CONSTRAINT** specified. '
+
         
         reusable_npz_instruction = ""
         cache_info = self._extract_cache_info(intent_result)
@@ -500,7 +514,17 @@ class DatasetInsightGenerator:
             cache_info['new_npz_file'] = data_cache_file_str
             reusable_npz_instruction = self._build_reusable_npz_instruction(cache_info)
 
-      
+        # Build system prompt - LLM DECIDES EVERYTHING
+#         system_prompt = f"""You are an expert data scientist analyzing with full autonomy to solve the user's question.
+
+#           **USER QUESTION:** {user_query}
+
+#           **INTENT ANALYSIS:**
+#           - Type: {intent_type}
+#           - Intent Reasoning: {reasoning}
+#           - Plot Hints: {json.dumps(plot_hints, indent=2)}
+# """
+        
         system_prompt = f"""You are an expert data scientist analyzing with full autonomy to solve the user's question.
 
           **USER QUESTION:** {user_query}
@@ -537,6 +561,183 @@ Spatial Dimensions:
 - Z: {z} levels
 - Total spatial points: {total_voxels:,}
 
+
+Geographic Information:
+- Has geographic coordinates: {spatial_info.get('geographic_info', {}).get('has_geographic_info', 'no')}
+- Geographic file: {spatial_info.get('geographic_info', {}).get('geographic_info_file', 'N/A')}
+
+**CRITICAL: Geographic Mapping Intelligence**
+When user mentions LOCATION NAMES (not just x/y indices), you MUST map them to coordinates.
+
+The dataset has a geographic coordinate file: {spatial_info.get('geographic_info', {}).get('geographic_info_file', 'llc2160_latlon.nc')}
+This file (resolved path: {geo_file_path_str}) contains latitude[y, x] and longitude[y, x] arrays that map grid indices to real-world coordinates.
+
+**Your Geographic Knowledge:**
+You have extensive knowledge of Earth geography including:
+- **Ocean basins**: Atlantic, Pacific, Indian, Arctic, Southern Oceans
+- **Seas and water bodies**: Mediterranean Sea, Caribbean Sea, Arabian Sea, Bay of Bengal, Red Sea, etc.
+- **Ocean currents**: Gulf Stream, Kuroshio, Agulhas, Antarctic Circumpolar Current, etc.
+- **Oceanographic features**: Eddies, gyres, upwelling zones, fronts, rings
+
+**How to Handle Geographic Queries:**
+
+**Step 1: Identify if query mentions a location**
+Look for keywords: ocean names, sea names, current names, country names, "near", "in", "around", "region", "area", etc.
+
+**Step 2: Estimate lat/lon bounds using your geographic knowledge**
+
+**Step 3: Use the provided helper function to convert to grid indices**
+ALWAYS use latlon_to_xy() - don't try to manually estimate grid positions!
+
+**Example code pattern for geographic queries:**
+```python
+# User asked about "currents in the Mediterranean"
+# Step 1: You know Mediterranean is roughly lat:[30, 46], lon:[-6, 37]
+
+# Step 2: Convert to grid coordinates using helper
+import xarray as xr
+geo_file = "llc2160_latlon.nc"
+
+def latlon_to_xy(lat_range, lon_range):
+    ds = xr.open_dataset(geo_file)
+    lat_center = ds["latitude"].values
+    lon_center = ds["longitude"].values
+    
+    mask = (
+        (lat_center >= lat_range[0]) & (lat_center <= lat_range[1]) &
+        (lon_center >= lon_range[0]) & (lon_center <= lon_range[1])
+    )
+    
+    y_indices, x_indices = np.where(mask)
+    x_min, x_max = int(x_indices.min()), int(x_indices.max()) + 1
+    y_min, y_max = int(y_indices.min()), int(y_indices.max()) + 1
+    
+    return [x_min, x_max], [y_min, y_max]
+
+# Apply it
+x_range, y_range = latlon_to_xy([30, 46], [-6, 37])
+print(f"Mediterranean region: x={{x_range}}, y={{y_range}}")
+
+# Now use these ranges in your data query
+data = ds.db.read(
+    time=t,
+    x=x_range,
+    y=y_range,
+    z= z_range
+    # x,y,z reads prefer a non-zero-length range (start < end).
+    #  OpenVisus bindings require start < end
+    quality=0 # choose appropriate quality based on time constraints
+)
+```
+
+**IMPORTANT** 
+- USE YOUR KNOWLEDGE to estimate bounds for ANY geographic location mentioned
+- ALWAYS call latlon_to_xy() to get grid indices - never guess grid coordinates
+- If unsure about exact bounds, provide reasonable estimates (it's better than failing)
+
+**Helper Code for Geographic Mapping:**
+```python
+import xarray as xr
+import numpy as np
+
+# Geographic file path (resolved to absolute path in the repo)
+geo_file = "{geo_file_path_str}"
+
+def get_dataset_bounds():
+    '''Get actual lat/lon coverage of dataset'''
+    ds = xr.open_dataset(geo_file)
+    lat_center = ds["latitude"].values
+    lon_center = ds["longitude"].values
+    
+    return {{
+        "lat_min": float(lat_center.min()),
+        "lat_max": float(lat_center.max()),
+        "lon_min": float(lon_center.min()),
+        "lon_max": float(lon_center.max())
+    }}
+
+def latlon_to_xy(lat_range, lon_range):
+    '''
+    Convert lat/lon ranges to x/y index ranges
+    
+    Args:
+        lat_range: [min_lat, max_lat] in degrees
+        lon_range: [min_lon, max_lon] in degrees
+    
+    Returns:
+        x_range: [x_min, x_max]
+        y_range: [y_min, y_max]
+    '''
+    ds = xr.open_dataset(geo_file)
+    lat_center = ds["latitude"].values
+    lon_center = ds["longitude"].values
+    
+    # Find indices where coordinates fall within range
+    mask = (
+        (lat_center >= lat_range[0]) & (lat_center <= lat_range[1]) &
+        (lon_center >= lon_range[0]) & (lon_center <= lon_range[1])
+    )
+    
+    y_indices, x_indices = np.where(mask)
+    
+    if len(x_indices) == 0 or len(y_indices) == 0:
+        raise ValueError(f"No data found in lat {{lat_range}}, lon {{lon_range}}")
+    
+    x_min = int(x_indices.min())
+    x_max = int(x_indices.max()) + 1
+    y_min = int(y_indices.min())
+    y_max = int(y_indices.max()) + 1
+    
+    return [x_min, x_max], [y_min, y_max]
+
+def xy_to_latlon(x_range, y_range):
+    '''
+    Convert x/y index ranges to actual lat/lon ranges
+    
+    Args:
+        x_range: [x_min, x_max]
+        y_range: [y_min, y_max]
+    
+    Returns:
+        lat_range: [min_lat, max_lat]
+        lon_range: [min_lon, max_lon]
+    '''
+    ds = xr.open_dataset(geo_file)
+    lat_center = ds["latitude"].values
+    lon_center = ds["longitude"].values
+    
+    # Extract coordinates for the given index range
+    lat = lat_center[y_range[0]:y_range[1], x_range[0]:x_range[1]]
+    lon = lon_center[y_range[0]:y_range[1], x_range[0]:x_range[1]]
+    
+    lat_range = [float(lat.min()), float(lat.max())]
+    lon_range = [float(lon.min()), float(lon.max())]
+    
+    return lat_range, lon_range
+
+# Example usage:
+# bounds = get_dataset_bounds()  # Check what the dataset covers
+# x_range, y_range = latlon_to_xy([-40, -30], [15, 35])  # Agulhas Current
+# lat_range, lon_range = xy_to_latlon([1000, 2000], [500, 1000])  # Reverse lookup
+```
+
+**WORKFLOW for Location Queries:**
+1. User mentions location name (e.g., "Australia")
+2. You recognize it and recall approximate lat/lon bounds from your knowledge
+3. Optionally check dataset bounds with get_dataset_bounds() to verify coverage
+4. Use latlon_to_xy() helper to convert to x/y indices
+5. Use those indices in your data query
+6. Mention the actual coordinates used in your output
+
+**Important Notes:**
+- These are APPROXIMATE bounds - real features have fuzzy boundaries
+- It's OK to use broad regions (e.g., ±5° buffer is fine)
+- If unsure about exact bounds, estimate conservatively
+- Always mention the lat/lon you used in your output for transparency
+- Check if your requested region is within dataset bounds
+
+
+
 Temporal Information:
 - Total timesteps: {total_timesteps:,}
 - Time units: {time_units}
@@ -544,21 +745,6 @@ Temporal Information:
 - Start date: {temporal_info.get('time_range', {}).get('start', 'unknown')}
 - End date: {temporal_info.get('time_range', {}).get('end', 'unknown')}
 - TOTAL DATA POINTS: {total_data_points:,}
-
-**PRE-ANALYZER AGENT HINTS:**
-- Suggested Quality Level: {suggested_quality_level}
-- Spatial Extent Hints: {json.dumps(spatial_extent_hints, indent=2)}
-- Temporal Sampling Strategy: {temporal_sampling_strategy}
-- Time Estimation Reasoning: {time_estimation_reasoning}
-- Target Variables: {json.dumps(target_variables, indent=2)}    
-- Dimension Reduction Info: {json.dumps(dim_reduction_info, indent=2)}
-- Plot Hints:
-{json.dumps(plot_hints, indent=2)}  
-- Plot Hint Reasonings:
-{json.dumps(plot_hint_reasonings, indent=2)}
-
-Based on the user's question, dataset characteristics, and time constraints, the pre-analyzer agent has provided these hints to guide code generation.
-
 
 **CRITICAL: Temporal Mapping Intelligence**
 The time_range might be in human-readable dates, but your code needs INTEGER timestep indices.
@@ -646,15 +832,27 @@ You have TWO separate code scripts to write:
 
 **HIGHLY IMPORTANT: Your Intelligence Required, please follow the steps carefuly:**
 
-**STEP 1: choose query parameters**
+**STEP 1: ANALYZE THE USER ASKED TIME**
 
-quality level, x, y, z and time ranges from spatial_extent_hints, temporal sampling strategy
+**USER TIME CONSTRAINT:**
+{time_constraint_section}
 
 
+**STEP 2: DECIDE YOUR STRATEGY**
+- Set query timeout to {user_time_limit * 60 * 0.9:.0f} seconds (90% of limit for buffer)
+- Choose the quality level that balances speed and correctness for THIS specific query:
+    - we have done empirical tests on dataset performance in various settings, you should use that knowledge from {self.dataset_profile} to guide your decision
 
-**STEP 2: OPtimize if sill needed**
-if any of the pre-analyzer agent hint is unclear or missing, decide how to fill in the gaps intelligently
-considering dataset's volume, user time limit, and user's question
+- Consider:
+    - Total data points: {total_data_points:,}
+    - Consider query complexity, data characteristics, and time budget
+    - Use empirical test results to decide on quality/resolution decision from dataset profile based on user query
+    - choose a tradeoff between speed and accuracy based on user time limit: {user_time_limit} minutes and 'accuracy_tradeoff_analysis' from dataset profile above
+
+- Decide:
+    - time sampling strategy: which timesteps to read (all? every Nth? specific ranges?)
+    - spatial quality/resolution level to read
+
 
 
 **STEP 3: WRITE SMART QUERY CODE**
@@ -680,7 +878,7 @@ try:
     ds = ovp.LoadDataset(url)
     
     # YOUR SAMPLING LOGIC
-    # Example: Sample every Nth timestep 
+    # Example: Sample every Nth timestep instead of all
 
     length_of_timesteps = len(ds.db.getTimesteps())
     # Extract data
@@ -726,7 +924,7 @@ except Exception as e:
 **Your Intelligence Required:**
 
 **STEP 1: UNDERSTAND PLOT HINTS**
-Plot hints: {plot_hints} and reasonings: {plot_hint_reasonings}
+Plot hints: {plot_hints}
 
 **STEP 2: DECIDE PLOT STRATEGY**
 Ask yourself:

@@ -357,6 +357,10 @@ Queries are identical if they ask for the same analysis on the same data, even i
         original_intent = context.get('original_intent_result', {})
         estimated_time = original_intent.get('estimated_time_minutes')
 
+        add_system_log(f"[Resolver] Estimated time from original intent: {estimated_time} minutes", 'debug')    
+        add_system_log(f"[Resolver] Awaiting time preference: {awaiting_time}", 'debug')
+        add_system_log(f"[Resolver] Original query: '{original_query}'", 'debug')
+
         # CRITICAL: Handle awaiting time preference even with no history
         if awaiting_time and original_query:
             add_system_log(
@@ -627,7 +631,7 @@ Queries are identical if they ask for the same analysis on the same data, even i
         cache_level = resolution['cache_level']
         cache_info = resolution.get('cache_info')
         add_system_log(
-            f"[Agent] Resolved Query: {resolved_query[:100]}...\n"
+            f"[Agent] Resolved Query: {resolved_query}...\n"
             f"  Time Limit: {user_time_limit} minutes\n"
             f"  Cache Level: {cache_level}\n"
             f"  Reasoning: {resolution.get('reasoning', '')}",
@@ -867,9 +871,11 @@ Queries are identical if they ask for the same analysis on the same data, even i
         if insight_result.get('status') == 'needs_time_clarification':
             estimated_time = insight_result.get('estimated_time_minutes', 'unknown')
             time_reasoning = insight_result.get('time_estimation_reasoning', '')
+
+            add_system_log(f"[Agent] Time clarification needed: estimated_time={estimated_time}, reasoning={time_reasoning}", 'info')
             
             if progress_callback:
-                progress_callback('time_clarification_request', {
+                progress_callback('awaiting_time_preference', {
                     'query': query,
                     'estimated_time_minutes': estimated_time,
                     'reasoning': time_reasoning,

@@ -659,7 +659,7 @@ def cleanup_old_tasks():
     current_time = time.time()
     with task_lock:
         expired = [tid for tid, task in task_storage.items() 
-                   if current_time - task['created_at'] > 600]  # 10 minutes
+                   if current_time - task['created_at'] > 6000]  # 10 minutes
         for tid in expired:
             del task_storage[tid]
     if expired:

@@ -71,6 +71,7 @@ class InsightExtractorAgent:
             base_output_dir=base_output_dir
         )
         
+        # Keep your existing system prompt for initial analysis
         self.system_prompt = """You are a scientific dataset pre-insight analyzer and coordinator for {dataset_name}.
 
 USER QUERY: {query}
@@ -92,24 +93,22 @@ DATASET GEOGRAPHIC COVERAGE:
 {dataset_geographic_bounds}
 
 USER TIME CONSTRAINT: {user_time_constraint}
-time limit in minutes: {user_limit}
 CRITICAL: This is the WALL-CLOCK time limit for query execution, NOT the temporal extent of data to analyze.
-- If user says "x minutes" → they want results within x minutes of computation time
+- If user says " x minutes" → they want results within x minutes of computation time
 - Do NOT confuse computation deadline with data timeframe
 
 Your role is to analyze the query and determine:
 1. What variable(s) the user is asking about
 2. What type of analysis is needed (max/min, time series, spatial pattern, etc.)
-3. Whether this requires actual data querying/writing a python code or can be answered from metadata information alone
-4. **ESTIMATE QUERY EXECUTION TIME** using the EMPIRICAL ANALYSIS provided and dataset characteristics and the user query
+3. Whether this requires actual data querying/ writing a python code or can be answered from metadata information alone.
+5. **ESTIMATE QUERY EXECUTION TIME** using the EMPIRICAL ANALYSIS provided and dataset characteristics and the user query.
 
 
 **STEP 1: ANALYZE THE PROBLEM**
-
 What does the user ACTUALLY want? Break down the query:
 - Which variables are needed? What might be derived variables?
 - Does the dataset have the required variables to answer the query? Or can they be derived from existing variables?
-- What might be the spatial extent? (does it cover full domain or a sub-region?)
+- what might be the spatial extent? (does it cover full domain or a sub-region?)
 - What temporal range? (If dates/seasons mentioned, estimate timesteps, how many timesteps? which time period?)
 - What analysis complexity? (simple stats, trends, patterns, etc.)
 
@@ -130,6 +129,7 @@ Follow these steps:
    - Use your geographic knowledge to estimate bounds
    - Format: latitude in degrees North (+) or South (-)
              longitude in degrees East (+) or West (-)
+   
 
 4. **Verify Within Dataset Bounds**: 
    - Check if your estimate falls within {dataset_geographic_bounds}
@@ -143,241 +143,125 @@ Follow these steps:
    
    It returns: x_range, y_range, z_range, estimated_points
 
-**STEP 2: QUERY EXECUTION TIME ESTIMATION**
 
-**MANDATORY TIME CALCULATION ALGORITHM:**
-
-**STEP A: Calculate Query's Total Points at Full Resolution (Q=0)**
-
-1. Determine spatial points:
-   - If tool called: spatial_points = estimated_points (from tool result)
-   - Otherwise: spatial_points = full_grid_size
-   - RECORD: "Spatial points per timestep = [your_spatial_points]"
-
-2. Determine temporal extent:
-   - Based on query, estimate total_timesteps_needed
-   - If user asks for "all data" or "full dataset": use {total_time_steps} from dataset info
-   - If user asks for specific time range: calculate timesteps in that range
-   - RECORD: "Total timesteps needed = [total_timesteps_needed]"
-
-3. Calculate total points at Q=0:
-   - estimated_total_points = spatial_points * total_timesteps_needed
-   - RECORD: "Estimated total points (Q=0) = [your_spatial_points] * [total_timesteps_needed] = [estimated_total_points]"
-
-**STEP B: Find Matching CSV Baseline Row**
-
-Search CSV for row with CLOSEST spatial extent to your query:
-   - Look for CSV rows where spatial_points ≈ your_spatial_points
-   - The CSV row may have different number of timesteps - that's OK, we'll scale in STEP D
-   - RECORD: "Selected CSV baseline: Row has [csv_spatial_points] spatial points, tested with [csv_timesteps] timestep(s)"
-   - RECORD: "CSV baseline spatial points = [csv_spatial_points]"
-
-**STEP C: Identify Spatial Scaling**
-
-Calculate how your spatial extent compares to the CSV baseline:
-   - spatial_scaling_factor = your_spatial_points / csv_spatial_points
-   - RECORD: "Spatial scaling factor = [your_spatial_points] / [csv_spatial_points] = [spatial_scaling_factor]"
-   
-   If spatial_scaling_factor ≈ 1.0:
-      - "CSV baseline closely matches our spatial extent - can use CSV times directly"
-   Else:
-      - "Will scale CSV times by factor of [spatial_scaling_factor]"
-
-**STEP D: Estimate Time for Different Quality Levels**
-
-CRITICAL: CSV shows time for a SINGLE TIMESTEP. You must scale to your query's total timesteps.
-
-For EACH quality level Q available in the CSV baseline row:
-
-1. **Extract from CSV:** 
-   - time_at_Q_per_timestep = CSV time for ONE timestep at quality Q (in seconds)
-   - RECORD: "CSV baseline at Q=[Q]: [time_at_Q_per_timestep]s per timestep"
-
-2. **Calculate time per timestep for YOUR spatial extent:**
-   - your_time_per_timestep_at_Q = time_at_Q_per_timestep * spatial_scaling_factor
-   - RECORD: "Your time per timestep at Q=[Q]: [time_at_Q_per_timestep]s * [spatial_scaling_factor] = [your_time_per_timestep_at_Q]s"
-
-3. **Scale to your total timesteps:**
-   - your_total_time_at_Q = your_time_per_timestep_at_Q * total_timesteps_needed
-   - your_total_time_minutes = your_total_time_at_Q / 60
-   - RECORD: "Total time at Q=[Q]: [your_time_per_timestep_at_Q]s * [total_timesteps_needed] timesteps = [your_total_time_at_Q]s = [your_total_time_minutes] min"
+** algorithmic steps to calculate estimated read time: ** 
+   - Use estimated_points returned above for time calculation below.
+   - what is the total_timesteps_needed based on temporal range you estimated?
+   - calculate estimated_total_points = estimated_points × total_timesteps_needed
+   - choose a CSV baseline row that is closest in quality level and temporal sampling you inferred, csv just has one timestep read time
+   - scaled_time = csv_baseline_time × (estimated_total_points / csv_baseline_points) 
+   - MUST include the x, y, z, lat, lon from tool result in your final JSON under "spatial_extent" field
+   - Include: x_range, y_range, z_range, actual_lat_range, actual_lon_range
+   - also include estimated_total_points
 
 
+**STEP 2: QUERY EXECUTION TIME ESTIMATION GUIDELINES:**
+
+**THINK LIKE A HUMAN ANALYST (Internal reasoning - don't expose mechanical steps in output):**
 
 
-**STEP E: Apply User Constraint Logic**
+**IF USER HAS TIME CONSTRAINT - Systematic Optimization Hierarchy:**
+    - **YOUR PRIMARY GOAL: FIT WITHIN THE USER'S TIME BUDGET - NOT MAXIMUM ACCURACY**
+    and use your EMPIRICAL KNOWLEDGE from the CSV data provided to guide your decisions, use inference and approximation cleverly
+    **Priority 1: Try Quality Reduction First**
+    - For TIGHT time constraints start with lowest quality directly
+    - Use CSV "total_read_time_seconds" column to estimate time at different quality levels
+    - follow the above algorithmic steps to estimate read time at different quality levels
+    - Then check if you can afford better quality within budget
+
+    **CHECK AFTER PRIORITY 1**: 
+    - Calculate estimated read time at whatever quality level you chose
+    - If > user_time_constraint → MUST apply Priority 2
+
+    **Priority 2: If Quality Alone Insufficient → Temporal Subsampling**
+    - **BE SPECIFIC about temporal strategy using dataset time context:**
+    - Dataset time interval unit is: {time_units}
+    - if you plan to do any temporal subsampling/subbsetting/interval to reduce load of timestep read for optimization purpose, convert them into real-world terms: per-second, per-minute/hourly/daily/weekly/monthly etc
+    - NOT generic phrases like "every Nth timestep" or "temporal interval=100"
+    - **Explain what temporal information is lost:**
+    - "This means we'll miss diurnal (daily) variations but capture ..."
+
+    **Priority 3: Last Resort → Dimensionality Reduction**
+    - Only if quality + temporal optimization still exceeds time budget
+    - Suggest meaningful dimensionality reduction based on dataset characteristics
+
+    - after each priority you must check if the estimated read time fits into the user time budget or not
+    - after all optimizations done priority by priority
+    -** MUST apprximate accuracy in NUMERICAL number percentage average error ** inferring based on the empirical csv data provided for optimizations considered
+    to return current user query: {query} within user specified time constraint. please remember that you need to fit into the user time constraint if provided by the user
+
 
 **IF NO USER TIME CONSTRAINT:**
-   - Use Quality 0 (full resolution)
-   - State: "No constraint provided. Using Q=0: estimated [time_Q0] minutes"
-  
-**IF USER HAS TIME CONSTRAINT:**
 
-   **Priority 1: Quality Reduction**
-   
-   Find the BEST (highest) quality level that fits within the constraint:
-   
-   Test each quality level from highest to lowest:
-   - "Q=0:  [time_0] min - {{'✓ FITS' if time_0 <= [user_limit] else '✗ EXCEEDS'}} [user_limit] min constraint"
-   - "Q=-N: [time_-N] min - {{'✓ FITS' if time_-N <= [user_limit] else '✗ EXCEEDS'}} [user_limit] min constraint"
-   - Continue testing until you find one that FITS
+    1. Search CSV for rows matching (or approximating) user's spatial extent
+    2. pick highest quality level row available, i think full resolution is best unless user specified otherwise
+    3. if user asks subset of spatial domain, look for CSV rows with similar or smaller spatial extent
+    4. You will not find exact match, please INFER/APPROXIMATE by scaling from similar test cases
+    5. use the algorithmic steps above to estimate read time
 
-   **CRITICAL: You MUST show these calculations for AT LEAST 4 quality levels:**
-   - Quality 0 (full resolution) - if available in CSV
-   - Several reduced quality levels available in CSV
-   - If user has tight time constraint, show more aggressive reductions
-   - Show ALL calculations explicitly with numbers
-   
-   RECORD: "Best quality that fits: Q=[selected_Q], estimated time=[selected_time] min"
-   
-   **Priority 2: Check if Quality Alone is Sufficient**
-   
-   IF lowest available quality still exceeds constraint:
-   - RECORD: "Lowest quality Q=[lowest_Q] still takes [time_lowest] min > {user_limit} min"
-   - RECORD: "Quality reduction alone is insufficient. Must apply temporal subsampling."
-   - Proceed to Priority 3
-   
-   **Priority 3: Temporal Subsampling**
-   
-   ONLY if Priority 1 & 2 failed:
-   
-   - **BE SPECIFIC about temporal strategy using dataset time context:**
-   - Dataset time interval unit is: {time_units}
-   - Convert temporal subsampling into real-world terms: per-second, per-minute, hourly, daily, weekly, monthly etc.
-   - NOT generic phrases like "every Nth timestep" or "temporal interval=100"
-   
-   Calculate required temporal stride:
-   - target_time_seconds = user_limit * 60
-   - time_per_timestep_at_lowest_Q = (time_at_lowest_Q from Step D.3)
-   - required_stride = ceil((time_per_timestep_at_lowest_Q * total_timesteps_needed) / target_time_seconds)
-   - new_timesteps = floor(total_timesteps_needed / required_stride)
-   
-   Recalculate time:
-   - new_total_time = time_per_timestep_at_lowest_Q * new_timesteps
-   - new_time_minutes = new_total_time / 60
-   
-   RECORD: "Applying temporal stride=[required_stride] ([real_world_interval]), effective timesteps=[new_timesteps], estimated time=[new_time_minutes] min"
-   
-   **Explain what temporal information is lost:**
-   - "This means we'll miss [what_is_lost] but will capture [what_is_retained]..."
+    Explain naturally: "To maintain highest accuracy for [spatial extent] across [temporal extent], this will take approximately X minutes using full resolution."
 
-   **Priority 4: Last Resort → Dimensionality Reduction**
-   - Only if quality + temporal optimization still exceeds time budget
-   - Suggest meaningful dimensionality reduction based on dataset characteristics and context and user query
-   - RECORD what spatial/depth information would be lost
 
-**STEP F: MANDATORY VERIFICATION**
+**Phase B: Present Natural Recommendation**
 
-Show final configuration and verify it fits:
+**OUTPUT STYLE in :**
+- Conversational, like explaining to colleague, include all your reasing clearly and transparently
+- DO explain reasoning: "Since you're analyzing trends, we need continuous coverage..."
+- DO state accuracy naturally: "This typically shows ~5% error, good enough for pattern detection"
+- DO be specific about temporal sampling: "sampling daily" NOT "time_interval=24"
 
-1. **Final Configuration:**
-   - Quality level: [selected_Q]
-   - Temporal stride: [stride] (1 if no subsampling)
-   - Effective timesteps: [effective_timesteps]
-   - Time per timestep: [time_per_step]s
-   
-2. **Final Calculation:**
-   - Total time = [time_per_step]s * [effective_timesteps] = [total_seconds]s = [total_minutes] min
-   
-3. **Constraint Check:**
-   - User constraint: {user_limit} min (or "None" if no constraint)
-   - Our estimate: [our_estimate] min
-   - Status: {{"✓ FITS within constraint" if [our_estimate] <= {user_limit} else "✗ EXCEEDS constraint - ERROR!"}}
-
-4. **IF EXCEEDS:**
-   - "ERROR: This configuration does NOT fit the constraint!"
-   - "Going back to apply more aggressive optimization..."
-   - [You MUST revise and recalculate with Priority 3 or 4]
-
-5. **Accuracy Estimation:**
-   - Based on empirical CSV data (RMSE column), estimate accuracy loss
-   - "At quality [Q]: Expected accuracy degradation ~[X]% (RMSE-based)"
-   - If temporal subsampling applied: "Temporal gaps may miss [type_of_variations]"
-
-**SANITY CHECK (MANDATORY):**
-
-After all calculations, verify your answer makes sense:
-
-1. Does the math check out?
-   - timesteps * time_per_timestep = total_time?
-   - total_time / 60 = minutes?
-
-2. Is the estimate reasonable?
-   - Full resolution (quality 0) should take HOURS/DAYS for large datasets with many timesteps
-   - Quality -6 with 10,000 timesteps should take TENS OF MINUTES to HOURS
-   - Quality -10 should take MINUTES
-   
-3. Does it actually fit the constraint?
-   - Your estimate ≤ user_time_limit?
-   - If NO → ERROR, you made a mistake, recalculate!
-
-**ALL CALCULATIONS ABOVE MUST BE INCLUDED IN YOUR time_estimation_reasoning FIELD!**
-
+**KEY PRINCIPLE:** Think flexibly. CSV is guidance, not absolute truth. Infer/approximate when exact match missing. Optimize systematically when user has time constraint.
 
 **STEP 3: PLOT SUGGESTIONS**
-
-With the required/derived variables needed to answer the query, which plots would best illustrate the insights?
-- Simple-easy but intuitive 2D/3D spatial field visualization
-- Some more related, on point, 1D, 2D, ...ND plots that are highly intuitive to understand the user query
-- Easily interpretable by domain scientists and appropriate for the query and dataset
-- For each type of plot add subplots if needed for more clarity and better understanding and transparency
-- Keep suggestions focused, on point, meaningful, easily digestible and not too many plots, not even too few
-
-
-**OUTPUT FORMAT:**
+- with the required/ derived variables needed to answer the query, which plots would best illustrate the insights?
+    - simple-easy but intuitive 2D/3D spatial field visualization
+    - Some more related, on point, 1D, 2D, ..ND plots that are highly intuitive to understand the user query, easily interpretable by domain scientists and appropriate for the query and dataset
+- for each type of plots add subplots if needed for more clarity and better understanding and tranperancy
+- Keep suggestions focused, on point, meaningful, easily digestable and not too many plots not even too less
 
 Output JSON with:
 {{
     "analysis_type": "data_query" | "metadata_only",
     "target_variables": ["variable_id1", "variable_id2", ...],
     "plot_hints": [
-        "plot1 (1D/2D/...ND): variables: <comma-separated variable ids>, plot_type: <type>, reasoning: <brief reasoning>",
-        "plot2 (1D/2D/...ND): variables: <comma-separated variable ids>, plot_type: <type>, reasoning: <brief reasoning>",
-        ...
+        "plot1 (1D/2D, ... ND): variables: <comma-separated variable ids>, plot_type: <type>, reasoning: <brief reasoning>",
+        ......
+        "plotN (1D/2D, ... ND): variables: <comma-separated variable ids>, plot_type: <type>, reasoning: <brief reasoning>"
     ],
-    "reasoning": "Brief natural explanation of what analysis is needed and why",
+    "reasoning": "Brief explanation",
     "confidence": (0.0-1.0),
     "estimated_time_minutes": <number>,
-    "time_estimation_reasoning": "DETAILED step-by-step calculation showing ALL work from STEP 2 above - this MUST include: Step A calculations, Step B CSV row selection, Step C scaling factor, Step D time estimates for multiple quality levels, Step E optimization decisions, Step F verification",
-    "quality_level_used": <number>,  // REQUIRED: the quality level selected (0, -2, -4, -6, etc.)
-    "temporal_sampling_strategy": "string describing temporal approach",
-    "dimensionality_reduction": {{
-        "applied": true | false,
-        "strategy": "string" | null
-    }},
-    "estimated_total_points": <number>,  // Total points at Q=0
+    "time_estimation_reasoning": "Detailed explanation of time estimate as of STEP 2",
+    "quality_level_used":  // REQUIRED: see empriical csv for quality levels
+  
+    "temporal_sampling_strategy": "string",
+  
+    "dimensionality_reduction": {{ // REQUIRED: 
+    "applied": true or false,
+    "strategy": "string" or null
+  }},
+   "estimated_total_points": <number>
+   
+    // NEW: Include if tool was called
     "spatial_extent": {{  // Include this if get_grid_indices_from_latlon was called
         "x_range": [x_min, x_max],
         "y_range": [y_min, y_max],
         "z_range": [z_min, z_max],
         "actual_lat_range": [lat_min, lat_max],
         "actual_lon_range": [lon_min, lon_max]
-    }} | null  // null if no geographic region detected
+       
+    }} or null  // null if no geographic region detected
+    
+
 }}
 
-**OUTPUT STYLE:**
-- "reasoning" field: Keep conversational and natural, like explaining to a colleague
-- "time_estimation_reasoning" field: MUST include ALL calculations step-by-step with explicit numbers
-  - Show numbers, show arithmetic, show comparisons
-  - Format: "Step A: spatial_points = 48M, timesteps = 10,366. Total points (Q=0) = 48M * 10,366 = 497B..."
-  - This is NOT optional - detailed calculations are REQUIRED for time estimation
-- DO explain reasoning: "Since you're analyzing trends, we need continuous coverage..."
-- DO state accuracy naturally: "This typically shows ~5% error, good enough for pattern detection"
-- DO be specific about temporal sampling: "sampling daily" NOT "time_interval=24"
-
-**RULES:**
+Rules:
 - If query asks about specific values, dates, locations → "data_query"
 - If query asks about dataset description, available variables → "metadata_only"
 - Match query terms to available variables (handle typos/synonyms)
 - Provide confidence score (0.0-1.0)
 - Always provide estimated_time_minutes and time_estimation_reasoning for user query based on the guidelines above
-- MUST include x, y, z ranges and lat/lon from tool result in "spatial_extent" field if tool was called
-- MUST include estimated_total_points in output
-
-**KEY PRINCIPLE:** 
-Think flexibly. CSV is guidance, not absolute truth. Infer/approximate when exact match missing. Optimize systematically when user has time constraint. Always show your calculations explicitly.
 """
-
 
         self.prompt = ChatPromptTemplate.from_messages([
             ("system", self.system_prompt),
@@ -450,7 +334,7 @@ CRITICAL CONTEXT - DATASET TEMPORAL INFO:
 - Dataset end date: {time_range.get('end', '2020-03-26')}
 - Total timesteps: {temporal_info.get('total_time_steps', '10366')}
 - Time units: {temporal_info.get('time_units', 'hours')} (each timestep = 1 hour)
-- Example: "January 2020 to next two days" means starting from {time_range.get('start', '2020-01-20')}, spanning 48 timesteps (2 days * 24 hours)
+- Example: "January 2020 to next two days" means starting from {time_range.get('start', '2020-01-20')}, spanning 48 timesteps (2 days × 24 hours)
 
 DATASET SPATIAL CHARACTERISTICS:
 - Spatial dimensions: {dims.get('x', 8640)}x{dims.get('y', 6480)}x{dims.get('z', 90)}
@@ -690,71 +574,34 @@ ANALYSIS INSTRUCTIONS:
                     "empirical_analysis": csv_analysis,
                     "user_time_constraint": user_time_constraint_msg,
                     "time_units": time_units,
-                    "dataset_geographic_bounds": dataset_bounds,
-                    "user_limit": user_time_limit if skip_time_estimation else "None",
-                    "total_time_steps": total_timesteps
+                    "dataset_geographic_bounds": dataset_bounds
                 }
                 final_response = None
                 # Call LLM for initial analysis
-                 # Call LLM for initial analysis
                 try:
-                    model_name = getattr(self.llm, 'model', None) or getattr(self.llm, 'model_name', 'gpt-4o')
-                    
-                    # DEBUG: Try formatting the system prompt and catch errors
                     try:
-                        formatted_system_prompt = self.system_prompt.format(**prompt_vars)
-                        add_system_log("System prompt formatted successfully", 'debug')
-                    except KeyError as ke:
-                        add_system_log(f"KeyError in system prompt formatting: Missing key '{ke.args[0]}'", 'error')
-                        add_system_log(f"Available keys: {list(prompt_vars.keys())}", 'error')
-                        # Find the line with the missing key
-                        import re
-                        missing_key = ke.args[0]
-                        pattern = r'\{' + re.escape(missing_key) + r'[^}]*\}'
-                        matches = re.finditer(pattern, self.system_prompt)
-                        for i, match in enumerate(matches, 1):
-                            start = match.start()
-                            # Find line number
-                            line_num = self.system_prompt[:start].count('\n') + 1
-                            context_start = max(0, start - 50)
-                            context_end = min(len(self.system_prompt), start + 100)
-                            context = self.system_prompt[context_start:context_end]
-                            add_system_log(
-                                f"Missing key '{{{missing_key}}}' found at line {line_num}, occurrence {i}",
-                                'error',
-                                details=context
-                            )
-                        raise
-                    except Exception as e:
-                        add_system_log(f"Unexpected error formatting system prompt: {type(e).__name__}: {e}", 'error')
-                        traceback.print_exc()
-                        raise
-                    
-                    messages = [
-                        {"role": "system", "content": formatted_system_prompt},
-                        {"role": "user", "content": "Analyze this query."}
-                    ]
-                    
-                    # Step 1: Model generates tool calls (or final response)
-                    add_system_log("Invoking LLM with formatted prompt...", 'debug')
-                    ai_msg = self.model_with_tools.invoke(messages)
-                    messages.append(ai_msg)
-                    
-                    add_system_log(f"LLM response received, checking for tool calls...", 'debug', details=str(ai_msg))
-                    
-                    # Step 2: Execute tools if requested
-                    if hasattr(ai_msg, 'tool_calls') and ai_msg.tool_calls:
-                        add_system_log(f"Tool calls detected: {len(ai_msg.tool_calls)}", 'info')
+                        model_name = getattr(self.llm, 'model', None) or getattr(self.llm, 'model_name', 'gpt-4o')
                         
-                        try:
+                        messages = [
+                        {"role": "system", "content": self.system_prompt.format(**prompt_vars)},
+                        {"role": "user", "content": "Analyze this query."}
+                        ]
+                        
+                        # Step 1: Model generates tool calls (or final response)
+                        ai_msg = self.model_with_tools.invoke(messages)
+                        messages.append(ai_msg)
+                        
+                        add_system_log(f"LLM response received, checking for tool calls...", 'debug', details=str(ai_msg))
+                        
+                        # Step 2: Execute tools if requested
+                        if hasattr(ai_msg, 'tool_calls') and ai_msg.tool_calls:
+                            add_system_log(f"Tool calls detected: {len(ai_msg.tool_calls)}", 'info')
+                            
                             for tool_call in ai_msg.tool_calls:
-                                add_system_log(
-                                    f"Executing tool: {tool_call['name']} with args: {tool_call['args']}", 
-                                    'info',
-                                    details=json.dumps(tool_call, default=str)
-                                )
+                                add_system_log(f"Executing tool: {tool_call['name']} with args: {tool_call['args']}", 'info')
                                 
                                 # Execute the tool
+                            
                                 tool_result = get_grid_indices_from_latlon.invoke(tool_call['args'])
                                 
                                 add_system_log(f"Tool result: {tool_result}", 'info', details=json.dumps(tool_result))
@@ -769,52 +616,18 @@ ANALYSIS INSTRUCTIONS:
                             # Step 3: Pass results back to model for final response
                             add_system_log("Calling LLM again with tool results...", 'debug')
                             final_response = self.llm.invoke(messages)
-                            
-                        except Exception as e:
-                            add_system_log(f"Tool execution failed: {e}", 'error')
-                            traceback.print_exc()
-                            # Fall back to original AI message
+                        else:
+                            add_system_log("No tool calls detected", 'warning')
                             final_response = ai_msg
-                    else:
-                        add_system_log("No tool calls in response, using direct answer", 'info')
-                        final_response = ai_msg
-                    
-                    # Token counting (non-critical)
-                    try:
+
+
+
                         token_count = log_token_usage(model_name, messages, label="pre_insight_analysis")
                         add_system_log(f"[token_instrumentation][InsightExtractor] model={model_name} tokens={token_count}", 'debug')
                     except Exception:
                         pass
-                        
-                except KeyError as ke:
-                    add_system_log(f"Template formatting failed - missing key: {ke}", 'error')
-                    traceback.print_exc()
-                    return {
-                        'status': 'error',
-                        'message': f'System prompt template error: Missing placeholder {{{ke.args[0]}}}',
-                        'error': str(ke),
-                        'confidence': 0.0
-                    }
-                except Exception as e:
-                    add_system_log(f"LLM invocation failed: {e}", 'error')
-                    traceback.print_exc()
-                    return {
-                        'status': 'error',
-                        'message': f'Pre-insight analysis failed: {str(e)}',
-                        'error': str(e),
-                        'confidence': 0.0
-                    }
-
-                # Verify we got a response
-                if final_response is None:
-                    add_system_log("ERROR: final_response is None after LLM call", 'error')
-                    return {
-                        'status': 'error',
-                        'message': 'LLM failed to generate response',
-                        'confidence': 0.0
-                    }
-
-    
+                except Exception:
+                    pass
 
                 # raw_response = self.chain.invoke(prompt_vars)
                 # raw_response = self.agent.invoke(prompt_vars)
