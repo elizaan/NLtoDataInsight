@@ -168,9 +168,6 @@ class AnimationAgent:
             full_profile = self.profiler.get_or_create_profile(dataset)
 
             self.dataset_profile = full_profile
-
-            # Share condensed profile with insight generators so they can use it
-            self.insight_extractor.insight_generator.dataset_profile = self.dataset_profile
             
         except Exception as e:
             add_system_log(f"[Agent] Warning: Could not load dataset profile: {e}", 'error')

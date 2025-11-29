@@ -329,6 +329,7 @@ class DatasetInsightGenerator:
         user_query: str,
         intent_result: Dict[str, Any],
         dataset_info: Dict[str, Any],
+        empirical_test_results: str = None,
         conversation_context: str = None,
         progress_callback: callable = None
     ) -> Dict[str, Any]:
@@ -427,9 +428,7 @@ class DatasetInsightGenerator:
             geo_file_path_str = geo_filename
 
 
-        profile = None
-        if self.dataset_profile:
-            profile = json.dumps(self.dataset_profile, indent=2)
+        self.dataset_profile = empirical_test_results
             
         # Build time constraint section for system prompt - LLM DECIDES OPTIMIZATION
         if user_time_limit:
@@ -774,7 +773,7 @@ You have TWO separate code scripts to write:
 **STEP 2: DECIDE YOUR STRATEGY**
 - Set query timeout to {user_time_limit * 60 * 0.9:.0f} seconds (90% of limit for buffer)
 - Choose the quality level that balances speed and correctness for THIS specific query:
-    - we have done empirical tests on dataset performance in various profiles, you should use that knowledge from dataset profile: {profile}
+    - we have done empirical tests on dataset performance in various settings, you should use that knowledge from {self.dataset_profile} to guide your decision
 
 - Consider:
     - Total data points: {total_data_points:,}
@@ -1246,7 +1245,7 @@ Write your corrected query code in <query_code></query_code> tags.
                         else:
                             # Consider it a true success
                             query_output = stdout
-                            add_system_log(f"Query succeeded with output {query_output}", "success")
+                            add_system_log(f"Query succeeded with output:  {len(query_output)} characters", "success", details=stdout)
                             query_success = True
                             current_phase = "plot"
                             add_system_log(" Query code succeeded! Moving to plot phase.", "success")

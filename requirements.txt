@@ -87,6 +87,7 @@ langchain
 langchain-classic
 langchain-community
 langchain-core
+langchain-experimental
 langchain-openai
 langchain-text-splitters
 langgraph
@@ -192,6 +193,7 @@ sniffio
 SQLAlchemy
 stack-data
 sympy
+tabulate
 tenacity
 tiktoken
 tokenizers

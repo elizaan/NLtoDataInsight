@@ -1,14 +1,14 @@
 
 from langchain_openai import ChatOpenAI
+from langchain.agents import create_agent
 from langchain_core.prompts import ChatPromptTemplate
-from langchain.agents.agent_types import AgentType
-from langchain_experimental.agents import create_pandas_dataframe_agent
 from typing import Optional, Dict, Any
 import os
 import traceback
 import json
 import re
 import pandas as pd
+from .tools import get_grid_indices_from_latlon
 
 # Import constants
 from .query_constants import DEFAULT_TIME_LIMIT_SECONDS, TIME_ESTIMATION_BUFFER
@@ -58,13 +58,14 @@ class InsightExtractorAgent:
 
     def __init__(self, api_key: str, base_output_dir: str = None):
         self.llm = ChatOpenAI(
-            model="gpt-4o-mini", 
+            model="gpt-4o", 
             api_key=api_key, 
-            temperature=0.2,
-            max_completion_tokens=3000
+            temperature=0.1,
+            verbose=True,
+            max_completion_tokens=4000
         )
-        
-        
+        # Bind tools to model
+        self.model_with_tools = self.llm.bind_tools([get_grid_indices_from_latlon], tool_choice="get_grid_indices_from_latlon")
         
         # Initialize the data insight generator
         self.insight_generator = DatasetInsightGenerator(
@@ -73,7 +74,7 @@ class InsightExtractorAgent:
         )
         
         # Keep your existing system prompt for initial analysis
-        self.system_prompt = """You are a scientific dataset insight coordinator for {dataset_name}.
+        self.system_prompt = """You are a scientific dataset pre-insight analyzer and coordinator for {dataset_name}.
 
 USER QUERY: {query}
 
@@ -83,11 +84,20 @@ FULL DATASET INFORMATION:
 Available Variables: {variables}
 Spatial Extent: {spatial_info}
 Time Range: {time_range}
+Time Units: {time_units}
 Full Dataset Size: {dataset_size}
 Total Approximate Data Points in full dataset in full resolution: {total_data_points}
 
 EMPIRICAL ANALYSIS:
 {empirical_analysis}
+
+DATASET GEOGRAPHIC COVERAGE:
+{dataset_geographic_bounds}
+
+USER TIME CONSTRAINT: {user_time_constraint}
+CRITICAL: This is the WALL-CLOCK time limit for query execution, NOT the temporal extent of data to analyze.
+- If user says " x minutes" → they want results within x minutes of computation time
+- Do NOT confuse computation deadline with data timeframe
 
 Your role is to analyze the query and determine:
 1. What variable(s) the user is asking about
@@ -98,23 +108,115 @@ Your role is to analyze the query and determine:
 
 **STEP 1: ANALYZE THE PROBLEM**
 What does the user ACTUALLY want? Break down the query:
-- Which variables are needed?
-- What might be derived variables?
+- Which variables are needed? What might be derived variables?
 - what might be the spatial extent? (does it cover full domain or a sub-region?)
-- What temporal range? (If dates/seasons mentioned, estimate timesteps)
+- What temporal range? (If dates/seasons mentioned, estimate timesteps, how many timesteps? which time period?)
 - What analysis complexity? (simple stats, trends, patterns, etc.)
 - Does the dataset have the required variables to answer the query? Or can they be derived from existing variables?
 
+**STEP 1.5: GEOGRAPHIC LOCATION REASONING**
+
+Dataset Geographic Coverage: {dataset_geographic_bounds}
+
+**IF query mentions a LOCATION NAME:**
+
+Follow these steps:
+
+1. **Detect Location**: Does query mention region/ocean/sea/current names?
+
+2. **Check Dataset**: Does dataset have geographic coordinates? Look at metadata.
+
+3. **Estimate Lat/Lon from Your Knowledge**:
+   - Use your geographic knowledge to estimate bounds
+   - Format: latitude in degrees North (+) or South (-)
+             longitude in degrees East (+) or West (-)
+   
+
+4. **Verify Within Dataset Bounds**: 
+   - Check if your estimate falls within {dataset_geographic_bounds}
+   - If NO → tell user region not covered
+   - If YES → proceed to step 5
+
+5. **Call Tool to Get Grid Indices**:
+   You have access to: get_grid_indices_from_latlon(lat_range, lon_range)
+   
+   Call it with your estimated bounds from step 3.
+   
+   It returns: x_range, y_range, z_range, estimated_points
+
+6. **Use estimated_points for Time Scaling**:
+   - Use estimated_points for time calculation below.
+    estimated_total_points = estimated_points × total_timesteps_needed
+    scaled_time = csv_baseline_time × (estimated_total_points / csv_baseline_points) 
+   - MUST include the tool result in your final JSON under "spatial_extent" field
+   - Include: x_range, y_range, z_range, estimated_total_points, actual_lat_range, actual_lon_range
+
+**IMPORTANT:**
+- Show your reasoning in time_estimation_reasoning
+- Include the lat/lon bounds you estimated
+- Include the grid indices and points returned by tool
+- Then show the time scaling calculation
+
 
 **STEP 2: QUERY EXECUTION TIME ESTIMATION GUIDELINES:**
-- The empirical analysis provides insights/some guidance on this dataset for one specific variable, at different resolutions, time ranges, spatial extents
-- use that as a reference to estimate how long it might take to run the user query on full resolutions
-- provide a brief reasoning in 'time_estimation_reasoning' for your time estimate, considering:
-    - complexity of analysis (simple stats vs complex spatiotemporal patterns)
-    - a rough but short approach on how you arrived at your time estimate (spatial extent, time extent, resolution, aggregation or not, etc), what factors you considered
-    - add a buffer to your estimate to account for overheads and unexpected delays
-    - how much approximate data needs to be read from disk and processed and is it reasonable
-    - what is the predicted accuracy tradeoff (rmse and percentage_average_error) in your estimate if any, use appropriate unit based on the user query and dataset context, not from the empirical analysis directly
+
+**THINK LIKE A HUMAN ANALYST (Internal reasoning - don't expose mechanical steps in output):**
+
+
+**IF USER HAS TIME CONSTRAINT - Systematic Optimization Hierarchy:**
+    - **YOUR PRIMARY GOAL: FIT WITHIN THE USER'S TIME BUDGET - NOT MAXIMUM ACCURACY**
+    and use your EMPIRICAL KNOWLEDGE from the CSV data provided to guide your decisions, use inference and approximation cleverly
+    **Priority 1: Try Quality Reduction First**
+    - For TIGHT time constraints start with lowest quality directly
+    - Then check if you can afford better quality within budget
+    - Use CSV "total_read_time_seconds" column to estimate time at different quality levels
+
+    **CHECK AFTER PRIORITY 1**: 
+    - Calculate: (num_timesteps × read_time_per_timestep) 
+    - If > user_time_constraint → MUST apply Priority 2
+
+    **Priority 2: If Quality Alone Insufficient → Temporal Subsampling**
+    - **BE SPECIFIC about temporal strategy using dataset time context:**
+    - Dataset time interval unit is: {time_units}
+    - if you plan to do any temporal subsampling/subbsetting/interval to reduce load of timestep read for optimization purpose, convert them into real-world terms: per-second, per-minute/hourly/daily/weekly/monthly etc
+    - NOT generic phrases like "every Nth timestep" or "temporal interval=100"
+    - **Explain what temporal information is lost:**
+    - "This means we'll miss diurnal (daily) variations but capture ..."
+
+    **Priority 3: Last Resort → Dimensionality Reduction**
+    - Only if quality + temporal optimization still exceeds time budget
+    - Suggest meaningful dimensionality reduction based on dataset characteristics
+
+    - after each priority check see fit into time budget or not
+    - after all optimizations done priority by priority
+    -** MUST apprximate accuracy in NUMERICAL number in rmse or percentage average error ** inferring based on the empirical csv data provided for optimizations considered
+    to return current user query: {query} within user specified time constraint. please remember that you need to fit into the user time constraint if provided by the user
+
+
+**IF NO USER TIME CONSTRAINT:**
+
+    1. Search CSV for rows matching (or approximating) user's spatial extent
+    2. Check quality levels available (quality=0 = full resolution; negative = reduced resolution)
+    3. if user asks subset of spatial domain, look for CSV rows with similar or smaller spatial extent
+    4. You will not find exact match, please INFER/APPROXIMATE by scaling from similar test cases
+    - User needs full domain but CSV has subregions? Scale time proportionally by spatial ratio
+    - User needs 10K timesteps but CSV has 1 timestep? Multiply time by timestep ratio
+    4. Use CSV data to mentally calculate: base_time × spatial_scaling × temporal_scaling + overhead
+
+    Explain naturally: "To maintain highest accuracy for [spatial extent] across [temporal extent], this will take approximately X minutes using full resolution."
+
+
+**Phase B: Present Natural Recommendation**
+
+**OUTPUT STYLE:**
+- Conversational, like explaining to colleague, include all your reasing clearly and transparently
+- NO arithmetic shown ("38.35 × 10,080 = ...")
+- NO mechanical templates ("Step 1...", "CSV row X...")
+- DO explain reasoning: "Since you're analyzing trends, we need continuous coverage..."
+- DO state accuracy naturally: "This typically shows ~5% error, good enough for pattern detection"
+- DO be specific about temporal sampling: "sampling daily" NOT "time_interval=24"
+
+**KEY PRINCIPLE:** Think flexibly. CSV is guidance, not absolute truth. Infer/approximate when exact match missing. Optimize systematically when user has time constraint.
 
 **STEP 3: PLOT SUGGESTIONS**
 - with the required/ derived variables needed to answer the query, which plots would best illustrate the insights?
@@ -135,7 +237,26 @@ Output JSON with:
     "reasoning": "Brief explanation",
     "confidence": (0.0-1.0),
     "estimated_time_minutes": <number>,
-    "time_estimation_reasoning": "Brief explanation about time estimation as discussed above",
+    "time_estimation_reasoning": "Detailed explanation of time estimate as of STEP 2",
+    "quality_level_used":  // REQUIRED: see empriical csv for quality levels
+  
+    "temporal_sampling_strategy": "string",
+  
+    "dimensionality_reduction": {{ // REQUIRED: 
+    "applied": true or false,
+    "strategy": "string" or null
+  }},
+   
+    // NEW: Include if tool was called
+    "spatial_extent": {{  // Include this if get_grid_indices_from_latlon was called
+        "x_range": [x_min, x_max],
+        "y_range": [y_min, y_max],
+        "z_range": [z_min, z_max],
+        "actual_lat_range": [lat_min, lat_max],
+        "actual_lon_range": [lon_min, lon_max],
+        "estimated_total_points": <number>
+    }} or null  // null if no geographic region detected
+
 }}
 
 Rules:
@@ -151,14 +272,20 @@ Rules:
             ("human", "Analyze this query.")
         ])
 
-        self.chain = self.prompt | self.llm
-        # NEW: Store CSV dataframe and agent
+        # self.agent = create_agent(
+        # model=self.llm,
+        # tools=[get_grid_indices_from_latlon],
+        # system_prompt=self.system_prompt  
+        # )
+
+        # self.chain = self.prompt | self.llm
+        # Store CSV dataframe for direct access
+        # self.chain = self.prompt | self.agent
         self.performance_df = None
-        self.csv_agent = None
 
     def _load_performance_csv(self, csv_path: str) -> bool:
         """
-        Load the empirical performance CSV and create a pandas agent for analysis.
+        Load the empirical performance CSV for analysis.
         
         Args:
             csv_path: Path to the CSV file with performance test results
@@ -171,22 +298,9 @@ Rules:
                 add_system_log(f"Performance CSV not found: {csv_path}", 'warning')
                 return False
             
-            # Load CSV into pandas
+            # Load CSV into pandas - no agent needed, just read the data
             self.performance_df = pd.read_csv(csv_path)
             add_system_log(f"Loaded performance CSV: {len(self.performance_df)} rows", 'info')
-            
-            # Create pandas dataframe agent for intelligent querying
-            self.csv_agent = create_pandas_dataframe_agent(
-                llm=self.llm,
-                df=self.performance_df,
-                verbose=True,
-                agent_type=AgentType.OPENAI_FUNCTIONS,
-                allow_dangerous_code=True,  # Required for pandas agent
-                max_iterations=5,
-                early_stopping_method="generate"
-            )
-            
-            add_system_log("Created pandas dataframe agent for performance analysis", 'success')
             return True
             
         except Exception as e:
@@ -196,16 +310,16 @@ Rules:
 
     def _analyze_csv_for_query(self, user_query: str, dataset: dict) -> str:
         """
-        Use the pandas agent to intelligently analyze the CSV for relevant performance data.
+        Format CSV data and let LLM analyze it directly (no pandas agent).
         
         Args:
             user_query: The user's query
             dataset: Dataset metadata
             
         Returns:
-            Natural language summary of relevant performance data
+            Formatted CSV data with context for LLM analysis
         """
-        if self.csv_agent is None or self.performance_df is None:
+        if self.performance_df is None:
             return "No empirical performance data available."
         
         try:
@@ -216,44 +330,74 @@ Rules:
             dims = spatial_info.get('dimensions', {})
             time_range = temporal_info.get('time_range', {})
             
-            # Build analysis prompt for the CSV agent
-            analysis_prompt = f"""Analyze the empirical tests data to find operations most similar to this query:
+            # Format CSV data for LLM - just convert to readable text with detailed instructions
+            csv_summary = f"""EMPIRICAL PERFORMANCE TEST RESULTS:
 
-USER QUERY: {user_query}
+CRITICAL CONTEXT - DATASET TEMPORAL INFO:
+- Dataset start date: {time_range.get('start', '2020-01-20')}
+- Dataset end date: {time_range.get('end', '2020-03-26')}
+- Total timesteps: {temporal_info.get('total_time_steps', '10366')}
+- Time units: {temporal_info.get('time_units', 'hours')} (each timestep = 1 hour)
+- Example: "January 2020 to next two days" means starting from {time_range.get('start', '2020-01-20')}, spanning 48 timesteps (2 days × 24 hours)
 
-Full DATASET CHARACTERISTICS:
-- Spatial dimensions: {dims.get('x', 'unknown')}x{dims.get('y', 'unknown')}x{dims.get('z', 1)}
-- Time steps: {temporal_info.get('total_time_steps', 'unknown')}
+DATASET SPATIAL CHARACTERISTICS:
+- Spatial dimensions: {dims.get('x', 8640)}x{dims.get('y', 6480)}x{dims.get('z', 90)}
 
-you should consider these points while analyzing the CSV data:
-1. The empirical analysis provides insights/some guidance on this dataset's one specific variable at different resolutions, time ranges, spatial extents
-2. the empirical analysis not necesasarily has concrete semantic information about the user query but it has performance data on similar kind of operations
-your task is to:
-3. your task is to summarize empirical performance data from the CSV that can help estimate/ how long it might take to run the user query : {user_query} on full resolutions and what are the accuracy tradeoffs
-4. report as much relevant empirical results as possible that can help estimate the query execution time on full/ near full resolution data
-5. Consider accuracy tradeoffs (RMSE, percentage_average_error) on data read times and resolution and report them too
+IMPORTANT NOTES:
+1. All time values in the CSV are in SECONDS. You MUST convert them to MINUTES when reporting (divide by 60).
+2. The user query uses real-world dates/times - map these to dataset timesteps using the context above
+3. The empirical CSV contains PERFORMANCE benchmarks (not semantic data) - use them to estimate query execution time
 
-Format as a concise summary with specific numbers and row references and return full row values with context from these empirical results."""
+USER QUERY: "{user_query}"
 
-            # Query the CSV agent
-            try:
-                try:
-                    model_name = getattr(self.llm, 'model', None) or getattr(self.llm, 'model_name', 'gpt-4o-mini')
-                    msgs = [{"role": "user", "content": analysis_prompt}]
-                    token_count = log_token_usage(model_name, msgs, label="csv_agent_query")
-                    add_system_log(f"[token_instrumentation][CSV_Agent] model={model_name} tokens={token_count}", 'debug')
-                except Exception:
-                    pass
-            except Exception:
-                pass
+**CRITICAL: Understanding the Empirical CSV Structure and Limitations:**
+- The empirical tests measure a SINGLE VARIABLE (not derived/compound variables) across various spatial/temporal extents
+- Each CSV row shows: quality level, temporal sampling parameters, spatial extent, read time, and accuracy metrics
+- **CRITICAL: Understanding time_interval column:**
+  - `time_interval` = stride/jump between timesteps read, NOT the total number of timesteps
+  - `time_interval=0` means single timestep (no temporal range)
+  - `time_interval=1` means consecutive timesteps (full continuous temporal coverage)
+  - `time_interval=n` means read every nth timestep 
+- **Read time** in CSV depends on BOTH: (1) quality/resolution reduction AND (2) temporal subsampling via time_interval
+- **Accuracy metrics (RMSE, and others.)** in CSV reflect ONLY quality/resolution degradation, NOT temporal subsampling effects
+  - For quality=0 (full resolution) with continuous timesteps: accuracy = 0.0 (perfect)
+  - For quality=0 with temporal jumps/skipping: read time is reduced but accuracy shown is still 0.0 because quality is not degraded but with temporal gaps you may miss temporal details
+  - For quality<0: accuracy degrades due to spatial downsampling/aggregation regardless of temporal sampling strategy
+
+- The CSV provides time/quality tradeoff context for a specific variable and test configurations—user queries will differ in:
+  - Variables requested (may need derived/compound calculations)
+  - Spatial extent (may be larger/smaller than test regions)
+  - Temporal extent and continuity requirements (may need all timesteps vs. can tolerate subsampling)
+  - Analysis complexity (simple stats vs. complex spatiotemporal computations)
+
+**How to Use the Empirical Data:**
+- Treat CSV as REFERENCE GUIDANCE, not absolute truth—scale and adjust based on:
+  - Spatial extent ratio: user's spatial domain vs. CSV test spatial domain
+  - Temporal extent ratio: user's timesteps vs. CSV test timesteps
+  - Query complexity: derived variables, multi-variable operations, aggregations add overhead beyond simple reads
+  - Temporal continuity: if user needs trend analysis or continuous time series, you CANNOT use temporal subsampling optimizations (must read all timesteps)—CSV rows with time jumps are NOT applicable for such queries
+
+
+CSV STRUCTURE - COLUMNS:
+{list(self.performance_df.columns)}
+
+FULL EMPIRICAL TEST DATA (all {len(self.performance_df)} rows):
+{self.performance_df.to_string()}
+
+ANALYSIS INSTRUCTIONS:
+- When reporting time values, ALWAYS convert from seconds to minutes (divide by 60)
+- Focus on HIGH RESOLUTION rows (look for max/highest resolution indicators in the data)
+- Report specific numbers with row references
+- Consider the spatial and temporal extent implied by the user query
+- Provide concrete numbers for time estimates and accuracy tradeoffs
+"""
             
-            csv_analysis = self.csv_agent.run(analysis_prompt)
-            
-            add_system_log(f"Empirical result analysis: {len(csv_analysis)} chars", details=csv_analysis)
-            return csv_analysis
+            add_system_log(f"Formatted CSV data: {len(csv_summary)} chars", details=csv_summary)
+            return csv_summary
             
         except Exception as e:
-            add_system_log(f"CSV agent analysis failed: {e}", 'warning')
+            add_system_log(f"CSV formatting failed: {e}", 'warning')
+            return f"Failed to format CSV data: {e}"
 
     def extract_insights(
         self, 
@@ -310,10 +454,51 @@ Format as a concise summary with specific numbers and row references and return 
             y = spatial_dims.get('y', 1000)
             z = spatial_dims.get('z', 1)
             total_timesteps = int(temporal_info.get('total_time_steps', '100'))
+            time_units = temporal_info.get('time_units', 'unknown')
             
             total_voxels = x * y * z
 
             total_data_points = total_voxels * total_timesteps
+            geo_info = dataset.get('spatial_info', {}).get('geographic_info', {})
+            has_geo = geo_info.get('has_geographic_info', 'no')
+            
+            dataset_bounds = "Dataset does not have geographic coordinates"
+            if has_geo == 'yes':
+                geo_file = geo_info.get('geographic_info_file')
+                if geo_file:
+                    # Resolve path
+                    if not os.path.isabs(geo_file):
+                        current_dir = os.path.dirname(os.path.abspath(__file__))
+                        src_dir = os.path.dirname(current_dir)
+                        datasets_dir = os.path.join(src_dir, 'datasets')
+                        geo_file_full = os.path.join(datasets_dir, geo_file)
+                    else:
+                        geo_file_full = geo_file
+                    
+                    # Try to read bounds
+                    if os.path.exists(geo_file_full):
+                        try:
+                            import xarray as xr
+                            ds = xr.open_dataset(geo_file_full)
+                            lat = ds["latitude"].values
+                            lon = ds["longitude"].values
+                            
+                            lat_min = float(lat.min())
+                            lat_max = float(lat.max())
+                            lon_min = float(lon.min())
+                            lon_max = float(lon.max())
+                            
+                            dataset_bounds = (
+                                f"Lat [{lat_min:+.3f}° to {lat_max:+.3f}°], "
+                                f"Lon [{lon_min:+.3f}° to {lon_max:+.3f}°]"
+                            )
+                            
+                            add_system_log(f"Dataset geographic bounds: {dataset_bounds}", 'debug')
+                            
+                        except Exception as e:
+                            add_system_log(f"Could not read geographic bounds: {e}", 'warning')
+                            dataset_bounds = f"Geographic file exists but could not be read: {geo_file}"
+            
             
             csv_analysis = ""
             if dataset_profile and dataset_profile.endswith('.csv'):
@@ -375,6 +560,10 @@ Format as a concise summary with specific numbers and row references and return 
                 # Step 1: Initial analysis with LLM
                 add_system_log("Analyzing query intent...", 'info')
                 
+                # Determine user time constraint message for LLM
+                user_time_constraint_msg = "None - estimate for full resolution"
+                if skip_time_estimation and user_time_limit:
+                    user_time_constraint_msg = f"{user_time_limit} user_time_constraint to see results "
 
                 prompt_vars = {
                     "dataset_name": dataset_name,
@@ -386,32 +575,81 @@ Format as a concise summary with specific numbers and row references and return 
                     "time_range": json.dumps(time_range) if has_temporal_info == 'yes' else "No temporal info",
                     "dataset_size": dataset_size,
                     "total_data_points": total_data_points,
-                    "empirical_analysis": csv_analysis
+                    "empirical_analysis": csv_analysis,
+                    "user_time_constraint": user_time_constraint_msg,
+                    "time_units": time_units,
+                    "dataset_geographic_bounds": dataset_bounds
                 }
-
+                final_response = None
                 # Call LLM for initial analysis
                 try:
                     try:
-                        model_name = getattr(self.llm, 'model', None) or getattr(self.llm, 'model_name', 'gpt-4o-mini')
-                        msgs = [
-                            {"role": "system", "content": self.system_prompt},
-                            {"role": "user", "content": f"Analyze this query: {user_query}. Context: {prompt_vars.get('dataset_profile_section','')[:1000]}"}
+                        model_name = getattr(self.llm, 'model', None) or getattr(self.llm, 'model_name', 'gpt-4o')
+                        
+                        messages = [
+                        {"role": "system", "content": self.system_prompt.format(**prompt_vars)},
+                        {"role": "user", "content": "Analyze this query."}
                         ]
-                        token_count = log_token_usage(model_name, msgs, label="pre_insight_analysis")
+                        
+                        # Step 1: Model generates tool calls (or final response)
+                        ai_msg = self.model_with_tools.invoke(messages)
+                        messages.append(ai_msg)
+                        
+                        add_system_log(f"LLM response received, checking for tool calls...", 'debug', details=str(ai_msg))
+                        
+                        # Step 2: Execute tools if requested
+                        if hasattr(ai_msg, 'tool_calls') and ai_msg.tool_calls:
+                            add_system_log(f"Tool calls detected: {len(ai_msg.tool_calls)}", 'info')
+                            
+                            for tool_call in ai_msg.tool_calls:
+                                add_system_log(f"Executing tool: {tool_call['name']} with args: {tool_call['args']}", 'info')
+                                
+                                # Execute the tool
+                            
+                                tool_result = get_grid_indices_from_latlon.invoke(tool_call['args'])
+                                
+                                add_system_log(f"Tool result: {tool_result}", 'info', details=json.dumps(tool_result))
+                                
+                                # Add tool result to messages
+                                from langchain_core.messages import ToolMessage
+                                messages.append(ToolMessage(
+                                    content=json.dumps(tool_result),
+                                    tool_call_id=tool_call['id']
+                                ))
+                            
+                            # Step 3: Pass results back to model for final response
+                            add_system_log("Calling LLM again with tool results...", 'debug')
+                            final_response = self.llm.invoke(messages)
+                        else:
+                            add_system_log("No tool calls detected", 'warning')
+                            final_response = ai_msg
+
+
+
+                        token_count = log_token_usage(model_name, messages, label="pre_insight_analysis")
                         add_system_log(f"[token_instrumentation][InsightExtractor] model={model_name} tokens={token_count}", 'debug')
                     except Exception:
                         pass
                 except Exception:
                     pass
 
-                raw_response = self.chain.invoke(prompt_vars)
-                
+                # raw_response = self.chain.invoke(prompt_vars)
+                # raw_response = self.agent.invoke(prompt_vars)
+                raw_response = final_response
                 # Parse response
                 analysis = self._parse_llm_response(raw_response)
                 
                 # Get the raw text for expandable log details
                 raw_text = getattr(raw_response, 'content', None) or str(raw_response)
-                
+                # #save the raw_text in a json file for debugging
+                # debug_dir = os.path.join("debug_logs", "insight_extractor")
+                # os.makedirs(debug_dir, exist_ok=True)
+                # debug_file = os.path.join(debug_dir, f"analysis_{dataset_id}.json")
+                # with open(debug_file, 'w', encoding='utf-8') as f:
+                #     json.dump({
+                #        'raw_text': raw_text
+                #     }, f, indent=2)
+
                 add_system_log(
                     f"[Pre-Insight-Extractor] Analysis: type={analysis.get('analysis_type')}, "
                     f"variables={analysis.get('target_variables')}, "
@@ -521,9 +759,12 @@ Format as a concise summary with specific numbers and row references and return 
                             'confidence': analysis.get('confidence', 0.7)
                         }
             else:
+                # User provided time limit - update analysis to reflect constraint-based approach
                 if analysis:
+                    # Set estimated_time to match user constraint
+                    analysis['estimated_time_minutes'] = user_time_limit
                     analysis['user_time_limit_minutes'] = user_time_limit
-                    analysis['time_estimation_reasoning'] = f"User-specified time limit: {user_time_limit} minutes"
+                    # Note: time_estimation_reasoning should already be set by LLM with optimization details
             
             
             # Step 3: Query actual data using DatasetInsightGenerator
@@ -549,6 +790,7 @@ Format as a concise summary with specific numbers and row references and return 
                 user_query=user_query,
                 intent_result=intent_hints,
                 dataset_info=dataset,
+                empirical_test_results=csv_analysis,
                 progress_callback=progress_callback
             )
             
@@ -779,7 +1021,7 @@ Do NOT output JSON. Output natural language text only.
             metadata_chain = metadata_insight_prompt | self.llm
             try:
                 try:
-                    model_name = getattr(self.llm, 'model', None) or getattr(self.llm, 'model_name', 'gpt-4o-mini')
+                    model_name = getattr(self.llm, 'model', None) or getattr(self.llm, 'model_name', 'gpt-4o')
                     msgs = [{"role": "system", "content": "You are an expert scientific dataset analyst who provides clear, detailed insights based on dataset metadata."}, {"role": "user", "content": metadata_prompt}]
                     token_count = log_token_usage(model_name, msgs, label="metadata_insight")
                     add_system_log(f"[token_instrumentation][InsightExtractor] model={model_name} tokens={token_count}", 'debug')

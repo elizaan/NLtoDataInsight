@@ -62,3 +62,11 @@ res = mod.run_sweep(
 )
 print('DONE', len(res))
 PY
+
+I completely understand! You want the LLM to think like a human analyst who:
+
+First understands what the user actually needs (spatial + temporal extent)
+Then searches for the best matching CSV row (not always exact match)
+Infers/approximates if exact match doesn't exist
+If user has time constraint: systematically explore optimization hierarchy (quality → temporal → spatial)
+Be specific about temporal subsampling (hourly/daily/weekly based on dataset context, not generic "every Nth timestep")
