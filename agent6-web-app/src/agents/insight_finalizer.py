@@ -150,6 +150,7 @@ class InsightFinalizerAgent:
         # Step 4: Generate final answer JSON
         final_answer = self._generate_final_answer(
             insight_text=insight_text,
+            query_output=query_output,
             plot_evaluation=plot_evaluation
         )
         
@@ -719,10 +720,11 @@ Write a comprehensive, domain-scientist-friendly insight that:
    - What each plot shows and why it helps answer the question
    - How the visualizations map to the user's mental model
 
-4. **Highlights key findings**:
+4. **Highlights key findings from {query_output}**:
    - Trends, patterns, anomalies
    - Magnitude of values
    - Spatial/temporal context
+
 5. ** INFER ACCURACY FOR USER'S QUERY**
 
     The query output contains:
@@ -808,19 +810,17 @@ Write in clear, flowing prose (not bullet points). Be honest about choices and t
     def _generate_final_answer(
         self,
         insight_text: str,
-        plot_evaluation: Dict[str, Any]
+        plot_evaluation: Dict[str, Any],
+        query_output: Any = None
     ) -> Dict[str, Any]:
         """
         Generate structured final answer JSON
         """
         # Extract key findings from insight using LLM
-        extraction_prompt = f"""Extract structured data from this insight:
-**INSIGHT TEXT:**
-{insight_text}
-
-Output JSON with:
+        extraction_prompt = f"""Extract all exact numerical values from {query_output} first and then from the insight below.
+        {insight_text}
 {{
-    "data_summary": {{"key": "value", ...}},  // Key numerical findings
+    "data_summary": {{"key": "value", ...}},  // all Key numerical findings
     "visualization_description": "What the plots show",
     "confidence": 0.0-1.0  // Based on data quality and completeness
 }}

@@ -270,6 +270,9 @@ Show final configuration and verify it fits:
    - If temporal subsampling applied: "Temporal gaps may miss [type_of_variations]"
 
 6. **Estimated total time in minutes: [final_estimate] min**
+ - add some buffer to be safe because in real execution the llm will write code and might do additional processing and calculations, that will take time
+ - also if complex analysis is needed, such as multiple variables, derived variables, complex stats etc. that will take more time
+ - tell how many minutes of buffer you are adding and why
  - your final Record in "estimated_time_minutes" field in final output JSON
  - explain how you derived this number clearly
 

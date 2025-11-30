@@ -24,6 +24,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 import hashlib
 import json
+import re
 
 
 current_script_dir = os.path.dirname(os.path.abspath(__file__)) # Directory of this script
@@ -641,7 +642,68 @@ Queries are identical if they ask for the same analysis on the same data, even i
             "info"
         )
         
-        # Clear awaiting flag if it was set
+        # If the resolver returned NOT_REUSABLE but looks like it simply
+        # reapplied a previous estimated time (rather than a user-provided
+        # time), we should *not* silently inherit that previous limit.
+        # Instead, prompt the user to confirm their time preference.
+        #
+        # Heuristic: if there is an `original_intent_result` in context and
+        # the resolved `user_time_limit` equals the original estimated time
+        # but the current user message does not look like an explicit
+        # confirmation or numeric time, then mark awaiting and return.
+        try:
+            original_intent = context.get('original_intent_result', {})
+            orig_estimate = original_intent.get('estimated_time_minutes')
+        except Exception:
+            original_intent = {}
+            orig_estimate = None
+
+        def _looks_like_time_response(text: str) -> bool:
+            if not text:
+                return False
+            t = text.strip().lower()
+            # common confirmations
+            if any(tok in t for tok in ('proceed', 'ok', 'okay', 'yes', 'go ahead', 'do it', 'start')):
+                return True
+            # explicit numeric with unit (e.g. '5 min', '2 hours')
+            if re.search(r"\d+\s*(min|minute|minutes|hr|hour|hours|s|sec|secs)", t):
+                return True
+            # bare number (user may just type '10')
+            if re.fullmatch(r"\d+(?:\.\d+)?", t):
+                return True
+            return False
+
+        # If this appears to be the resolver reusing an old estimated time
+        # for a NOT_REUSABLE query, pause and request an explicit time.
+        # Stronger rule: do NOT automatically apply a previously-estimated
+        # time to a new NOT_REUSABLE query. Require an explicit user
+        # confirmation (e.g. 'proceed', 'ok', or an explicit time value).
+        if (
+            cache_level == 'NOT_REUSABLE' and
+            orig_estimate is not None and
+            not context.get('awaiting_time_preference', False) and
+            not _looks_like_time_response(resolved_query) and
+            not _looks_like_time_response(context.get('last_user_message', '') or '') and
+            not _looks_like_time_response(user_message)
+        ):
+            # Set awaiting flag and persist original intent for follow-ups
+            context['awaiting_time_preference'] = True
+            context['original_query'] = context.get('original_query') or resolved_query
+            context['original_intent_result'] = original_intent
+            add_system_log(f"[Agent] Awaiting time preference for: '{context['original_query']}'", 'info')
+            # Return a distinctive awaiting response so upstream can prompt user
+            return {
+                'status': 'awaiting_time_preference',
+                'message': (
+                    'I need a time preference to run this new analysis. '
+                    'Please reply "proceed" to use the estimated time '
+                    f"({orig_estimate} min) or specify a time like '10 min'."
+                ),
+                'estimated_time_minutes': orig_estimate,
+                'time_estimation_reasoning': original_intent.get('time_estimation_reasoning')
+            }
+
+        # Clear awaiting flag if it was set (and not handled above)
         if context.get('awaiting_time_preference'):
             context['awaiting_time_preference'] = False
             add_system_log(f"[Agent] Time preference resolved: {user_time_limit} min", 'info')

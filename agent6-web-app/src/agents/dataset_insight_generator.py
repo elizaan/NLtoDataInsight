@@ -73,7 +73,7 @@ class DatasetInsightGenerator:
     
     def __init__(self, api_key: str, base_output_dir: str = None):
         self.llm = ChatOpenAI(
-            model="gpt-4o",
+            model="gpt-5",
             api_key=api_key,
             temperature=0.4  # Higher for creative problem-solving
         )
@@ -394,13 +394,7 @@ class DatasetInsightGenerator:
         plot_hint_reasonings = intent_result.get('llm_pre_insight_analysis', {}).get('reasoning', [])
         reasoning = intent_result.get('reasoning', '')
         
-        # Extract user time limit if provided
-        user_time_limit = intent_result.get('user_time_limit_minutes', None)
-        add_system_log(
-            f"User time limit: "
-            f"{user_time_limit} minutes" if user_time_limit else "No user time limit specified",
-            'info'
-        )
+        
 
         # Include any prior LLM pre-insight analysis (produced by the intent parser / extractor)
         # This will be injected into the system prompt so the generator LLM can leverage
@@ -417,7 +411,13 @@ class DatasetInsightGenerator:
         target_variables = pre_insight.get('target_variables', [])
         estimated_total_data_points = pre_insight.get('estimated_total_points', 'unknown')
 
-        
+        # Extract user time limit if provided
+        user_time_limit = intent_result.get('user_time_limit_minutes', None)
+        add_system_log(
+            f"[Generator] User time limit set as execution time: "
+            f"{user_time_limit} minutes" if user_time_limit else "No user time limit specified",
+            'info'
+        )
         variables = dataset_info.get('variables', [])
         spatial_info = dataset_info.get('spatial_info', {})
         temporal_info = dataset_info.get('temporal_info', {})
@@ -609,12 +609,12 @@ If any specification is None/null/missing, then intelligently decide:
 **STEP 3: WRITE SMART QUERY CODE**
 Your code should:
 2. Apply YOUR intelligent sampling/aggregation strategy
-3. Extract data needed for ALL plot hints
-4. **Save rich metadata** (see above) so follow-up queries are instant
+3. Extract and save data needed for ALL plot hints: {plot_hints} 
+4. **Save rich metadata** so follow-up queries are instant
 5. Save intermediate results to: `{data_cache_file_str}`
 6. Print JSON summary to stdout
 
-**Query Code Template for file-format openvisus idx(ADAPT THIS):**
+**Query Code Template for file-format openvisus idx file format:**
 ```python
 import openvisuspy as ovp
 import numpy as np
@@ -638,6 +638,10 @@ from utils import compute_land_ocean_mask3d
 
 # YOUR INTELLIGENT STRATEGY HERE
 # use aggregation factor if needed, sampling strategy, etc.
+# save data array in npz for each timestep needed for plots, with meaningful variable names
+# if  timestep is huge, save data for interesting timesteps only based on 
+# now which timestep is important to save data array that is your stratgy, but i would say user might want to see spatial plot for min/max/mean/std timesteps etc.
+
 quality = {suggested_quality_level}  # Use this exact value
 x_range = {spatial_extent_hints.get('x_range', [0, -1])}  # Use these exact indices
 y_range = {spatial_extent_hints.get('y_range', [0, -1])}
@@ -671,6 +675,7 @@ try:
     # Extract data
     data_points_processed = 0
     results = []
+
     for t in YOUR_TIMESTEP_RANGE:
         data = ds.db.read(
             time=t,
@@ -695,6 +700,12 @@ try:
         }}
         results.append(your_finding)
     
+    # if timestep huge, you can save only interesting timesteps data arrays like min/max/mean/std timesteps data arrays for spatial plots
+    # e.g., save data array for timestep with min value, max value, mean value, std value etc.
+    # if not huge, you can save all timesteps data arrays as well based on your strategy
+    # name the variable properly in npz file so that follow-up queries can use them directly
+        
+    
     # Save for plotting
     np.savez(
         '{data_cache_file_str}',
@@ -706,7 +717,9 @@ try:
         'lat_range': lat_range,
         'lon_range': lon_range, 
         'quality_level': quality,
-        **{{'results': results}}  # Add any other arrays needed for plots
+        **{{'results': results}}  
+        # Add any other metadata saved and needed for follow-up queries
+        
     )
     
     # Output summary
@@ -742,8 +755,10 @@ Plot hints: {plot_hints} and reasonings: {plot_hint_reasonings}
 
 **STEP 2: DECIDE PLOT STRATEGY**
 Ask yourself:
-- What visualizations would **best** answer the user's question?
-- How many distinct but on point plots should I create?
+- should I plot all hints or only a subset?
+- what plot types best convey the information asked by user and dataset characteristics and plot hint reasonings?
+- how many plots are reasonable (2-5 usually good, more if user asked for many distinct features)
+- how to highlight key findings?
 
 **STEP 3: WRITE PLOT CODE**
 Your code should:
@@ -816,13 +831,14 @@ import json
 # Load cached data
 data = np.load('{data_cache_file_str}')
 
-# Extract metadata
+# Extract metadata, example:
 metadata = {{
-    'x_range': npz_data['x_range'].tolist() if 'x_range' in npz_data else None,
-    'y_range': npz_data['y_range'].tolist() if 'y_range' in npz_data else None,
-    'lat_range': npz_data['lat_range'].tolist() if 'lat_range' in npz_data else None,
-    'lon_range': npz_data['lon_range'].tolist() if 'lon_range' in npz_data else None,
-    'quality_level': int(npz_data['quality_level']) if 'quality_level' in npz_data else 0
+    'x_range': data['x_range'].tolist() if 'x_range' in data else None,
+    'y_range': data['y_range'].tolist() if 'y_range' in data else None,
+    'lat_range': data['lat_range'].tolist() if 'lat_range' in data else None,
+    'lon_range': data['lon_range'].tolist() if 'lon_range' in data else None,
+    'quality_level': int(data['quality_level']) if 'quality_level' in data else 0,
+    # other metadata as needed
 }}
 
 # Use in plots
@@ -929,7 +945,7 @@ Common issues:
             try:
                 # Instrument token usage for this planned LLM call (best-effort)
                 try:
-                    model_name = getattr(self.llm, 'model', None) or getattr(self.llm, 'model_name', None) or getattr(self.llm, 'model_name_or_path', 'gpt-4o')
+                    model_name = getattr(self.llm, 'model', None) or getattr(self.llm, 'model_name', None) or getattr(self.llm, 'model_name_or_path', 'gpt-5')
                     token_count = log_token_usage(model_name, self.conversation_history, label=f"iteration_{iteration+1}_phase_{current_phase}")
                     add_system_log(f"[token_instrumentation] model={model_name} tokens={token_count}", "debug")
                 except Exception:
@@ -1003,9 +1019,24 @@ Common issues:
                     else:
                         execution_timeout = 500  # Default 500 seconds
                     
+                    # Reset instrumentation and mark start of execution
+                    query_elapsed_seconds = 0.0
+                    query_timed_out = False
+
                     # Execute query code with dynamic timeout
                     execution_result = self.executor.execute_code(code, str(query_code_file), timeout=execution_timeout)
-                    
+
+                    # Record execution timing instrumentation if available
+                    try:
+                        # Prefer explicit value from executor
+                        if execution_result.get('elapsed_seconds') is not None:
+                            query_elapsed_seconds = float(execution_result.get('elapsed_seconds'))
+                        # Fallback: leave as 0.0 if not provided
+                        query_timed_out = bool(execution_result.get('timed_out', False))
+                    except Exception:
+                        query_elapsed_seconds = query_elapsed_seconds or None
+                        query_timed_out = query_timed_out or False
+
                     if execution_result["success"]:
                         # Basic success flag from subprocess (exit code == 0)
                         stdout = execution_result.get('stdout', '') or ''
@@ -1118,10 +1149,20 @@ Write your corrected query code in <query_code></query_code> tags.
                         else:
                             # Consider it a true success
                             query_output = stdout
-                            add_system_log(f"[Generator] Query succeeded with output:  {len(query_output)} characters", "success", details=stdout)
+                            # Include elapsed seconds in success logs when available
+                            try:
+                                elapsed_display = f"{query_elapsed_seconds:.2f}s" if query_elapsed_seconds is not None else "unknown"
+                            except Exception:
+                                elapsed_display = "unknown"
+
+                            add_system_log(
+                                f"[Generator] Query succeeded in {elapsed_display} with output: {len(query_output)} characters",
+                                "success",
+                                details=stdout
+                            )
                             query_success = True
                             current_phase = "plot"
-                            add_system_log(" Query code succeeded! Moving to plot phase.", "success")
+                            add_system_log(f"Query code succeeded in {elapsed_display}! Moving to plot phase.", "success")
                             feedback = f""" QUERY CODE SUCCEEDED!
 
 OUTPUT:
@@ -1167,7 +1208,13 @@ Write your intelligent plot code in <plot_code></plot_code> tags.
                             is_timeout = False
 
                         if is_timeout:
-                            add_system_log(f"Query timed out after allowed runtime. Aborting query and asking LLM for smaller alternatives.", "warning")
+                            # Try to show actual elapsed seconds if available
+                            try:
+                                elapsed_val = execution_result.get('elapsed_seconds') if execution_result.get('elapsed_seconds') is not None else query_elapsed_seconds
+                                elapsed_display = f"{float(elapsed_val):.2f}s" if elapsed_val is not None else "unknown"
+                            except Exception:
+                                elapsed_display = "unknown"
+                            add_system_log(f"Query timed out after {elapsed_display}. Aborting query and asking LLM for smaller alternatives.", "warning")
 
                             # Ask LLM to produce intelligent smaller-subset suggestions and a short insight message
                             prompt = {
@@ -1189,7 +1236,7 @@ Write your intelligent plot code in <plot_code></plot_code> tags.
                             try:
                                 # Instrument tokens for this follow-up LLM call
                                 try:
-                                    model_name = getattr(self.llm, 'model', None) or getattr(self.llm, 'model_name', None) or getattr(self.llm, 'model_name_or_path', 'gpt-4o')
+                                    model_name = getattr(self.llm, 'model', None) or getattr(self.llm, 'model_name', None) or getattr(self.llm, 'model_name_or_path', 'gpt-5')
                                     token_count = log_token_usage(model_name, self.conversation_history, label=f"suggestion_iter_{iteration+1}")
                                     add_system_log(f"[token_instrumentation] model={model_name} tokens={token_count}", "debug")
                                 except Exception:
@@ -1241,6 +1288,8 @@ Write your intelligent plot code in <plot_code></plot_code> tags.
                                 'suggestions': suggestions_json if suggestions_json else suggestion_text,
                                 'query_code_file': str(query_code_file),
                                 'insight_file': str(insight_file),
+                                'elapsed_seconds': execution_result.get('elapsed_seconds', query_elapsed_seconds),
+                                'timed_out': bool(execution_result.get('timed_out', True)) or query_timed_out,
                                 'confidence': 0.3
                             }
 
