@@ -18,6 +18,7 @@ api_key.txt
 
 # Generated data and uploads
 ai_data/codes/
+ai_data/old_codes
 ai_data/dataset_profiles/
 ai_data/generated_datasets/
 ai_data/insights/

@@ -474,6 +474,34 @@ if (typeof window !== 'undefined') window.updateArtifactsPanelLayout = updateArt
                         this.addMessage(summaryStr, 'bot');
                     }
                 }
+                // Show suggested smaller queries if provided (timeout fallback)
+                try {
+                    if (msg.data && msg.data.suggestions) {
+                        const suggestions = msg.data.suggestions;
+                        this.addMessage('💡 Suggested smaller queries:', 'bot');
+                        // If suggestions is an object with 'suggestions' key (legacy), normalize
+                        let suggList = suggestions;
+                        if (suggestions && suggestions.suggestions && Array.isArray(suggestions.suggestions)) {
+                            suggList = suggestions.suggestions;
+                        }
+                        if (Array.isArray(suggList) && suggList.length > 0) {
+                            suggList.forEach((s, i) => {
+                                try {
+                                    const desc = s.short_description || s.description || s.title || JSON.stringify(s);
+                                    const why = s.why_it_helps ? ` — ${s.why_it_helps}` : '';
+                                    this.addMessage(`• ${desc}${why}`, 'bot');
+                                } catch (e) {
+                                    this.addMessage(`• ${JSON.stringify(s)}`, 'bot');
+                                }
+                            });
+                        } else {
+                            // If suggestions is a plain string, print it
+                            this.addMessage(String(suggestions), 'bot');
+                        }
+                    }
+                } catch (e) {
+                    console.warn('Failed to render suggestions from insight_generated', e);
+                }
                 // If progress message includes artifact references, render them
                 try {
                     console.log('insight_generated msg.data keys:', msg.data ? Object.keys(msg.data) : 'null');

@@ -277,6 +277,7 @@ Queries are identical if they ask for the same analysis on the same data, even i
                         response_text = response_text.split('```')[0].strip()
                     
                     llm_result = json.loads(response_text)
+                    add_system_log(f"[Core-agent] LLM cache check result: {len(llm_result)}", 'info', details=llm_result)
                     
                     if llm_result.get('identical'):
                         # Found identical query! Return cached result
@@ -529,6 +530,8 @@ Queries are identical if they ask for the same analysis on the same data, even i
                 response_text = response_text.split('```')[0].strip()
             
             result = json.loads(response_text)
+
+            add_system_log(f"[Core-agent] LLM cache check result: {len(result)}", 'info', details=result)
             
             # Validate and enrich result
             cache_level = result.get('cache_level', 'NOT_REUSABLE')
@@ -895,13 +898,18 @@ Queries are identical if they ask for the same analysis on the same data, even i
             #     'time_estimation_reasoning': time_reasoning,
             #     'message': f'Estimated time: {estimated_time} minutes. Proceed or specify time limit?'
             # }
+            # Ensure the returned original_intent_result includes the estimated time
+            orig_intent_for_return = intent_result.copy() if isinstance(intent_result, dict) else {}
+            orig_intent_for_return['estimated_time_minutes'] = estimated_time
+            orig_intent_for_return['time_estimation_reasoning'] = time_reasoning
+
             return {
                 'status': 'awaiting_time_preference',
                 'estimated_time_minutes': estimated_time,
                 'time_estimation_reasoning': time_reasoning,
                 'message': f'Estimated time: {estimated_time} minutes. Proceed or specify time limit?',
                 'original_query': query,
-                'original_intent_result': intent_result
+                'original_intent_result': orig_intent_for_return
             }
         
         # Save to conversation history

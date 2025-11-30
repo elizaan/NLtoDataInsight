@@ -145,7 +145,8 @@ class GeographicConverter:
 @tool
 def get_grid_indices_from_latlon(
     lat_range: List[float],
-    lon_range: List[float]
+    lon_range: List[float],
+    z_range: Optional[List[int]] = None
 ) -> Dict:
     """
     Convert lat/lon bounds to grid x/y indices and calculate data volume.
@@ -162,13 +163,14 @@ def get_grid_indices_from_latlon(
     Args:
         lat_range: [min_lat, max_lat] in degrees (from agent's knowledge)
         lon_range: [min_lon, max_lon] in degrees (from agent's knowledge)
+        z_range: optional [z_min, z_max] grid-level indices to restrict depth (if provided)
     
     Returns:
         {
             'status': 'success' | 'error',
             'x_range': [x_min, x_max],
             'y_range': [y_min, y_max],
-            'z_range': [0, z_max],
+            'z_range': [z_min, z_max],
             'estimated_points': int,
             'actual_lat_range': [min, max],
             'actual_lon_range': [min, max],
@@ -199,21 +201,37 @@ def get_grid_indices_from_latlon(
         
         x_range = result['x_range']
         y_range = result['y_range']
-        z_range = [0, dims.get('z', 90)]
+
+        # Determine z_range to use (caller-specified or full depth)
+        if z_range and isinstance(z_range, (list, tuple)) and len(z_range) == 2:
+            try:
+                z0 = int(z_range[0])
+                z1 = int(z_range[1])
+            except Exception:
+                z0, z1 = 0, int(dims.get('z', 90))
+            # Normalize and clamp
+            if z0 < 0:
+                z0 = 0
+            max_z = int(dims.get('z', 90))
+            if z1 > max_z:
+                z1 = max_z
+            z_range_used = [z0, z1]
+        else:
+            z_range_used = [0, int(dims.get('z', 90))]
         
-        estimated_points = (x_range[1] - x_range[0]) * \
-                          (y_range[1] - y_range[0]) * \
-                          (z_range[1] - z_range[0])
+        estimated_points = max(0, (x_range[1] - x_range[0])) * \
+                          max(0, (y_range[1] - y_range[0])) * \
+                          max(0, (z_range_used[1] - z_range_used[0]))
         
         return {
             'status': 'success',
             'x_range': x_range,
             'y_range': y_range,
-            'z_range': z_range,
+            'z_range': z_range_used,
             'estimated_points': estimated_points,
-            'actual_lat_range': result['actual_lat_range'],
-            'actual_lon_range': result['actual_lon_range'],
-            'message': f"Converted lat {lat_range} lon {lon_range} to grid indices"
+            'actual_lat_range': result.get('actual_lat_range'),
+            'actual_lon_range': result.get('actual_lon_range'),
+            'message': f"Converted lat {lat_range} lon {lon_range} z_range {z_range_used} to grid indices"
         }
         
     except Exception as e:

@@ -252,7 +252,7 @@ Produce only valid JSON as the output.
                 revised_result_text = result.content
             
             # Log full revision LLM response with expandable details (like generator does)
-            log_msg = f"[IntentParser] LLM response: {len(revised_result_text)} chars"
+            log_msg = f"[IntentParser] LLM User internt parse response: {len(revised_result_text)} chars"
             add_system_log(log_msg, "info", details=revised_result_text)
 
             # add_system_log(f"[IntentParser] Classified as: {result.get('intent_type')} (confidence: {result.get('confidence', 0):.2f})")
@@ -466,6 +466,7 @@ Output ONLY a JSON object:
                 'classification': classification,
                 'context': context_str
             })
+            add_system_log(f"[IntentParser] LLM  wants to clarify: {len(str(clar_res))} chars", "info", details=str(clar_res))
             # ensure the returned dict is serializable and has expected keys
             clar_out = {
                 'clarifying_questions': clar_res.get('clarifying_questions') if isinstance(clar_res, dict) else None,

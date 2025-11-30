@@ -1135,7 +1135,7 @@ Common issues:
                 
                 llm_log_msg = f"LLM response: {len(assistant_message)} chars"
                 # Add the full LLM response as expandable details
-                add_system_log(llm_log_msg, "info", details=assistant_message)
+                add_system_log(f"[Generator]{llm_log_msg}", "info", details=assistant_message)
                 
                 # Report LLM response to UI with detailed message and full content
                 if progress_callback:
