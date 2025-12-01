@@ -759,11 +759,27 @@ def chat():
         if action == 'continue_conversation':
             # Create task for background processing
             task_id = create_task()
+            # Ensure agent has the current dataset loaded so its ConversationContext
+            # is available for follow-up queries. This is defensive: callers may
+            # set `conversation_state['dataset']` but not have called
+            # `agent.set_dataset()` yet.
+            try:
+                try:
+                    agent.set_dataset(conversation_state.get('dataset') or {})
+                    add_system_log("Agent.set_dataset called from /api/chat continue_conversation", 'debug')
+                except Exception as e:
+                    add_system_log(f"agent.set_dataset failed: {e}", 'warning')
+            except Exception:
+                # Non-fatal - continue even if set_dataset fails
+                pass
             
             # Build context with dataset and summary from conversation_state
             context = {
                 'dataset': conversation_state.get('dataset'),
-                'dataset_summary': conversation_state.get('dataset_summary')
+                'dataset_summary': conversation_state.get('dataset_summary'),
+                # Provide last help exchange to agent so help-followups can be resolved.
+                'last_help_query': conversation_state.get('last_help_query'),
+                'last_help_response': conversation_state.get('last_help_response')
             }
 
             # CRITICAL: Handle clarification responses properly
@@ -942,6 +958,18 @@ def chat():
                         conversation_state['original_query'] = result.get('original_query', user_message)
                         conversation_state['original_intent_result'] = result.get('original_intent_result', {})
                         add_system_log(f"[time_preference] Stored state for time preference flow", 'info')
+
+                    # If agent returned a help response, persist it so follow-ups
+                    # can reference the previous help exchange. This avoids losing
+                    # the conversational thread when the user asks follow-up help.
+                    try:
+                        if result.get('action') == 'provide_help' or result.get('type') == 'help_response' or context.get('is_help'):
+                            conversation_state['last_help_query'] = user_message
+                            conversation_state['last_help_response'] = result.get('message') or result.get('answer') or ''
+                            conversation_state['last_help_ts'] = datetime.datetime.utcnow().isoformat() + 'Z'
+                            add_system_log(f"[help] Stored last help response for follow-ups", 'info')
+                    except Exception:
+                        pass
                     
                     # Extract LLM outputs for final result
                     intent_result = result.get('intent_result')

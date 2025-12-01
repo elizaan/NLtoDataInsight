@@ -57,8 +57,6 @@ class IntentParserAgent:
     Parses natural language queries to determine user intent.
     
     Intent Types:
-    - NOT_PARTICULAR: No particular data insight asked by user
-      Example: "show me interesting things about this data"
     - PARTICULAR: User requests specific data insight
       Example: "in which time step is the temperature lowest"
     - UNRELATED: User query is unrelated to data
@@ -90,45 +88,43 @@ class IntentParserAgent:
 
 Your job is to classify user queries into one of these intent types:
 
-1. **NOT_PARTICULAR**: User wants to explore interesting patterns but has NO specific question.
-   - User is asking for general exploration, interesting findings, or open-ended insights.
-   - Typical queries: "show me interesting things about this data", "what's interesting here?", "explore this dataset", "find patterns"
-   - Examples: 
-     * "show me interesting things about this data"
-     * "what can you tell me about this dataset?"
-     * "explore interesting patterns"
-
-2. **PARTICULAR**: User has a SPECIFIC data insight question.
+1. **PARTICULAR**: User has a SPECIFIC data insight question, that needs to be answered by reading the data or performing computations or metadata.
    - User asks a precise, answerable question about the data (min/max values, trends, correlations, specific features, etc.).
    - Typical queries start with: "what", "where", "when", "which", "how many", "find the..."
    - Examples:
-     * "in which time step is the temperature lowest"
-     * "what is the maximum salinity value?"
-     * "where do we see the highest velocity?"
-     * "show me temperature values above 25 degrees"
+     * "in which time step is the 'variable' lowest"
+     * "what is the maximum value of 'variable'?"
+     * "where do we see the highest 'variable'?"
+     * "show me 'variable' values above x"
 
-3. **UNRELATED**: User query is completely unrelated to data or scientific analysis.
+2. **UNRELATED**: User query is completely unrelated to data or scientific analysis.
    - Social chat, greetings, personal questions, off-topic queries.
    - Examples:
      * "hi, how are you"
      * "what's the weather like?"
      * "tell me a joke"
 
-4. **HELP**: User requests help, guidance, or information about the system/data.
+3. **HELP**: User requests help, guidance, or information about the system/data.
    - Asking for assistance, capabilities, how to use the system, what's available, etc.
+   - query starts with: "help", "what can you do", "show me", "suggest", "how to"
    - Examples:
-     * "help me find interesting insights about this data"
      * "what variables are available?"
-     * "how can I query this data?"
      * "what can this system do?"
+     * "Suggest me..."
+   - User is asking for general exploration, interesting findings, or open-ended insights.
+   - Typical queries: "what can you do", "what's interesting to explore in this dataset?
+   - Examples: 
+     * "show me interesting things about this data"
+     * "what can you tell me about this dataset?"
+     * "what people usually look for in this data?"
 
-5. **EXIT**: User wants to end the conversation.
+4. **EXIT**: User wants to end the conversation.
    - Explicit termination commands.
    - Examples: "quit", "exit", "end", "bye", "done", "that's all"
 
 IMPORTANT CLASSIFICATION RULES:
 - If user asks a specific, answerable question → **PARTICULAR**
-- If user wants general exploration without specifics → **NOT_PARTICULAR**
+- If user wants general exploration without specifics → **HELP**
 - If user chats socially or off-topic → **UNRELATED**
 - Only classify as EXIT if user explicitly says quit/exit/bye/done
 - Only classify as HELP if user explicitly requests help/guidance
@@ -136,7 +132,7 @@ IMPORTANT CLASSIFICATION RULES:
 
 Output ONLY valid JSON with this structure:
 {{
-    "intent_type": "NOT_PARTICULAR|PARTICULAR|UNRELATED|HELP|EXIT",
+    "intent_type": "PARTICULAR|UNRELATED|HELP|EXIT",
     "confidence": 0.0-1.0,
     "user_query": "original user query",
     "reasoning": "brief explanation of why this classification was chosen"
@@ -258,12 +254,11 @@ Produce only valid JSON as the output.
             # add_system_log(f"[IntentParser] Classified as: {result.get('intent_type')} (confidence: {result.get('confidence', 0):.2f})")
 
             # Set context flags based on intent type to guide frontend/backend flow
-            intent_type = result.get('intent_type', 'NOT_PARTICULAR')
+            intent_type = result.get('intent_type', 'HELP')
             
             if context is not None:
                 # Clear all flags first
                 context['is_particular'] = False
-                context['is_not_particular'] = False
                 context['is_unrelated'] = False
                 context['is_help'] = False
                 context['is_exit'] = False
@@ -272,9 +267,6 @@ Produce only valid JSON as the output.
                 if intent_type == 'PARTICULAR':
                     context['is_particular'] = True
                     add_system_log("[IntentParser] Set context['is_particular'] = True")
-                elif intent_type == 'NOT_PARTICULAR':
-                    context['is_not_particular'] = True
-                    add_system_log("[IntentParser] Set context['is_not_particular'] = True")
                 elif intent_type == 'UNRELATED':
                     context['is_unrelated'] = True
                     add_system_log("[IntentParser] Set context['is_unrelated'] = True")

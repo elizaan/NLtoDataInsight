@@ -103,7 +103,9 @@ Your task is to create a compelling summary of a dataset based on:
 
 4. **Scientific Applications** (if research context available):
    - What phenomena can be studied with this data?
+   - What domain scientists have used similar data for?
    - What questions can researchers answer?
+   - Potential insights or discoveries RESEARCHERS have made using similar datasets
    - Reference interesting findings from papers if available
 
 **Style Guidelines:**

@@ -605,7 +605,7 @@ Queries are identical if they ask for the same analysis on the same data, even i
         Returns:
             Result dictionary with intent and action taken
         """
-        add_system_log(f"[Agent] Processing query with intent classification: {user_message[:50]}...")
+        add_system_log(f"[Agent] Processing query with intent classification: {user_message}...")
         
         # Initialize context if not provided
         if context is None:
@@ -838,12 +838,14 @@ Queries are identical if they ask for the same analysis on the same data, even i
                 context,
                 progress_callback
             )
-        elif intent_type == 'NOT_PARTICULAR':
-            return self._handle_general_exploration(
+        if intent_type == 'HELP':
+            return self._handle_request_help(
                 resolved_query,
-                intent_result,
-                context,
-                progress_callback
+                context
+            )
+        if intent_type == 'EXIT':
+            return self._handle_exit(
+                context
             )
         else:
             # Default to particular
@@ -996,96 +998,190 @@ Queries are identical if they ask for the same analysis on the same data, even i
             **insight_result
         }
     
-    def _handle_show_example(self, intent_result: dict, context: dict) -> dict:
-        """Handle SHOW_EXAMPLE intent."""
-        print(f"[Agent] Handling SHOW_EXAMPLE intent")
-        
-        return {
-            'status': 'success',
-            'intent': intent_result,
-            'action': 'show_example',
-            'message': 'Ready to show example'
-        }
-    
-    def _handle_general_exploration(self, query: str, intent_result: dict, context: dict, progress_callback: callable = None) -> dict:
-        """
-        Handle NOT_PARTICULAR intent - user wants general exploration/insights.
-        
-        This is where we'll generate interesting insights, patterns, or visualizations
-        without a specific question.
-        """
-        print(f"[Agent] Handling NOT_PARTICULAR (general exploration) intent")
-        
-        # Report that we're starting insight extraction
-        if progress_callback:
-            progress_callback('insight_extraction_started', {'query': query})
-        
-        insight_result = self.insight_extractor.extract_insights(
-                    user_query=query,
-                    intent_hints=intent_result,
-                    dataset=context.get('dataset'),
-                    progress_callback=progress_callback
-                )
-
-        print(f"insight result: {insight_result}")
-        
-        # Report insight generation complete
-        if progress_callback:
-            progress_callback('insight_generated', insight_result)
-                
-        if insight_result.get('status') == 'success':
-            return {
-                        'type': 'particular_insight',
-                        'intent': intent_result,
-                        'intent_result': intent_result,  # Attach for routes.py
-                        'insight_result': insight_result,  # Attach full insight for routes.py
-                        'insight': insight_result.get('insight'),
-                        'data_summary': insight_result.get('data_summary', {}),
-                        'visualization': insight_result.get('visualization', ''),
-                        'query_code_file': insight_result.get('query_code_file'),
-                        'plot_code_file': insight_result.get('plot_code_file'),
-                        'plot_files': insight_result.get('plot_files', []),
-                        'num_plots': insight_result.get('num_plots', 0),
-                        'confidence': insight_result.get('confidence', 0)
-                    }
-        else:
-            return {
-                        'type': 'error',
-                        'intent_result': intent_result,  # Attach even on error
-                        'insight_result': insight_result,  # Attach even on error
-                        'message': insight_result.get('message', 'Failed to generate insight'),
-                        'error': insight_result.get('error')
-                    }
-    
     def _handle_request_help(self, query: str, context: dict) -> dict:
         """Handle REQUEST_HELP intent."""
         print(f"[Agent] Handling REQUEST_HELP intent")
         
-        # Build help message based on context
-        help_message = "I can help you with:\n"
+    
+        # Prefer a cached dataset summary if available (more user-friendly),
+        # otherwise fall back to the raw `dataset` metadata in context.
+        ds_summary = None
+        dataset = None
+        if context:
+            ds_summary = context.get('dataset_summary')
+            dataset = context.get('dataset')
+
+        # Build a short system prompt guiding the LLM to answer using the
+        # provided `dataset_summary` and `dataset` objects. Keep instructions
+        # explicit and ask the model to be concise and to cite when it is
+        # guessing or missing information.
+      
+
+        # Serialize provided structures but truncate to avoid extremely large
+        # prompts. Keep a few KB of context each.
+        def _truncate_json(obj, max_chars=4000):
+            try:
+                txt = json.dumps(obj, indent=2, default=str)
+            except Exception:
+                txt = str(obj)
+            if len(txt) > max_chars:
+                return txt[:max_chars] + "\n... (truncated)"
+            return txt
+
+        ds_text = _truncate_json(ds_summary) if ds_summary else "(no dataset_summary provided)"
+        dataset_text = _truncate_json(dataset) if dataset else "(no dataset metadata provided)"
+        # If the caller provided the last help Q/A in context, include a
+        # short summary of that exchange so follow-up help questions can
+        # be answered coherently. Keep it short to avoid very large prompts.
+        prev_help_q = None
+        prev_help_a = None
+        try:
+            if context:
+                prev_help_q = context.get('last_help_query') or context.get('prev_help_query')
+                prev_help_a = context.get('last_help_response') or context.get('prev_help_response')
+        except Exception:
+            prev_help_q = None
+            prev_help_a = None
+
+        # Debug: surface whether previous help exchange was provided
+        try:
+            add_system_log(f"[Help] prev_help_q present={bool(prev_help_q)} prev_help_a present={bool(prev_help_a)}", 'debug')
+        except Exception:
+            pass
+
+        system_prompt = (
+            f"You are a concise assistant that answers a user's help question about this dataset.\n"
+            f"User question: {query}\n\n"
+            f"--- Dataset summary ---\n{ds_text}\n\n"
+            f"--- Dataset metadata ---\n{dataset_text}\n\n"
+        )
+
+        if prev_help_q or prev_help_a:
+            short_q = (prev_help_q or '')[:1000]
+            short_a = (prev_help_a or '')[:2000]
+            system_prompt += (
+                f"--- Previous help exchange (for context) ---\nUser: {short_q}\nAssistant: {short_a}\n"
+                "If this is a follow-up, build on the assistant's previous answer but be concise.\n\n"
+            )
+
+        system_prompt += (
+            "Use `dataset_summary` and `dataset metadata` to answer. If the information is missing, be explicit and offer a short suggestion for what the user can provide. Be brief."
+        )
         
-        if context and context.get('dataset'):
-            dataset = context['dataset']
-            variables = [f.get('id') or f.get('name') for f in dataset.get('variables', [])]
-            help_message += f"\nAvailable variables: {', '.join(variables)}"
-            
-            if dataset.get('spatial_info'):
-                help_message += "\n\nThis dataset has geographic information."
-            
-            if dataset.get('temporal_info'):
-                temporal = dataset['temporal_info']
-                help_message += f"\n\nTime range: {temporal.get('time_range', {}).get('start')} to {temporal.get('time_range', {}).get('end')}"
-        
-        help_message += "\n\nYou can ask me to:"
-        help_message += "\n- Generate data insights (e.g., 'Show temperature in Gulf Stream')"
-        help_message += "\n- Show examples (e.g., 'Show me an example')"
-        
-        return {
-            'status': 'success',
-            'intent': {'intent_type': 'REQUEST_HELP'},
-            'action': 'provide_help',
-            'message': help_message
-        }
+        try:
+            add_system_log(f"[Help] Invoking LLM for help with dataset (query='{query[:80]}')", 'debug')
+
+            # Try several common invocation idioms to support different
+            # LangChain/OpenAI wrappers (some expect `invoke(input=...)`,
+            # some accept a single string, some accept messages).
+            response = None
+            response_text = None
+            # 1) Try plain prompt via invoke
+            try:
+                response = self.llm.invoke(system_prompt)
+            except TypeError:
+                # Some BaseChatModel implementations use keyword 'input'
+                try:
+                    response = self.llm.invoke(input=system_prompt)
+                except Exception:
+                    response = None
+            except Exception:
+                response = None
+
+            # 2) If still no response, try calling with messages list
+            if response is None:
+                try:
+                    msgs = [{"role": "user", "content": system_prompt}]
+                    response = self.llm.invoke(msgs)
+                except Exception:
+                    response = None
+
+            # 3) Fallback: try calling the model as a callable
+            if response is None:
+                try:
+                    response = self.llm(system_prompt)
+                except Exception:
+                    response = None
+
+            # If we still don't have a response, raise to hit the generic help
+            if response is None:
+                raise RuntimeError("LLM invocation failed (no response)")
+
+            # Extract textual content from various response shapes
+            response_text = getattr(response, 'content', None)
+            if response_text is None:
+                # LangChain-like: `.generations` -> list of lists or other shapes
+                gens = getattr(response, 'generations', None)
+                if gens:
+                    try:
+                        # Handle multiple possible `generations` shapes:
+                        # - list of lists: gens[0][0].text
+                        # - list of Generation objects: gens[0].text
+                        # - iterable/generator: take first element
+                        # Normalize to a sequence so we can safely index into it
+                        try:
+                            gens_seq = list(gens)
+                        except TypeError:
+                            # gens is not iterable, wrap as single item
+                            gens_seq = [gens]
+                        if len(gens_seq) > 0:
+                            first = gens_seq[0]
+                            if isinstance(first, list) and len(first) > 0:
+                                candidate = first[0]
+                            else:
+                                candidate = first
+                        else:
+                            # fallback: try to get an iterator from gens
+                            try:
+                                candidate = next(iter(gens))
+                            except Exception:
+                                candidate = gens
+                        # Extract textual content safely
+                        response_text = getattr(candidate, 'text', None)
+                        if response_text is None:
+                            response_text = str(candidate)
+                    except Exception:
+                        response_text = str(response)
+                else:
+                    # Some wrappers return a string directly
+                    response_text = str(response)
+
+            response_text = (response_text or '').strip()
+
+            # Clean fenced codeblocks if present
+            if response_text.startswith('```'):
+                parts = response_text.split('```')
+                if len(parts) >= 2:
+                    # keep middle content
+                    response_text = parts[1].lstrip('json').strip()
+
+            add_system_log(f"[Help] LLM answered (len={len(response_text)})", 'info', details={'response': response_text})
+
+            return {
+                'status': 'success',
+                'intent': {'intent_type': 'REQUEST_HELP'},
+                'action': 'provide_help',
+                'message': response_text,
+                'used_dataset_summary': bool(ds_summary),
+                'used_dataset_metadata': bool(dataset)
+            }
+
+        except Exception as e:
+            add_system_log(f"[Help] LLM invocation failed: {e}", 'error')
+            generic_help = (
+                "I can assist you with analyzing your dataset, answering specific "
+                "questions about the data, generating visualizations, and providing "
+                "insights. Please ask a specific question or describe what you'd like "
+                "to do with your data."
+            )
+            return {
+                'status': 'success',
+                'intent': {'intent_type': 'REQUEST_HELP'},
+                'action': 'provide_help',
+                'message': generic_help,
+                'used_dataset_summary': False,
+                'used_dataset_metadata': False
+            }
     
     def _handle_exit(self, context: dict) -> dict:
         """Handle EXIT intent."""
