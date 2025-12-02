@@ -19,6 +19,7 @@ myenv
 .venv
 
 imgui.ini
+sys
 
 
 
@@ -61,3 +62,6 @@ GAD_viewer
 dependency_dir/ospray
 dependency_dir/vtk
 agent6-web-app/src/agents/notes.md
+
+
+agent6-web-app/QUICK_START_PROFILER.md

@@ -308,7 +308,7 @@ document.addEventListener('DOMContentLoaded', function() {
                         // Derive a friendly dataset type label from the dataset object.
                         // Some dataset descriptors use `type`, others may use `name`.
                         const dtypeLabel = (dataset && (dataset.type || dataset.dtype || dataset.name)) ? (dataset.type || dataset.dtype || dataset.name) : 'selected';
-                        if (chatInput) chatInput.placeholder = `Describe what you like to see in this ${dtypeLabel} data`;
+                        if (chatInput) chatInput.placeholder = `Describe what you like to see in this data`;
                     });
                 }
         });

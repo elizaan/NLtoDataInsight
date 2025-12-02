@@ -6,7 +6,6 @@ import json
 import uuid
 import time
 import threading
-import datetime
 
 # Conversation context helper
 # Lazy import: avoid importing `create_conversation_context` at module import time
@@ -34,8 +33,6 @@ global_agent_instance = None
 # Task tracking for real-time streaming
 task_storage = {}  # {task_id: {'status', 'messages', 'result', 'created_at'}}
 task_lock = threading.Lock()
-# Lock used to guard concurrent writes to per-query history files
-history_write_lock = threading.Lock()
 
 
 # Add a new endpoint to return all available datasets
@@ -759,27 +756,11 @@ def chat():
         if action == 'continue_conversation':
             # Create task for background processing
             task_id = create_task()
-            # Ensure agent has the current dataset loaded so its ConversationContext
-            # is available for follow-up queries. This is defensive: callers may
-            # set `conversation_state['dataset']` but not have called
-            # `agent.set_dataset()` yet.
-            try:
-                try:
-                    agent.set_dataset(conversation_state.get('dataset') or {})
-                    add_system_log("Agent.set_dataset called from /api/chat continue_conversation", 'debug')
-                except Exception as e:
-                    add_system_log(f"agent.set_dataset failed: {e}", 'warning')
-            except Exception:
-                # Non-fatal - continue even if set_dataset fails
-                pass
             
             # Build context with dataset and summary from conversation_state
             context = {
                 'dataset': conversation_state.get('dataset'),
-                'dataset_summary': conversation_state.get('dataset_summary'),
-                # Provide last help exchange to agent so help-followups can be resolved.
-                'last_help_query': conversation_state.get('last_help_query'),
-                'last_help_response': conversation_state.get('last_help_response')
+                'dataset_summary': conversation_state.get('dataset_summary')
             }
 
             # CRITICAL: Handle clarification responses properly
@@ -866,75 +847,10 @@ def chat():
                     
                     # Add progress callback to context (agent expects it there)
                     context['progress_callback'] = progress_callback
-
-                    # Record current global system_logs length so we can capture
-                    # any logs with `details` that are added during this agent call
-                    try:
-                        sys_log_start = len(system_logs)
-                    except Exception:
-                        sys_log_start = 0
-
+                    
                     # Call agent with progress callback in context
                     result = agent.process_query(user_message, context=context)
-
-                    # Persist per-query trace to daily-rotated JSONL in ai_data/conversation_history
-                    try:
-                        # Determine ai_data and history dir
-                        default_ai_dir = os.path.normpath(os.path.join(os.path.dirname(__file__), '..', '..', 'ai_data'))
-                        ai_dir = os.getenv('AI_DIR', default_ai_dir)
-                        history_dir = os.path.join(ai_dir, 'conversation_history')
-                        os.makedirs(history_dir, exist_ok=True)
-
-                        # Dataset id preference: context -> conversation_state -> fallback
-                        ds = None
-                        try:
-                            ds = context.get('dataset') or conversation_state.get('dataset') or {}
-                        except Exception:
-                            ds = conversation_state.get('dataset') or {}
-                        dsid = None
-                        if isinstance(ds, dict):
-                            dsid = ds.get('id')
-                        if not dsid:
-                            dsid = 'dyamond_llc2160'
-
-                        filename = f"{dsid}_history-{datetime.datetime.utcnow().strftime('%Y-%m-%d')}.jsonl"
-                        history_path = os.path.join(history_dir, filename)
-
-                        # Capture system logs that include a `details` field
-                        detailed_logs = []
-                        try:
-                            new_logs = system_logs[sys_log_start:]
-                            for lg in new_logs:
-                                if isinstance(lg, dict) and 'details' in lg and lg.get('details') is not None:
-                                    # store as {message: details}
-                                    try:
-                                        detailed_logs.append({lg.get('message', ''): lg.get('details')})
-                                    except Exception:
-                                        detailed_logs.append({lg.get('message', ''): str(lg.get('details'))})
-                        except Exception:
-                            detailed_logs = []
-
-                        entry = {
-                            'timestamp': datetime.datetime.utcnow().isoformat() + 'Z',
-                            'log_id': uuid.uuid4().hex,
-                            'task_id': task_id,
-                            'user_message': user_message,
-                            'dataset_id': dsid,
-                            'detailed_logs': detailed_logs
-                        }
-
-                        # Thread-safe append
-                        try:
-                            # Use a safe serializer: fallback to str() for non-JSON types
-                            line = json.dumps(entry, ensure_ascii=False, default=str)
-                            with history_write_lock:
-                                with open(history_path, 'a', encoding='utf-8') as fh:
-                                    fh.write(line + '\n')
-                        except Exception as e:
-                            add_system_log(f"Failed to write conversation trace file: {e}", 'warning')
-                    except Exception as e:
-                        add_system_log(f"Failed to persist conversation trace: {e}", 'warning')
-
+                    
                     print(f"\n{'='*60}")
                     print(f"[BACKGROUND TASK {task_id[:8]}] Agent completed")
                     print(f"[BACKGROUND TASK] Result keys: {list(result.keys())}")
@@ -958,18 +874,6 @@ def chat():
                         conversation_state['original_query'] = result.get('original_query', user_message)
                         conversation_state['original_intent_result'] = result.get('original_intent_result', {})
                         add_system_log(f"[time_preference] Stored state for time preference flow", 'info')
-
-                    # If agent returned a help response, persist it so follow-ups
-                    # can reference the previous help exchange. This avoids losing
-                    # the conversational thread when the user asks follow-up help.
-                    try:
-                        if result.get('action') == 'provide_help' or result.get('type') == 'help_response' or context.get('is_help'):
-                            conversation_state['last_help_query'] = user_message
-                            conversation_state['last_help_response'] = result.get('message') or result.get('answer') or ''
-                            conversation_state['last_help_ts'] = datetime.datetime.utcnow().isoformat() + 'Z'
-                            add_system_log(f"[help] Stored last help response for follow-ups", 'info')
-                    except Exception:
-                        pass
                     
                     # Extract LLM outputs for final result
                     intent_result = result.get('intent_result')
@@ -1051,17 +955,6 @@ def chat():
                             'visualization': result.get('visualization'),
                             'plot_files': result.get('plot_files')
                         }
-                        # Surface any timeout suggestions or insight artifacts so clients can show them
-                        try:
-                            if 'suggestions' in result and result.get('suggestions'):
-                                pr['suggestions'] = result.get('suggestions')
-                            if 'insight_file' in result and result.get('insight_file'):
-                                pr['insight_file'] = result.get('insight_file')
-                            if 'query_code_file' in result and result.get('query_code_file'):
-                                pr['query_code_file'] = result.get('query_code_file')
-                        except Exception:
-                            # Non-fatal - do not block response on this
-                            pass
                         if not final_summary_only:
                             pr['insight'] = result.get('insight')
                             pr['data_summary'] = result.get('data_summary')

@@ -23,7 +23,7 @@ def _get_encoding(model_name: str):
             return None
 
 
-def estimate_tokens_for_messages(messages, model_name: str = "gpt-4o") -> int:
+def estimate_tokens_for_messages(messages, model_name: str = "gpt-5") -> int:
     """Estimate total tokens for a chat-style messages list.
 
     messages: list of dicts with at least a 'content' key.

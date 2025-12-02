@@ -64,6 +64,8 @@ body {
     --artifact-bg: #ffffff;
     --artifact-border: #eeeeee;
     --code-bg: #f9f9f9;
+    /* Ensure code blocks and artifacts have sufficient contrast in light theme */
+    --code-text: #111111;
     --success: #2ecc71;
     --danger: #e74c3c;
     --badge-loading: #cccccc;

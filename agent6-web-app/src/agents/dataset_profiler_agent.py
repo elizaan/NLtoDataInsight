@@ -115,7 +115,7 @@ class DatasetProfilerAgent:
     
     def __init__(self, api_key: str):
         self.llm = ChatOpenAI(
-            model="gpt-4o",
+            model="gpt-5",
             api_key=api_key,
             temperature=0.1
         )

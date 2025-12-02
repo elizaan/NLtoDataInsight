@@ -60,7 +60,7 @@ class InsightExtractorAgent:
         self.llm = ChatOpenAI(
             model="gpt-5", 
             api_key=api_key, 
-            temperature=0.4
+            temperature=0.1
         )
         # Bind tools to model
         self.model_with_tools = self.llm.bind_tools([get_grid_indices_from_latlon], tool_choice="get_grid_indices_from_latlon")
@@ -87,9 +87,6 @@ Total Approximate Data Points in full dataset in full resolution: {total_data_po
 
 EMPIRICAL ANALYSIS:
 {empirical_analysis}
-please first carefully read and try o understand relationship among different resolution levels/quality levels, time intervals, spatial extents, accuracy metrics and read times shown in the empirical analysis above before proceeding to estimate query execution time.
-how query execution time depends on spatial extent, temporal extent, quality level, time interval (temporal subsampling) and accuracy tradeoffs.
-
 
 DATASET GEOGRAPHIC COVERAGE:
 {dataset_geographic_bounds}
@@ -163,23 +160,55 @@ Follow these steps:
    - Based on query, estimate total_timesteps_needed
    - If user asks for "all data" or "full dataset": use {total_time_steps} from dataset info
    - If user asks for specific time range: calculate timesteps in that range
-   - if each timestep read is very expensive, consider if subsampling is possible or not based on user needs
    - RECORD: "Total timesteps needed = [total_timesteps_needed]"
 
-3. from the given empirical analysis, we know that read time depends on spatial extent, temporal extent, quality level, time interval (temporal subsampling) and accuracy tradeoffs.
-   - infer how much time it would take to read one timestep at quality level 0 for your spatial extent abd temporal extent
-  
+3. Calculate total points at Q=0:
+   - estimated_total_points = spatial_points * total_timesteps_needed
+   - RECORD: "Estimated total points (Q=0) = [your_spatial_points] * [total_timesteps_needed] = [estimated_total_points]"
 
-**STEP C: Estimate Time for Different Quality Levels**
+**STEP B: Find Matching CSV Baseline Row**
 
-- the csv shows a rekationship between quality levels and read times when spatial and temporal extents are fixed
-- for current user query, we have already calculated spatial extent and temporal extent
-- using the empirical data, you have also estimated read time per timestep at quality level 0 for your spatial and temporal extents
-- Using this, estimate read times for other quality levels by scaling from quality level 0
+Search CSV for row with CLOSEST spatial extent to your query:
+   - Look for CSV rows where spatial_points ≈ your_spatial_points
+   - The CSV row may have different number of timesteps - that's OK, we'll scale in STEP D
+   - RECORD: "Selected CSV baseline: Row has [csv_spatial_points] spatial points, tested with [csv_timesteps] timestep(s)"
+   - RECORD: "CSV baseline spatial points = [csv_spatial_points]"
+
+**STEP C: Identify Spatial Scaling**
+
+Calculate how your spatial extent compares to the CSV baseline:
+   - spatial_scaling_factor = your_spatial_points / csv_spatial_points
+   - RECORD: "Spatial scaling factor = [your_spatial_points] / [csv_spatial_points] = [spatial_scaling_factor]"
+   
+   If spatial_scaling_factor ≈ 1.0:
+      - "CSV baseline closely matches our spatial extent - can use CSV times directly"
+   Else:
+      - "Will scale CSV times by factor of [spatial_scaling_factor]"
+
+**STEP D: Estimate Time for Different Quality Levels**
+
+CRITICAL: CSV shows time for a SINGLE TIMESTEP. You must scale to your query's total timesteps.
+
+For EACH quality level Q available in the CSV baseline row:
+
+1. **Extract from CSV:** 
+   - time_at_Q_per_timestep = CSV time for ONE timestep at quality Q (in seconds)
+   - RECORD: "CSV baseline at Q=[Q]: [time_at_Q_per_timestep]s per timestep"
+
+2. **Calculate time per timestep for YOUR spatial extent:**
+   - your_time_per_timestep_at_Q = time_at_Q_per_timestep * spatial_scaling_factor
+   - RECORD: "Your time per timestep at Q=[Q]: [time_at_Q_per_timestep]s * [spatial_scaling_factor] = [your_time_per_timestep_at_Q]s"
+
+3. **Scale to your total timesteps:**
+   - your_total_time_at_Q = your_time_per_timestep_at_Q * total_timesteps_needed
+   - your_total_time_minutes = your_total_time_at_Q / 60
+   - now as we do multipletimestep the relation is not linear any more, data read, batching, searching, overheads etc come into picture, so apply a buffer factor to be safe
+   - RECORD: "Total time at Q=[Q]: [your_time_per_timestep_at_Q + {{0.3}}]s * [total_timesteps_needed] timesteps = [your_total_time_at_Q]s = [your_total_time_minutes] min"
 
 
 
-**STEP D: Apply User Constraint Logic**
+
+**STEP E: Apply User Constraint Logic**
 
 **IF NO USER TIME CONSTRAINT:**
    - Use Quality 0 (full resolution)
@@ -189,19 +218,18 @@ Follow these steps:
 
    **Priority 1: Quality Reduction**
    
-   Find the BEST quality level that fits within the constraint:
+   Find the BEST (highest) quality level that fits within the constraint:
    
    Test each quality level from highest to lowest:
    - "Q=0:  [time_0] min - {{'✓ FITS' if time_0 <= [user_limit] else '✗ EXCEEDS'}} [user_limit] min constraint"
    - "Q=-N: [time_-N] min - {{'✓ FITS' if time_-N <= [user_limit] else '✗ EXCEEDS'}} [user_limit] min constraint"
-   - if user has tight time constraint and the resolution/ quality level 0 read time is high, show more aggressive reductions
-   - if user has loose time constraint and even with quality level 0 less difference, you can show less aggressive reductions
    - Continue testing until you find one that FITS
 
-   **CRITICAL: You MUST show reasoning/ inference for AT LEAST for four quality levels:**
+   **CRITICAL: You MUST show these calculations for AT LEAST for four quality levels:**
    - Quality 0 (full resolution) - if available in CSV
    - Several reduced quality levels available in CSV
-   - Show ALL calculations explicitly with estimated numbers
+   - If user has tight time constraint, show more aggressive reductions
+   - Show ALL calculations explicitly with numbers
    
    RECORD: "Best quality that fits: Q=[selected_Q], estimated time=[selected_time] min"
    
@@ -216,19 +244,19 @@ Follow these steps:
    
    ONLY if Priority 1 & 2 failed:
    
-   - **BE SPECIFIC about temporal strategy in sematically meaningful terms using dataset time context:**
+   - **BE SPECIFIC about temporal strategy using dataset time context:**
    - Dataset time interval unit is: {time_units}
    - Convert temporal subsampling into real-world terms: per-second, per-minute, hourly, daily, weekly, monthly etc.
    - NOT generic phrases like "every Nth timestep" or "temporal interval=100"
    
    Calculate required temporal stride:
    - target_time_seconds = user_limit * 60
-   - time_per_timestep_at_lowest_Q = (time_at_lowest_Q)
+   - time_per_timestep_at_lowest_Q = (time_at_lowest_Q from Step D.3)
    - required_stride = ceil((time_per_timestep_at_lowest_Q * total_timesteps_needed) / target_time_seconds)
    - new_timesteps = floor(total_timesteps_needed / required_stride)
    
    Recalculate time:
-   - new_total_time = for time_per_timestep_at_lowest_Q and new_timesteps combination, for the spatial extent, infer new read time using empirical data 
+   - new_total_time = time_per_timestep_at_lowest_Q * new_timesteps
    - new_time_minutes = new_total_time / 60
    
    RECORD: "Applying temporal stride=[required_stride] ([real_world_interval]), effective timesteps=[new_timesteps], estimated time=[new_time_minutes] min"
@@ -241,7 +269,7 @@ Follow these steps:
    - Suggest meaningful dimensionality reduction based on dataset characteristics and context and user query
    - RECORD what spatial/depth information would be lost
 
-**STEP E: MANDATORY VERIFICATION**
+**STEP F: MANDATORY VERIFICATION**
 
 Show final configuration and verify it fits:
 
@@ -269,13 +297,6 @@ Show final configuration and verify it fits:
    - "At quality [Q]: Expected accuracy degradation ~[X]% (RMSE-based)"
    - If temporal subsampling applied: "Temporal gaps may miss [type_of_variations]"
 
-6. **Estimated total time in minutes: [final_estimate] min**
- - add some buffer to be safe because in real execution the llm will write code and might do additional processing and calculations, that will take time
- - also if complex analysis is needed, such as multiple variables, derived variables, complex stats etc. that will take more time
- - tell how many minutes of buffer you are adding and why
- - your final Record in "estimated_time_minutes" field in final output JSON
- - explain how you derived this number clearly
-
 **SANITY CHECK (MANDATORY):**
 
 After all calculations, verify your answer makes sense:
@@ -286,7 +307,8 @@ After all calculations, verify your answer makes sense:
 
 2. Is the estimate reasonable?
    - Full resolution (quality 0) should take HOURS/DAYS for large datasets with many timesteps
-   - but reduced quality/temporal subsampling should bring it down to MINUTES if chosen wisely and carefully
+   - Quality -6 with 10,000 timesteps should take TENS OF MINUTES to HOURS
+   - Quality -10 should take MINUTES
    
 3. Does it actually fit the constraint?
    - Your estimate ≤ user_time_limit?
@@ -298,11 +320,13 @@ After all calculations, verify your answer makes sense:
 **STEP 3: PLOT SUGGESTIONS**
 
 With the required/derived variables needed to answer the query, which plots would best illustrate the insights?
-- intuitive 2D/3D spatial field visualization, in case of time series, can show interactive time slider or small multiples for key timesteps, whichever is easy to implement
+- Simple-easy but intuitive 2D/3D spatial field visualization
 - Some more related, on point, 1D, 2D, ...ND plots that are highly intuitive to understand the user query
 - Easily interpretable by domain scientists and appropriate for the query and dataset
 - For each type of plot add subplots if needed for more clarity and better understanding and transparency
 - Keep suggestions focused, on point, meaningful, easily digestible and not too many plots, not even too few
+
+
 
 Output JSON with:
 {{
@@ -315,7 +339,7 @@ Output JSON with:
     ],
     "reasoning": "Brief natural explanation of what analysis is needed and why",
     "confidence": (0.0-1.0),
-    "estimated_time_minutes": <number>, // estimated total time from your calculations in minutes
+    "estimated_time_minutes": <number>, // estimated execution time in minutes
     "time_estimation_reasoning": "DETAILED step-by-step calculation showing ALL work from STEP 2 above - this MUST include: Step A calculations, Step B CSV row selection, Step C scaling factor, Step D time estimates for multiple quality levels, Step E optimization decisions, Step F verification",
     "quality_level_used": <number>,  // REQUIRED: the quality level selected (0, -2, -4, -6, etc.)
     "temporal_sampling_strategy": "describe temporal approach both in terms of timestep stride for optimization and real-world interval user asked for, please use wordings like hourly/daily/weekly/monthly etc. NOT generic phrases like 'every Nth timestep' or 'time_interval=100'",
@@ -335,10 +359,9 @@ Output JSON with:
 
 **OUTPUT STYLE:**
 - "reasoning" field: Keep conversational and natural, like explaining to a colleague
-- "time_estimation_reasoning" field: 
-  - your in-depth, meticulous, inference-heavy intelligence is crucial here
-  - MUST include ALL calculations step-by-step with explicit numbers
-  - Show estimated numbers, show arithmetic, show comparisons
+- "time_estimation_reasoning" field: MUST include ALL calculations step-by-step with explicit numbers
+  - Show numbers, show arithmetic, show comparisons
+  - Format: "Step A: spatial_points = 48M, timesteps = 10,366. Total points (Q=0) = 48M * 10,366 = 497B..."
   - This is NOT optional - detailed calculations are REQUIRED for time estimation
 - DO explain reasoning: "Since you're analyzing trends, we need continuous coverage..."
 - DO state accuracy naturally: "This typically shows ~5% error, good enough for pattern detection"

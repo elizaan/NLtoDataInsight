@@ -422,7 +422,7 @@ if (typeof window !== 'undefined') window.updateArtifactsPanelLayout = updateArt
                 if (!msg.data || !msg.data.awaiting_clarification) {
                     this.addMessage('🔍 Intent Analysis:', 'bot');
                     const intentStr = JSON.stringify(msg.data, null, 2);
-                    this.addMessage(intentStr, 'bot');
+                    // this.addMessage(intentStr, 'bot');
                 }
                 break;
             
@@ -431,7 +431,7 @@ if (typeof window !== 'undefined') window.updateArtifactsPanelLayout = updateArt
                 try {
                     this.addMessage('🔎 Insight Analysis:', 'bot');
                     const analysisStr = typeof msg.data === 'string' ? msg.data : JSON.stringify(msg.data, null, 2);
-                    this.addMessage(analysisStr, 'bot');
+                    // this.addMessage(analysisStr, 'bot');
                 } catch (e) {
                     this.addMessage(String(msg.data), 'bot');
                 }
@@ -474,11 +474,45 @@ if (typeof window !== 'undefined') window.updateArtifactsPanelLayout = updateArt
                         this.addMessage(summaryStr, 'bot');
                     }
                 }
+                // Show suggested smaller queries if provided (timeout fallback)
+                try {
+                    if (msg.data && msg.data.suggestions) {
+                        const suggestions = msg.data.suggestions;
+                        this.addMessage('💡 Suggested smaller queries:', 'bot');
+                        // If suggestions is an object with 'suggestions' key (legacy), normalize
+                        let suggList = suggestions;
+                        if (suggestions && suggestions.suggestions && Array.isArray(suggestions.suggestions)) {
+                            suggList = suggestions.suggestions;
+                        }
+                        if (Array.isArray(suggList) && suggList.length > 0) {
+                            suggList.forEach((s, i) => {
+                                try {
+                                    const desc = s.short_description || s.description || s.title || JSON.stringify(s);
+                                    const why = s.why_it_helps ? ` — ${s.why_it_helps}` : '';
+                                    this.addMessage(`• ${desc}${why}`, 'bot');
+                                } catch (e) {
+                                    this.addMessage(`• ${JSON.stringify(s)}`, 'bot');
+                                }
+                            });
+                        } else {
+                            // If suggestions is a plain string, print it
+                            this.addMessage(String(suggestions), 'bot');
+                        }
+                    }
+                } catch (e) {
+                    console.warn('Failed to render suggestions from insight_generated', e);
+                }
                 // If progress message includes artifact references, render them
                 try {
+                    console.log('insight_generated msg.data keys:', msg.data ? Object.keys(msg.data) : 'null');
+                    console.log('insight_generated msg.data.plot_files:', msg.data ? msg.data.plot_files : 'N/A');
+                    console.log('insight_generated msg.data.query_code_file:', msg.data ? msg.data.query_code_file : 'N/A');
+                    console.log('insight_generated msg.data.plot_code_file:', msg.data ? msg.data.plot_code_file : 'N/A');
                     if (msg.data && (msg.data.plot_files || msg.data.query_code_file || msg.data.plot_code_file)) {
                         console.log('Progress message contains artifacts; rendering artifacts panel');
                         this.renderArtifacts(msg.data);
+                    } else {
+                        console.warn('insight_generated received but no artifact fields found in msg.data');
                     }
                 } catch (e) {
                     console.warn('Failed to render artifacts from progress message', e);
@@ -536,7 +570,7 @@ if (typeof window !== 'undefined') window.updateArtifactsPanelLayout = updateArt
                             console.log('🔍 Adding intent parsing message');
                             this.addMessage('🔍 Intent Analysis:', 'bot');
                             const intentStr = JSON.stringify(msg.data, null, 2);
-                            this.addMessage(intentStr, 'bot');
+                            // this.addMessage(intentStr, 'bot');
                             console.log('Intent message added');
                         } else {
                             console.log('Skipping intent display (awaiting_clarification=true, already shown via progress)');
@@ -549,7 +583,7 @@ if (typeof window !== 'undefined') window.updateArtifactsPanelLayout = updateArt
                         this.addMessage('💡 Generating Insight...', 'bot');
                         if (msg.data.insight) {
                             console.log('Adding insight text:', msg.data.insight.substring(0, 50));
-                            this.addMessage(msg.data.insight, 'bot');
+                            // this.addMessage(msg.data.insight, 'bot');
                         }
                         // Only show data_summary if it exists and is not empty
                         if (msg.data.data_summary) {

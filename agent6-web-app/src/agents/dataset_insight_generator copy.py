@@ -225,8 +225,8 @@ class DatasetInsightGenerator:
                 f.write(insight_text)
             
             add_system_log(
-                f"[GENERATOR] Generated insight for DERIVED_STAT ({len(insight_text)} chars)",
-                'success', details=insight_text
+                f"[DERIVED_STAT] Generated insight ({len(insight_text)} chars)",
+                'success'
             )
             
             # Return result using previous plots and codes
@@ -394,7 +394,13 @@ class DatasetInsightGenerator:
         plot_hint_reasonings = intent_result.get('llm_pre_insight_analysis', {}).get('reasoning', [])
         reasoning = intent_result.get('reasoning', '')
         
-        
+        # Extract user time limit if provided
+        user_time_limit = intent_result.get('user_time_limit_minutes', None)
+        add_system_log(
+            f"User time limit: "
+            f"{user_time_limit} minutes" if user_time_limit else "No user time limit specified",
+            'info'
+        )
 
         # Include any prior LLM pre-insight analysis (produced by the intent parser / extractor)
         # This will be injected into the system prompt so the generator LLM can leverage
@@ -409,15 +415,55 @@ class DatasetInsightGenerator:
         temporal_sampling_strategy = pre_insight.get('temporal_sampling_strategy', 'full temporal coverage')
         time_estimation_reasoning = pre_insight.get('time_estimation_reasoning', '')
         target_variables = pre_insight.get('target_variables', [])
-        estimated_total_data_points = pre_insight.get('estimated_total_points', 'unknown')
 
-        # Extract user time limit if provided
-        user_time_limit = intent_result.get('user_time_limit_minutes', None)
-        add_system_log(
-            f"[Generator] User time limit set as execution time: "
-            f"{user_time_limit} minutes" if user_time_limit else "No user time limit specified",
-            'info'
-        )
+        
+        
+            
+#         {
+# "analysis_type": "data_query",
+# "confidence": 0.95,
+# "dimensionality_reduction": {
+# "applied": false,
+# "strategy": null
+# },
+# "estimated_time_minutes": 1089.7,
+# "plot_hints": [
+# "Time Series Plot (1D): variables: salinity, plot_type: line plot, reasoning: To visualize the change in salinity over time from January 2020 to March 2020.",
+# "Spatial Field Visualization (2D): variables: salinity, plot_type: heatmap or contour plot, reasoning: To observe spatial patterns and variations in salinity across the globe during the specified period.",
+# "Difference Plot (2D): variables: salinity, plot_type: heatmap, reasoning: To highlight areas with significant changes in salinity between the start and end of the period."
+# ],
+# "quality_level_used": 0,
+# "reasoning": "The user is interested in the change in salinity over a specific time period, requiring a time series analysis and spatial visualization.",
+# "spatial_extent": {
+# "actual_lat_range": [
+# -89.9947280883789,
+# 72.03472137451172
+# ],
+# "actual_lon_range": [
+# -180,
+# 179.99996948242188
+# ],
+# "estimated_total_points": 5038848000,
+# "x_range": [
+# 0,
+# 8640
+# ],
+# "y_range": [
+# 0,
+# 6480
+# ],
+# "z_range": [
+# 0,
+# 90
+# ]
+# },
+# "target_variables": [
+# "salinity"
+# ],
+# "temporal_sampling_strategy": "Continuous coverage for trend analysis.",
+# "time_estimation_reasoning": "The full spatial extent and 1704 timesteps require approximately 1089.7 minutes at full resolution based on empirical data."
+# }
+        
         variables = dataset_info.get('variables', [])
         spatial_info = dataset_info.get('spatial_info', {})
         temporal_info = dataset_info.get('temporal_info', {})
@@ -446,6 +492,20 @@ class DatasetInsightGenerator:
 
 
         self.dataset_profile = empirical_test_results
+            
+#         # Build time constraint section for system prompt - LLM DECIDES OPTIMIZATION
+#         if user_time_limit:
+#             time_constraint_section = f'''**TIME CONSTRAINT**: User specified {user_time_limit} minutes.
+
+# **DATA SCALE CONTEXT:**
+# - Total data points: {total_data_points:,}
+# - Spatial dimensions: {x} × {y} × {z} = {total_voxels:,} points per timestep
+# - Temporal: {total_timesteps} timesteps ({time_units})
+# - Available time: {user_time_limit * 60 * 0.9} seconds
+# '''
+#         else:
+#             time_constraint_section = '**NO TIME CONSTRAINT** specified. '
+
         
         reusable_npz_instruction = ""
         cache_info = self._extract_cache_info(intent_result)
@@ -454,7 +514,17 @@ class DatasetInsightGenerator:
             cache_info['new_npz_file'] = data_cache_file_str
             reusable_npz_instruction = self._build_reusable_npz_instruction(cache_info)
 
-      
+        # Build system prompt - LLM DECIDES EVERYTHING
+#         system_prompt = f"""You are an expert data scientist analyzing with full autonomy to solve the user's question.
+
+#           **USER QUESTION:** {user_query}
+
+#           **INTENT ANALYSIS:**
+#           - Type: {intent_type}
+#           - Intent Reasoning: {reasoning}
+#           - Plot Hints: {json.dumps(plot_hints, indent=2)}
+# """
+        
         system_prompt = f"""You are an expert data scientist analyzing with full autonomy to solve the user's question.
 
           **USER QUESTION:** {user_query}
@@ -462,7 +532,25 @@ class DatasetInsightGenerator:
         system_prompt += reusable_npz_instruction
         
         system_prompt += f"""
-        
+        **CRITICAL: SAVE METADATA FOR FOLLOW-UP QUERIES**
+
+        When finding extremes (max/min/peaks/ specific statistics), you MUST save additional metadata:
+                ```python
+                ```
+np.savez(
+    output_file,
+    target = target_value,
+    target_timestep/target_timestep_range=time_where_target_occurred,  # Enables "when was target?" queries
+    target_x = x_where_target_found,  # Enables approximate "where was target?" queries
+    target_y = y_where_target_found,   # Enables approximate "where was target?" queries
+    target_z = z_where_target_found,   
+    quality=quality_used/resolution_used
+)
+```
+
+This will make follow-up queries to check if caching possible or not instead of timing out!
+**═══════════════════════════════════════════════════════════════════════**
+
 **DATASET INFORMATION:**
 Name: {dataset_name} ({dataset_size})
 Variables: {json.dumps(variables, indent=2)}
@@ -473,6 +561,183 @@ Spatial Dimensions:
 - Z: {z} levels
 - Total spatial points: {total_voxels:,}
 
+
+Geographic Information:
+- Has geographic coordinates: {spatial_info.get('geographic_info', {}).get('has_geographic_info', 'no')}
+- Geographic file: {spatial_info.get('geographic_info', {}).get('geographic_info_file', 'N/A')}
+
+**CRITICAL: Geographic Mapping Intelligence**
+When user mentions LOCATION NAMES (not just x/y indices), you MUST map them to coordinates.
+
+The dataset has a geographic coordinate file: {spatial_info.get('geographic_info', {}).get('geographic_info_file', 'llc2160_latlon.nc')}
+This file (resolved path: {geo_file_path_str}) contains latitude[y, x] and longitude[y, x] arrays that map grid indices to real-world coordinates.
+
+**Your Geographic Knowledge:**
+You have extensive knowledge of Earth geography including:
+- **Ocean basins**: Atlantic, Pacific, Indian, Arctic, Southern Oceans
+- **Seas and water bodies**: Mediterranean Sea, Caribbean Sea, Arabian Sea, Bay of Bengal, Red Sea, etc.
+- **Ocean currents**: Gulf Stream, Kuroshio, Agulhas, Antarctic Circumpolar Current, etc.
+- **Oceanographic features**: Eddies, gyres, upwelling zones, fronts, rings
+
+**How to Handle Geographic Queries:**
+
+**Step 1: Identify if query mentions a location**
+Look for keywords: ocean names, sea names, current names, country names, "near", "in", "around", "region", "area", etc.
+
+**Step 2: Estimate lat/lon bounds using your geographic knowledge**
+
+**Step 3: Use the provided helper function to convert to grid indices**
+ALWAYS use latlon_to_xy() - don't try to manually estimate grid positions!
+
+**Example code pattern for geographic queries:**
+```python
+# User asked about "currents in the Mediterranean"
+# Step 1: You know Mediterranean is roughly lat:[30, 46], lon:[-6, 37]
+
+# Step 2: Convert to grid coordinates using helper
+import xarray as xr
+geo_file = "llc2160_latlon.nc"
+
+def latlon_to_xy(lat_range, lon_range):
+    ds = xr.open_dataset(geo_file)
+    lat_center = ds["latitude"].values
+    lon_center = ds["longitude"].values
+    
+    mask = (
+        (lat_center >= lat_range[0]) & (lat_center <= lat_range[1]) &
+        (lon_center >= lon_range[0]) & (lon_center <= lon_range[1])
+    )
+    
+    y_indices, x_indices = np.where(mask)
+    x_min, x_max = int(x_indices.min()), int(x_indices.max()) + 1
+    y_min, y_max = int(y_indices.min()), int(y_indices.max()) + 1
+    
+    return [x_min, x_max], [y_min, y_max]
+
+# Apply it
+x_range, y_range = latlon_to_xy([30, 46], [-6, 37])
+print(f"Mediterranean region: x={{x_range}}, y={{y_range}}")
+
+# Now use these ranges in your data query
+data = ds.db.read(
+    time=t,
+    x=x_range,
+    y=y_range,
+    z= z_range
+    # x,y,z reads prefer a non-zero-length range (start < end).
+    #  OpenVisus bindings require start < end
+    quality=0 # choose appropriate quality based on time constraints
+)
+```
+
+**IMPORTANT** 
+- USE YOUR KNOWLEDGE to estimate bounds for ANY geographic location mentioned
+- ALWAYS call latlon_to_xy() to get grid indices - never guess grid coordinates
+- If unsure about exact bounds, provide reasonable estimates (it's better than failing)
+
+**Helper Code for Geographic Mapping:**
+```python
+import xarray as xr
+import numpy as np
+
+# Geographic file path (resolved to absolute path in the repo)
+geo_file = "{geo_file_path_str}"
+
+def get_dataset_bounds():
+    '''Get actual lat/lon coverage of dataset'''
+    ds = xr.open_dataset(geo_file)
+    lat_center = ds["latitude"].values
+    lon_center = ds["longitude"].values
+    
+    return {{
+        "lat_min": float(lat_center.min()),
+        "lat_max": float(lat_center.max()),
+        "lon_min": float(lon_center.min()),
+        "lon_max": float(lon_center.max())
+    }}
+
+def latlon_to_xy(lat_range, lon_range):
+    '''
+    Convert lat/lon ranges to x/y index ranges
+    
+    Args:
+        lat_range: [min_lat, max_lat] in degrees
+        lon_range: [min_lon, max_lon] in degrees
+    
+    Returns:
+        x_range: [x_min, x_max]
+        y_range: [y_min, y_max]
+    '''
+    ds = xr.open_dataset(geo_file)
+    lat_center = ds["latitude"].values
+    lon_center = ds["longitude"].values
+    
+    # Find indices where coordinates fall within range
+    mask = (
+        (lat_center >= lat_range[0]) & (lat_center <= lat_range[1]) &
+        (lon_center >= lon_range[0]) & (lon_center <= lon_range[1])
+    )
+    
+    y_indices, x_indices = np.where(mask)
+    
+    if len(x_indices) == 0 or len(y_indices) == 0:
+        raise ValueError(f"No data found in lat {{lat_range}}, lon {{lon_range}}")
+    
+    x_min = int(x_indices.min())
+    x_max = int(x_indices.max()) + 1
+    y_min = int(y_indices.min())
+    y_max = int(y_indices.max()) + 1
+    
+    return [x_min, x_max], [y_min, y_max]
+
+def xy_to_latlon(x_range, y_range):
+    '''
+    Convert x/y index ranges to actual lat/lon ranges
+    
+    Args:
+        x_range: [x_min, x_max]
+        y_range: [y_min, y_max]
+    
+    Returns:
+        lat_range: [min_lat, max_lat]
+        lon_range: [min_lon, max_lon]
+    '''
+    ds = xr.open_dataset(geo_file)
+    lat_center = ds["latitude"].values
+    lon_center = ds["longitude"].values
+    
+    # Extract coordinates for the given index range
+    lat = lat_center[y_range[0]:y_range[1], x_range[0]:x_range[1]]
+    lon = lon_center[y_range[0]:y_range[1], x_range[0]:x_range[1]]
+    
+    lat_range = [float(lat.min()), float(lat.max())]
+    lon_range = [float(lon.min()), float(lon.max())]
+    
+    return lat_range, lon_range
+
+# Example usage:
+# bounds = get_dataset_bounds()  # Check what the dataset covers
+# x_range, y_range = latlon_to_xy([-40, -30], [15, 35])  # Agulhas Current
+# lat_range, lon_range = xy_to_latlon([1000, 2000], [500, 1000])  # Reverse lookup
+```
+
+**WORKFLOW for Location Queries:**
+1. User mentions location name (e.g., "Australia")
+2. You recognize it and recall approximate lat/lon bounds from your knowledge
+3. Optionally check dataset bounds with get_dataset_bounds() to verify coverage
+4. Use latlon_to_xy() helper to convert to x/y indices
+5. Use those indices in your data query
+6. Mention the actual coordinates used in your output
+
+**Important Notes:**
+- These are APPROXIMATE bounds - real features have fuzzy boundaries
+- It's OK to use broad regions (e.g., ±5° buffer is fine)
+- If unsure about exact bounds, estimate conservatively
+- Always mention the lat/lon you used in your output for transparency
+- Check if your requested region is within dataset bounds
+
+
+
 Temporal Information:
 - Total timesteps: {total_timesteps:,}
 - Time units: {time_units}
@@ -480,31 +745,6 @@ Temporal Information:
 - Start date: {temporal_info.get('time_range', {}).get('start', 'unknown')}
 - End date: {temporal_info.get('time_range', {}).get('end', 'unknown')}
 - TOTAL DATA POINTS: {total_data_points:,}
-
-**PRE-ANALYZER AGENT SPECIFICATIONS (USE THESE DIRECTLY)::**
-
-- Quality Level: {suggested_quality_level} **← USE THIS EXACT VALUE**
-- Spatial Extent (grid indices):
-  - x_range: {spatial_extent_hints.get('x_range', 'not specified')} **← USE THESE EXACT RANGES**
-  - y_range: {spatial_extent_hints.get('y_range', 'not specified')}
-  - z_range: {spatial_extent_hints.get('z_range', 'not specified')}
-- Geographic Bounds (lat/lon):
-  - lat_range: {spatial_extent_hints.get('actual_lat_range', 'not specified')}
-  - lon_range: {spatial_extent_hints.get('actual_lon_range', 'not specified')}
-- Temporal Sampling Strategy: {temporal_sampling_strategy} **← FOLLOW THIS STRATEGY**
-- Dimensionality Reduction: {json.dumps(dim_reduction_info, indent=2)}
-- Target Variables: {json.dumps(target_variables, indent=2)}
-- Plot Hints: {json.dumps(plot_hints, indent=2)} and plot reasoning: {json.dumps(plot_hint_reasonings, indent=2)}
-- Estimated Total Data Points to Process: {estimated_total_data_points}
-- Time Estimation: {time_estimation_reasoning} for {user_time_limit} minutes
-
-**CRITICAL: These parameters are optimized for time/quality tradeoff 
-Based on the user's question, dataset characteristics, and time constraints. USE THEM DIRECTLY unless:**
-1. They are null/None/missing
-2. They are clearly wrong for the query
-3. User explicitly requested different parameters
-, the pre-analyzer agent has provided these hints to guide code generation.
-
 
 **CRITICAL: Temporal Mapping Intelligence**
 The time_range might be in human-readable dates, but your code needs INTEGER timestep indices.
@@ -573,9 +813,9 @@ elif time_unit == "days":
 # Clamp to valid range
 timestep_start = max(0, min(timestep_start, total_timesteps - 1))
 timestep_end = max(0, min(timestep_end, total_timesteps - 1))
-timestep_step = 1  # of course, adjust based on temporal sampling strategy
+
 # Use loop in your code
-for t in range(timestep_start, timestep_end + 1, timestep_step):
+for t in range(timestep_start, timestep_end + 1):
     # Your data reading code
 `````
 
@@ -592,150 +832,83 @@ You have TWO separate code scripts to write:
 
 **HIGHLY IMPORTANT: Your Intelligence Required, please follow the steps carefuly:**
 
-STEP 1: UNDERSTAND PRE-ANALYZER SPECIFICATIONS
-Extract from PRE-ANALYZER SPECIFICATIONS above:
+**STEP 1: ANALYZE THE USER ASKED TIME**
 
-decide variables to extract based on target variables 
-decide if you can use directly from dataset metadata urls or need to derive
-name the variables properly in your code matching the dataset variable names
+**USER TIME CONSTRAINT:**
+{time_constraint_section}
 
-**STEP 2: ONLY override if necessary**
-If any specification is None/null/missing, then intelligently decide:
-- Quality level based on time constraint
-- Spatial ranges based on user query
-- Temporal strategy based on analysis needs
+
+**STEP 2: DECIDE YOUR STRATEGY**
+- Set query timeout to {user_time_limit * 60 * 0.9:.0f} seconds (90% of limit for buffer)
+- Choose the quality level that balances speed and correctness for THIS specific query:
+    - we have done empirical tests on dataset performance in various settings, you should use that knowledge from {self.dataset_profile} to guide your decision
+
+- Consider:
+    - Total data points: {total_data_points:,}
+    - Consider query complexity, data characteristics, and time budget
+    - Use empirical test results to decide on quality/resolution decision from dataset profile based on user query
+    - choose a tradeoff between speed and accuracy based on user time limit: {user_time_limit} minutes and 'accuracy_tradeoff_analysis' from dataset profile above
+
+- Decide:
+    - time sampling strategy: which timesteps to read (all? every Nth? specific ranges?)
+    - spatial quality/resolution level to read
+
 
 
 **STEP 3: WRITE SMART QUERY CODE**
 Your code should:
 2. Apply YOUR intelligent sampling/aggregation strategy
-3. Extract and save data needed for ALL plot hints: {plot_hints} 
-4. **Save rich metadata** so follow-up queries are instant
+3. Extract data needed for ALL plot hints
+4. **Save rich metadata** (see above) so follow-up queries are instant
 5. Save intermediate results to: `{data_cache_file_str}`
 6. Print JSON summary to stdout
 
-**Query Code Template for file-format openvisus idx file format:**
+**Query Code Template for file-format openvisus idx(ADAPT THIS):**
 ```python
 import openvisuspy as ovp
 import numpy as np
 import json
-from datetime import datetime, timedelta
-import sys, os
-from pathlib import Path
-
-# Add project root to Python path
-# From: agent6-web-app/ai_data/codes/dyamond_llc2160/query_*.py
-# To:   NLQtoDataInsight/ (project root)
-current_file = Path(__file__)  # query_*.py
-codes_dir = current_file.parent.parent.parent  # Go up to ai_data/codes/../.. → ai_data
-project_root = codes_dir.parent.parent  # Go up to agent6-web-app/../.. → NLQtoDataInsight/
-sys.path.insert(0, str(project_root))
-# mask module path 
-mask_module_path = os.path.abspath(os.path.join(project_root, 'LLC2160_land_ocean_mask'))
-if mask_module_path not in sys.path:
-    sys.path.insert(0, mask_module_path)
-from utils import compute_land_ocean_mask3d
 
 # YOUR INTELLIGENT STRATEGY HERE
-# use aggregation factor if needed, sampling strategy, etc.
-# save data array in npz for each timestep needed for plots, with meaningful variable names
-# if  timestep is huge, save data for interesting timesteps only based on 
-# now which timestep is important to save data array that is your stratgy, but i would say user might want to see spatial plot for min/max/mean/std timesteps etc.
-
-quality = {suggested_quality_level}  # Use this exact value
-x_range = {spatial_extent_hints.get('x_range', [0, -1])}  # Use these exact indices
-y_range = {spatial_extent_hints.get('y_range', [0, -1])}
-z_range = {spatial_extent_hints.get('z_range', [0, -1])}
-lat_range = {spatial_extent_hints.get('actual_lat_range', None)}  # For metadata
-lon_range = {spatial_extent_hints.get('actual_lon_range', None)}
-
-
-        
-mask3d = compute_land_ocean_mask3d(
-            time=0,  # Land/ocean boundary doesn't change with time
-            quality=quality,  # Use same quality as data for alignment
-            x_range=x_range,
-            y_range=y_range,
-            z_range=z_range,
-            use_surface_only=True  # Efficient: land/ocean same at all depths
-        )
-
-ocean_mask = (mask3d == 1)  
+# Decide: aggregation factor, spatial quality, sampling approach
 
 try:
     # Load dataset
-    url = "GET_FROM_VARIABLES" 
+    url = "GET_FROM_VARIABLES"
     ds = ovp.LoadDataset(url)
     
-    # YOUR meabingful time SAMPLING LOGIC
-    # Example: Sample hourly, daily, monthy, etc based on temporal strategy. and user query and dataset time range, time_units
+    # YOUR SAMPLING LOGIC
+    # Example: Sample every Nth timestep instead of all
 
     length_of_timesteps = len(ds.db.getTimesteps())
-    YOUR_TIMESTEP_RANGE = [YOUR_START_TIME, YOUR_END_TIME, YOUR_STEP]
     # Extract data
-    data_points_processed = 0
     results = []
-
     for t in YOUR_TIMESTEP_RANGE:
         data = ds.db.read(
             time=t,
-            x=[x_range[0], x_range[1]],  # Full x range (-1 means max)
-            y=[y_range[0], y_range[1]],  # Full y range (-1 means max)
-            z=[z_range[0], z_range[1]], 
-            quality=quality 
+            x=[ds.db.getLogicBox()[0][0], ds.db.getLogicBox()[1][0]],  # Full x range (-1 means max)
+            y=[ds.db.getLogicBox()[0][1], ds.db.getLogicBox()[1][1]],  # Full y range (-1 means max)
+            z=[ds.db.getLogicBox()[0][2], ds.db.getLogicBox()[1][2]], 
+            quality=YOUR_CHOSEN_QUALITY 
         )
-        data_points_processed = len(data.flatten())
-        # Apply ocean mask if needed
-        data = np.where(ocean_mask, data, np.nan)
         
-        # Compute user asked statistics + min/max/mean/std as well for each timestep
-        # save them in a way so that searchable for follow-up queries and plotting
-        your_finding = {{
-            "timestep": t,
-            "mean": np.mean(data),
-            "min": np.min(data),
-            "max": np.max(data),
-            "std": np.std(data),
-            # Add any other stats needed for plots
-        }}
-        results.append(your_finding)
-    
-    # if timestep huge, you can save only interesting timesteps data arrays like min/max/mean/std timesteps data arrays for spatial plots
-    # e.g., save data array for timestep with min value, max value, mean value, std value etc.
-    # if not huge, you can save all timesteps data arrays as well based on your strategy
-    # name the variable properly in npz file so that follow-up queries can use them directly
-        
+        # Compute what you need
+        stats = YOUR_COMPUTATION_HERE
+        results.append(stats)
     
     # Save for plotting
     np.savez(
         '{data_cache_file_str}',
-        'variable_name(s)': 'VARIABLE_YOU_ARE_QUERYING',
-        'x_range': x_range,
-        'y_range': y_range,
-        'z_range': z_range,
-        'time_range': [YOUR_START_TIME, YOUR_END_TIME, YOUR_STEP],
-        'lat_range': lat_range,
-        'lon_range': lon_range, 
-        'quality_level': quality,
-        **{{'results': results}}  
-        # Add any other metadata saved and needed for follow-up queries
-        
+        **YOUR_DATA_DICT
     )
     
     # Output summary
     print(json.dumps({{
         "status": "success",
-        "variable_name(s)": "VARIABLE_YOU_ARE_QUERYING",
         "strategy": "EXPLAIN YOUR STRATEGY",
-        "data_points_processed": data_points_processed,
-        'x_range': x_range,
-        'y_range': y_range,
-        'z_range': z_range,
-        'time_range': [YOUR_START_TIME, YOUR_END_TIME, YOUR_STEP],
-        'lat_range': lat_range,
-        'lon_range': lon_range, 
-        'quality_level': quality,
-        **{{'results': results}}
+        "data_points_processed": len(results),
+        "potential_accuracy": "ESTIMATE BASED ON STRATEGY and empirical tests from dataset profile",
+        **YOUR_FINDINGS
     }}))
     
 except Exception as e:
@@ -751,14 +924,12 @@ except Exception as e:
 **Your Intelligence Required:**
 
 **STEP 1: UNDERSTAND PLOT HINTS**
-Plot hints: {plot_hints} and reasonings: {plot_hint_reasonings}
+Plot hints: {plot_hints}
 
 **STEP 2: DECIDE PLOT STRATEGY**
 Ask yourself:
-- should I plot all hints or only a subset?
-- what plot types best convey the information asked by user and dataset characteristics and plot hint reasonings?
-- how many plots are reasonable (2-5 usually good, more if user asked for many distinct features)
-- how to highlight key findings?
+- What visualizations would **best** answer the user's question?
+- How many distinct but on point plots should I create?
 
 **STEP 3: WRITE PLOT CODE**
 Your code should:
@@ -792,8 +963,8 @@ If the plotting is challenging with available packages, do your best with what w
 **Axis Limits and Scales:**
 - ALWAYS set appropriate axis limits based on your actual data range
 - For bar charts of min/max: set y-axis from slightly below min to slightly above max
-- For time series: ensure x-axis covers your time range, label with dates/times correctly with units
-- For heatmaps and image-like arrays: use appropriate color scales (diverging for anomalies, sequential for values).
+- For time series: ensure x-axis covers your time range
+ - For heatmaps and image-like arrays: use appropriate color scales (diverging for anomalies, sequential for values).
      - IMPORTANT: Treat array row-0 as the BOTTOM (not the top) by default across all visualizations. Make this the standard so overlays and annotations align intuitively with Cartesian/geographic coordinates.
      - Implementation rules (apply one of the following consistently):
         * matplotlib `imshow`: always pass `origin='lower'` and provide an explicit `extent=[x_min, x_max, y_min, y_max]` when mapping array indices to coordinate axes.
@@ -802,12 +973,39 @@ If the plotting is challenging with available packages, do your best with what w
         * quiver/streamplot: build X/Y coordinate arrays that match the heatmap's extent and orientation (use `np.meshgrid(x_coords, y_coords)` where `y_coords` is ascending). Do NOT assume array row ordering — derive coordinates from `x_range`/`y_range` or `extent`.
 - Use log scale if data spans several orders of magnitude
 - folow rule for other plots too
-- Always document resolution reduction values in plot titles/captions
-- **3D to 2D reduction:**
-   - If data has z-levels but you plot 2D:
+- Always document resolution reduction values (q=?) in plot titles/captions
+
+**Data Validation:**
+- After loading npz file, ALWAYS inspect keys: `print("Available keys:", data.files)`
+- Check data shapes and values: `print(f"Shape: {{arr.shape}}, Range: [{{arr.min()}}, {{arr.max()}}]")`
+- This prevents plotting wrong arrays or misinterpreting data structure
+
+**CRITICAL: Dimension Labeling and Transparency:**
+When creating plots, you MUST explain resolution reductions value and coordinate mappings:
+
+1. **Resolution reduction transparency:**
+   - Original dataset: {x}×{y}×{z} = {total_voxels:,} spatial points
+   - If you used quality=-q
+   - **In insight**: Explain "plotted at reduced resolution (quality=-q) but coordinates show original grid"
+
+2. **Timestep selection transparency:**
+   - Dataset: {total_timesteps:,} timesteps, each = {time_units}
+   - User asked: "January 20, 2020" or "7 days"
+   - **You must explain:** "January 20 = timestep 24 (day 1, hour 24 after dataset start)"
+   - **If multi-day query:** "7 days = timesteps 0-167 (168 hourly timesteps), but I sampled every 6th timestep for speed"
+
+3. **3D to 2D reduction:**
+   - If dataset has z-levels but you plot 2D:
      - **In code**: Document which z-slice: `# Using z=0 (surface level)`
      - **In insight**: "Plotted surface layer (z=0). For full 3D view, need multiple z-slices or volume rendering"
      - **Create multiple plots** if user asks about features that vary with depth
+
+4. **Spatial plot:**
+   - When plotting spatial data, always use the spatial index for axis labels but if the data Has geographic coordinates: {spatial_info.get('geographic_info', {}).get('has_geographic_info', 'no')}, consider adding a secondary axis or annotation indicating approximate lat/lon ranges covered.
+   - Use the `extent` parameter in `imshow` or similar functions to map array indices to spatial coordinates
+   - Set `origin='lower'` to match Cartesian coordinate conventions
+   - Clearly indicate any resolution reduction in the plot title or caption
+
 
 
 **Special Case: velocity Features (Eddies, Currents, Gyres, magnitudes)**
@@ -820,36 +1018,16 @@ If user asks about complex features like:
 - for all this you have to use your knowledge of velocity components to decide what to plot and the dataset has to have relevant variables present in data
 
 
-**Plot Code Template:** 
-# necessary imports, using matplotlib for example
+**Plot Code Template:**
 ```python
 
+# necessary imports, using matplotlib for example
 import numpy as np
 import matplotlib.pyplot as plt
 import json
 
 # Load cached data
 data = np.load('{data_cache_file_str}')
-
-# Extract metadata, example:
-metadata = {{
-    'x_range': data['x_range'].tolist() if 'x_range' in data else None,
-    'y_range': data['y_range'].tolist() if 'y_range' in data else None,
-    'lat_range': data['lat_range'].tolist() if 'lat_range' in data else None,
-    'lon_range': data['lon_range'].tolist() if 'lon_range' in data else None,
-    'quality_level': int(data['quality_level']) if 'quality_level' in data else 0,
-    # other metadata as needed
-}}
-
-# Use in plots
-lat_range = metadata['lat_range']
-lon_range = metadata['lon_range']
-quality = metadata['quality_level']
-
-if lat_range is not None and lon_range is not None:
-    lat_min, lat_max = lat_range
-    lon_min, lon_max = lon_range
-    # Use lat/lon ranges in axis labels as appropriate
 
 # YOUR PLOTTING LOGIC from above instructions
 
@@ -955,7 +1133,7 @@ Common issues:
                 response = self.llm.invoke(self.conversation_history)
                 assistant_message = response.content
                 
-                llm_log_msg = f"Query code generation feedback-loop: {len(assistant_message)} chars"
+                llm_log_msg = f"LLM response: {len(assistant_message)} chars"
                 # Add the full LLM response as expandable details
                 add_system_log(f"[Generator]{llm_log_msg}", "info", details=assistant_message)
                 
@@ -1015,28 +1193,14 @@ Common issues:
                     
                     # Calculate dynamic timeout based on user time limit
                     if user_time_limit:
-                        execution_timeout = int(user_time_limit * 60 + 80)
+                        # 70% of user time for query execution, rest for plotting/overhead
+                        execution_timeout = int(user_time_limit * 60)
                     else:
                         execution_timeout = 500  # Default 500 seconds
                     
-                    # Reset instrumentation and mark start of execution
-                    query_elapsed_seconds = 0.0
-                    query_timed_out = False
-
                     # Execute query code with dynamic timeout
                     execution_result = self.executor.execute_code(code, str(query_code_file), timeout=execution_timeout)
-
-                    # Record execution timing instrumentation if available
-                    try:
-                        # Prefer explicit value from executor
-                        if execution_result.get('elapsed_seconds') is not None:
-                            query_elapsed_seconds = float(execution_result.get('elapsed_seconds'))
-                        # Fallback: leave as 0.0 if not provided
-                        query_timed_out = bool(execution_result.get('timed_out', False))
-                    except Exception:
-                        query_elapsed_seconds = query_elapsed_seconds or None
-                        query_timed_out = query_timed_out or False
-
+                    
                     if execution_result["success"]:
                         # Basic success flag from subprocess (exit code == 0)
                         stdout = execution_result.get('stdout', '') or ''
@@ -1149,20 +1313,10 @@ Write your corrected query code in <query_code></query_code> tags.
                         else:
                             # Consider it a true success
                             query_output = stdout
-                            # Include elapsed seconds in success logs when available
-                            try:
-                                elapsed_display = f"{query_elapsed_seconds:.2f}s" if query_elapsed_seconds is not None else "unknown"
-                            except Exception:
-                                elapsed_display = "unknown"
-
-                            add_system_log(
-                                f"[Generator] Query succeeded in {elapsed_display} with output: {len(query_output)} characters",
-                                "success",
-                                details=stdout
-                            )
+                            add_system_log(f"Query succeeded with output:  {len(query_output)} characters", "success", details=stdout)
                             query_success = True
                             current_phase = "plot"
-                            add_system_log(f"Query code succeeded in {elapsed_display}! Moving to plot phase.", "success")
+                            add_system_log(" Query code succeeded! Moving to plot phase.", "success")
                             feedback = f""" QUERY CODE SUCCEEDED!
 
 OUTPUT:
@@ -1208,13 +1362,7 @@ Write your intelligent plot code in <plot_code></plot_code> tags.
                             is_timeout = False
 
                         if is_timeout:
-                            # Try to show actual elapsed seconds if available
-                            try:
-                                elapsed_val = execution_result.get('elapsed_seconds') if execution_result.get('elapsed_seconds') is not None else query_elapsed_seconds
-                                elapsed_display = f"{float(elapsed_val):.2f}s" if elapsed_val is not None else "unknown"
-                            except Exception:
-                                elapsed_display = "unknown"
-                            add_system_log(f"Query timed out after {elapsed_display}. Aborting query and asking LLM for smaller alternatives.", "warning")
+                            add_system_log(f"Query timed out after allowed runtime. Aborting query and asking LLM for smaller alternatives.", "warning")
 
                             # Ask LLM to produce intelligent smaller-subset suggestions and a short insight message
                             prompt = {
@@ -1244,7 +1392,6 @@ Write your intelligent plot code in <plot_code></plot_code> tags.
 
                                 response = self.llm.invoke(self.conversation_history)
                                 suggestion_text = response.content
-                                add_system_log(f"[GENERATOR] Generated suggestions because of timeout: {len(suggestion_text)} chars", "info", details=suggestion_text)
                             except Exception as e:
                                 suggestion_text = (
                                     '{"message": "Could not generate suggestions automatically.", "suggestions": []}'
@@ -1288,8 +1435,6 @@ Write your intelligent plot code in <plot_code></plot_code> tags.
                                 'suggestions': suggestions_json if suggestions_json else suggestion_text,
                                 'query_code_file': str(query_code_file),
                                 'insight_file': str(insight_file),
-                                'elapsed_seconds': execution_result.get('elapsed_seconds', query_elapsed_seconds),
-                                'timed_out': bool(execution_result.get('timed_out', True)) or query_timed_out,
                                 'confidence': 0.3
                             }
 

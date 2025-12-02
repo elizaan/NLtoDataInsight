@@ -55,7 +55,7 @@ class DatasetSummarizerAgent:
             documents_dir: Path to directory containing PDF research documents
         """
         self.llm = ChatOpenAI(
-            model="gpt-4o",
+            model="gpt-5",
             api_key=api_key,
             temperature=0.1  # Slightly creative but still focused
         )
@@ -97,21 +97,22 @@ Your task is to create a compelling summary of a dataset based on:
    - Briefly explain what each measures and why it matters
 
 3. **Spatial & Temporal Coverage**:
-   - Geographic area covered
+   - Spatial extent (regions, coordinates)
    - Time period and resolution
    - Why this coverage is significant for research
 
 4. **Scientific Applications** (if research context available):
    - What phenomena can be studied with this data?
-   - What questions can researchers answer?
-   - Reference interesting findings from papers if available
+   - What domain scientists have used similar data for?
+   - What questions should a domain expert ask to this dataset?
+   - Potential insights or discoveries RESEARCHERS have made using exact same dataset and what variables they focused on
+   - while making connections to real-world phenomena, only talk about the variables present in the dataset profile, do not talk about other variables
 
 **Style Guidelines:**
 - Use clear, engaging language
 - Avoid excessive jargon but maintain scientific accuracy
 - Include specific numbers (resolution, size, time range) to give scale
 - Make connections to real-world phenomena
-- Be enthusiastic but professional
 
 **Output Format:**
 Return a well-structured paragraph summary that is informative and engaging.
@@ -309,7 +310,7 @@ Return a well-structured paragraph summary that is informative and engaging.
             # Generate summary
             try:
                 try:
-                    model_name = getattr(self.llm, 'model', None) or getattr(self.llm, 'model_name', 'gpt-4o')
+                    model_name = getattr(self.llm, 'model', None) or getattr(self.llm, 'model_name', 'gpt-5')
                     msgs = [
                         {"role": "system", "content": self.system_prompt},
                         {"role": "user", "content": f"Please provide a summary of this dataset. Dataset profile: {profile_str[:1000]}"}

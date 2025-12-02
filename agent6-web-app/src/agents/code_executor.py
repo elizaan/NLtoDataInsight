@@ -74,7 +74,9 @@ class CodeExecutor:
                 "error": "Empty code received from LLM",
                 "code_file": code_path,
                 "stdout": "",
-                "stderr": "Empty code: nothing to execute"
+                "stderr": "Empty code: nothing to execute",
+                "elapsed_seconds": 0.0,
+                "timed_out": False,
             }
 
         with open(code_path, "w") as f:
@@ -85,36 +87,51 @@ class CodeExecutor:
         try:
             add_system_log(f"Executing: {code_path}", "info")
 
-            result = subprocess.run(
-                [sys.executable, code_path],
-                cwd=os.path.dirname(code_path),
-                capture_output=True,
-                text=True,
-                timeout=timeout
-            )
+            start_ts = time.time()
+            try:
+                result = subprocess.run(
+                    [sys.executable, code_path],
+                    cwd=os.path.dirname(code_path),
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout
+                )
 
-            return {
-                "success": result.returncode == 0,
-                "stdout": result.stdout,
-                "stderr": result.stderr,
-                "return_code": result.returncode,
-                "code_file": code_path
-            }
+                elapsed = time.time() - start_ts
 
-        except subprocess.TimeoutExpired:
-            return {
-                "success": False,
-                "error": f"Execution timed out ({timeout}s)",
-                "code_file": code_path,
-                "stdout": "",
-                "stderr": f"Timeout - code took >{timeout} seconds ({timeout//60} minutes). Simplify your approach or request more time."
-            }
+                return {
+                    "success": result.returncode == 0,
+                    "stdout": result.stdout,
+                    "stderr": result.stderr,
+                    "return_code": result.returncode,
+                    "code_file": code_path,
+                    "elapsed_seconds": elapsed,
+                    "timed_out": False,
+                }
+
+            except subprocess.TimeoutExpired as e:
+                elapsed = time.time() - start_ts
+                stdout = getattr(e, 'output', '') or ''
+                stderr = getattr(e, 'stderr', '') or ''
+                add_system_log(f"Execution timed out after {elapsed:.2f}s (limit {timeout}s): {code_path}", "warning")
+                return {
+                    "success": False,
+                    "error": f"Execution timed out ({timeout}s)",
+                    "code_file": code_path,
+                    "stdout": stdout,
+                    "stderr": stderr or f"Timeout - code took >{timeout} seconds ({timeout//60} minutes). Simplify your approach or request more time.",
+                    "elapsed_seconds": elapsed,
+                    "timed_out": True,
+                }
         except Exception as e:
+            elapsed = time.time() - start_ts if 'start_ts' in locals() else 0.0
             return {
                 "success": False,
                 "error": str(e),
                 "traceback": traceback.format_exc(),
                 "code_file": code_path,
                 "stdout": "",
-                "stderr": str(e)
+                "stderr": str(e),
+                "elapsed_seconds": elapsed,
+                "timed_out": False,
             }

@@ -53,14 +53,14 @@ class InsightFinalizerAgent:
     def __init__(self, api_key: str):
         # Vision-enabled model for plot evaluation
         self.vision_llm = ChatOpenAI(
-            model="gpt-4o",  # Supports vision
+            model="gpt-5",  # Supports vision
             api_key=api_key,
             temperature=0.1
         )
         
         # Regular model for insight writing
         self.text_llm = ChatOpenAI(
-            model="gpt-4o-mini",
+            model="gpt-5",
             api_key=api_key,
             temperature=0.1
         )
@@ -99,6 +99,7 @@ class InsightFinalizerAgent:
         plot_evaluation = self._evaluate_plots(
             user_query=user_query,
             plot_files=plot_files,
+            query_output=query_output,
             dataset_info=dataset_info
         )
         
@@ -149,6 +150,7 @@ class InsightFinalizerAgent:
         # Step 4: Generate final answer JSON
         final_answer = self._generate_final_answer(
             insight_text=insight_text,
+            query_output=query_output,
             plot_evaluation=plot_evaluation
         )
         
@@ -165,7 +167,8 @@ class InsightFinalizerAgent:
         self,
         user_query: str,
         plot_files: List[Path],
-        dataset_info: Dict[str, Any]
+        dataset_info: Dict[str, Any],
+        query_output: Any
     ) -> Dict[str, Any]:
         """
         Evaluate plot quality using vision model
@@ -215,9 +218,10 @@ class InsightFinalizerAgent:
 Evaluate the generated plot(s) and determine if they effectively answer the user's question.
 
 **EVALUATION CRITERIA:**
+query_output: {query_output} should have enough information to help you evaluate the plots.
 1. **Relevance**: Does the plot address the user's question directly?
 2. **Clarity**: Are axes labeled clearly with units? Is the colorbar/legend appropriate?
-3. **Spatial context**: If query mentions location (current, region), is spatial structure shown?
+3. **Spatial context**: If query mentions location (current, region), is spatial structure shown? 
 4. **Completeness**: Are all requested aspects visualized?
 
 **OUTPUT JSON:**
@@ -252,7 +256,7 @@ Be strict but fair. Only set needs_revision=true if a SIGNIFICANT improvement is
             
             try:
                 try:
-                    model_name = getattr(self.vision_llm, 'model', None) or getattr(self.vision_llm, 'model_name', 'gpt-4o')
+                    model_name = getattr(self.vision_llm, 'model', None) or getattr(self.vision_llm, 'model_name', 'gpt-5')
                     token_count = log_token_usage(model_name, messages, label="vision_plot_eval")
                     add_system_log(f"[token_instrumentation][Finalizer] model={model_name} tokens={token_count}", 'debug')
                 except Exception:
@@ -264,7 +268,7 @@ Be strict but fair. Only set needs_revision=true if a SIGNIFICANT improvement is
             response_text = response.content
             
             # Log full vision LLM response with expandable details (like generator does)
-            vision_log_msg = f"Vision LLM plot evaluation: {len(response_text)} chars"
+            vision_log_msg = f" [Finalizer] plot evaluation: {len(response_text)} chars"
             add_system_log(vision_log_msg, "info", details=response_text)
             
             # Parse JSON
@@ -280,7 +284,7 @@ Be strict but fair. Only set needs_revision=true if a SIGNIFICANT improvement is
             evaluation = json.loads(response_text)
             
             # Log structured evaluation results with expandable JSON
-            eval_summary = f"Plot evaluation complete: {evaluation['quality_score']}/10"
+            eval_summary = f" [Finalizer] plot evaluation complete: {evaluation['quality_score']}/10"
             add_system_log(eval_summary, "info", details=json.dumps(evaluation, indent=2))
             return evaluation
             
@@ -368,45 +372,39 @@ Use standard scientific Python packages: numpy, matplotlib, pandas, scipy, seabo
 DO NOT use packages that weren't in the original code unless absolutely necessary.
 DO NOT try to access data fields that don't exist in the NPZ file (check what's available first).
 
-**PLOTTING GUIDELINES:**
-- Set appropriate axis limits based on actual data range
-- Include clear labels, titles, and legends
 
-- For time series: ensure x-axis covers your time range
- - For heatmaps and image-like arrays: use appropriate color scales (diverging for anomalies, sequential for values).
+
+**CRITICAL PLOTTING GUIDELINES:**
+
+**Axis Limits and Scales:**
+- ALWAYS set appropriate axis limits based on your actual data range
+- For bar charts of min/max: set y-axis from slightly below min to slightly above max
+- For time series: ensure x-axis covers your time range, label with dates/times correctly with units
+- For heatmaps and image-like arrays: use appropriate color scales (diverging for anomalies, sequential for values).
      - IMPORTANT: Treat array row-0 as the BOTTOM (not the top) by default across all visualizations. Make this the standard so overlays and annotations align intuitively with Cartesian/geographic coordinates.
      - Implementation rules (apply one of the following consistently):
         * matplotlib `imshow`: always pass `origin='lower'` and provide an explicit `extent=[x_min, x_max, y_min, y_max]` when mapping array indices to coordinate axes.
         * seaborn `heatmap`: either plot `np.flipud(arr)` or use the returned `ax` and call `ax.invert_yaxis()` so the display matches `origin='lower'` semantics.
         * pcolormesh/contourf: supply explicit X/Y coordinate arrays with Y increasing (northward/upwards) or, if supplying only the array, flip it with `np.flipud()` to maintain the row-0-bottom convention.
         * quiver/streamplot: build X/Y coordinate arrays that match the heatmap's extent and orientation (use `np.meshgrid(x_coords, y_coords)` where `y_coords` is ascending). Do NOT assume array row ordering — derive coordinates from `x_range`/`y_range` or `extent`.
-     - Always document the chosen origin/orientation in the plot title or caption (e.g., "Plotted with origin='lower' — row 0 at bottom"). If you must use `origin='upper'`, explicitly justify and document it.
 - Use log scale if data spans several orders of magnitude
 - folow rule for other plots too
-
-**Data Validation:**
-- After loading npz file, ALWAYS inspect keys: `print("Available keys:", data.files)`
-- Check data shapes and values: `print(f"Shape: {{arr.shape}}, Range: [{{arr.min()}}, {{arr.max()}}]")`
-- This prevents plotting wrong arrays or misinterpreting data structure
-
-**CRITICAL: Dimension Labeling and Transparency:**
-When creating plots, you MUST explain resolution reductions value and coordinate mappings:
-
-1. **Resolution reduction transparency:**
-   - If you used quality=-q
-   - **In insight**: Explain "plotted at reduced resolution (quality=-q) but coordinates show original grid"
-
-3. **3D to 2D reduction:**
-   - If dataset has z-levels but you plot 2D:
+- Always document resolution reduction values in plot titles/captions
+- **3D to 2D reduction:**
+   - If data has z-levels but you plot 2D:
      - **In code**: Document which z-slice: `# Using z=0 (surface level)`
      - **In insight**: "Plotted surface layer (z=0). For full 3D view, need multiple z-slices or volume rendering"
      - **Create multiple plots** if user asks about features that vary with depth
 
-4. **Spatial plot:**
-   - When plotting spatial data, always use the spatial index for axis labels but if the data Has geographic coordinates: consider adding a secondary axis or annotation indicating approximate lat/lon ranges covered.
-   - Use the `extent` parameter in `imshow` or similar functions to map array indices to spatial coordinates
-   - Set `origin='lower'` to match Cartesian coordinate conventions
-   - Clearly indicate any resolution reduction in the plot title or caption
+
+**Special Case: velocity Features (Eddies, Currents, Gyres, magnitudes)**
+
+If user asks about complex features like:
+- "eddies" → Visualize vorticity (curl of velocity field) or SSH anomalies
+- "currents" → Show velocity vectors with quiver/streamplot
+- "upwelling" → Show vertical velocity or temperature gradients
+- "fronts" → Show temperature/salinity gradients
+- for all this you have to use your knowledge of velocity components to decide what to plot and the dataset has to have relevant variables present in data
 
 
 Output ONLY the complete Python code in <plot_code></plot_code> tags.
@@ -415,7 +413,7 @@ Output ONLY the complete Python code in <plot_code></plot_code> tags.
         try:
             try:
                 try:
-                    model_name = getattr(self.text_llm, 'model', None) or getattr(self.text_llm, 'model_name', 'gpt-4o-mini')
+                    model_name = getattr(self.text_llm, 'model', None) or getattr(self.text_llm, 'model_name', 'gpt-5-mini')
                     msgs = [{"role": "user", "content": revision_prompt}]
                     token_count = log_token_usage(model_name, msgs, label="plot_revision")
                     add_system_log(f"[token_instrumentation][Finalizer] model={model_name} tokens={token_count}", 'debug')
@@ -437,7 +435,7 @@ Output ONLY the complete Python code in <plot_code></plot_code> tags.
 
                 # Instrument tokens (best-effort)
                 try:
-                    model_name = getattr(self.text_llm, 'model', None) or getattr(self.text_llm, 'model_name', 'gpt-4o-mini')
+                    model_name = getattr(self.text_llm, 'model', None) or getattr(self.text_llm, 'model_name', 'gpt-5-mini')
                     msgs = conv_hist + [{"role": "user", "content": revision_prompt}]
                     token_count = log_token_usage(model_name, msgs, label=f"plot_revision_attempt_{plot_attempts}")
                     add_system_log(f"[token_instrumentation][Finalizer] model={model_name} tokens={token_count}", 'debug')
@@ -448,7 +446,7 @@ Output ONLY the complete Python code in <plot_code></plot_code> tags.
                 revised_code_text = response.content
 
                 # Log response
-                add_system_log(f"Plot revision LLM response (attempt {plot_attempts}): {len(revised_code_text)} chars", "info", details=revised_code_text)
+                add_system_log(f"[Finalizer] LLM Plot revision code (attempt {plot_attempts}): {len(revised_code_text)} chars", "info", details=revised_code_text)
 
                 # Extract code as before
                 revised_code = None
@@ -613,7 +611,7 @@ Output ONLY the complete Python code in <plot_code></plot_code> tags.
         # Build a compact descriptive prompt
         prompt = (
             "You are a domain scientist with strong visual literacy. For each provided image, "
-            "produce a short caption (one sentence) and 2-3 concise observations or takeaways that a scientist would care about. "
+            "produce a short caption (one sentence) and 2-3 concise observations or takeaways that a scientist would care about. state any notable patterns, approximate minimum-maximum values, trends, anomalies, or spatial structures you see. "
             "Do NOT invent numerical values that are not visible; focus on visible patterns, color scales, spatial structure, and clarity/legibility.\n\n"
         )
 
@@ -636,7 +634,7 @@ Output ONLY the complete Python code in <plot_code></plot_code> tags.
 
             try:
                 try:
-                    model_name = getattr(self.vision_llm, 'model', None) or getattr(self.vision_llm, 'model_name', 'gpt-4o')
+                    model_name = getattr(self.vision_llm, 'model', None) or getattr(self.vision_llm, 'model_name', 'gpt-5')
                     token_count = log_token_usage(model_name, messages, label="vision_plot_eval_final")
                     add_system_log(f"[token_instrumentation][Finalizer] model={model_name} tokens={token_count}", 'debug')
                 except Exception:
@@ -646,7 +644,7 @@ Output ONLY the complete Python code in <plot_code></plot_code> tags.
 
             response = self.vision_llm.invoke(messages)
             desc_text = response.content.strip()
-            add_system_log("Plot descriptions generated by vision model", "info")
+            add_system_log(f"[Finalizer] Plot descriptions generated by vision model: {len(desc_text)} chars", "info", details=desc_text)
             return desc_text
         except Exception as e:
             add_system_log(f"Failed to generate visual descriptions: {e}", "warning")
@@ -689,11 +687,8 @@ Output ONLY the complete Python code in <plot_code></plot_code> tags.
 
 
 **USER QUESTION:** {user_query}
-**TIME CONSTRAINTS:**
-- User time limit: {user_time_limit if user_time_limit else 'Default'}
-user wants to see the answer within their time limit.
 
-**QUERY STRATEGY (from generated code):**
+**QUERY STRATEGY AND OTHER OUTPUTS ARE SAVED (from generated code):**
 {query_code}...
 
 **QUERY OUTPUT:**
@@ -705,6 +700,9 @@ user wants to see the answer within their time limit.
 **VISUAL SUMMARY of the plots:**
 {visual_summary}
 
+**empirical DATASET PROFILE (CSV) for accuracy scaling:**
+{dataset_profile}
+
 
 **YOUR TASK:**
 Write a comprehensive, domain-scientist-friendly insight that:
@@ -714,19 +712,74 @@ Write a comprehensive, domain-scientist-friendly insight that:
 2. **Explains the approach** - semantic transparency:
    - What data scope was used (time range, spatial region, resolution)
    - Why these choices were made (time constraints, data size, query complexity)
-   - What tradeoffs were accepted (resolution vs speed, sampling vs completeness)
+   - What tradeoffs were accepted (accuracy, resolution vs speed, sampling vs completeness)
+
 
 3. **Connects query → visualization**:
    - Why these specific plots were chosen
    - What each plot shows and why it helps answer the question
    - How the visualizations map to the user's mental model
 
-4. **Highlights key findings**:
+4. **Highlights key findings from {query_output}**:
    - Trends, patterns, anomalies
    - Magnitude of values
    - Spatial/temporal context
 
-5. **States limitations clearly**:
+5. ** INFER ACCURACY FOR USER'S QUERY**
+
+    The query output contains:
+    - quality_level = {{query_quality_level}}
+    - data_points_processed = {{query_data_points_processed}}
+    - x_range, y_range, z_range
+    - time_range
+    - Variable queried
+
+    The dataset_profile contains empirical test results in CSV format with columns:
+    - quality: quality level used 
+    - rmse: root mean square error for the TEST VARIABLE
+    - average_percentage_error: percentage error for the TEST VARIABLE
+    - other metrics...
+
+    **YOUR TASK - SCALE ACCURACY TO USER'S QUERY:**
+
+    1. **Find matching quality level** in dataset_profile CSV:
+    - Look for rows with quality={{query_quality_level}} and {{query_data_points_processed}}
+    - If exact match not found, use closest row
+    
+    2. **Extract reference metrics:**
+    - reference_rmse = CSV rmse value
+    - reference_percentage_error = CSV average_percentage_error value
+    
+    3. **Determine variable ranges** (from dataset_profile metadata or typical ocean values):
+    - Reference variable range , in csv's max min columns , calculate range
+    - User's variable range (from visual summary or query output):
+    
+    4. **Scale RMSE to user's variable:**
+    ```
+    relative_error = reference_rmse / reference_variable_range
+    {{estimated_rmse}} = relative_error * user_variable_range
+    {{estimated_percentage_error}} = ({{estimated_rmse}} / user_variable_range) * 100
+    ```
+    
+    OR if percentage_error is already in CSV:
+    ```
+    {{estimated_percentage_error}} ≈ reference_percentage_error
+    (percentage error is relatively consistent across similar variables)
+    ```
+
+    5. **Account for spatial/temporal extent:**
+    - If user's spatial extent is 2x larger than CSV test: add ~10-20% penalty
+    - If temporal subsampling used (time_interval > 1): mention temporal gaps but spatial accuracy unchanged
+    
+    6. **Apply safety margin:**
+    - Multiply by 1.2-1.3 for conservative estimate (20-30% buffer)
+    
+    7. **In your insight, state clearly:**
+    - "Based on the quality level used, the estimated accuracy is approximately ±{{estimated_percentage_error}}% (±{{estimated_rmse}} {{units}})"
+    - "This estimate is scaled from empirical tests and includes a safety margin for uncertainty"
+    - "If quality=0 (full resolution), accuracy is near-perfect (<1% error)"
+
+6. **States limitations clearly**:
    - What was NOT analyzed (vertical structure, other variables, etc.)
    - Where approximations/ assumptions were made
    - What further analysis could reveal
@@ -737,7 +790,7 @@ Write in clear, flowing prose (not bullet points). Be honest about choices and t
         try:
             try:
                 try:
-                    model_name = getattr(self.text_llm, 'model', None) or getattr(self.text_llm, 'model_name', 'gpt-4o-mini')
+                    model_name = getattr(self.text_llm, 'model', None) or getattr(self.text_llm, 'model_name', 'gpt-5-mini')
                     msgs = [{"role": "user", "content": prompt}]
                     token_count = log_token_usage(model_name, msgs, label="final_insight_write")
                     add_system_log(f"[token_instrumentation][Finalizer] model={model_name} tokens={token_count}", 'debug')
@@ -748,6 +801,7 @@ Write in clear, flowing prose (not bullet points). Be honest about choices and t
 
             response = self.text_llm.invoke([{"role": "user", "content": prompt}])
             insight = response.content.strip()
+            add_system_log(f"[Finalizer] Insight generated: {len(insight)} chars", "info", details=insight)
             return insight
         except Exception as e:
             add_system_log(f"Insight generation failed: {e}", "error")
@@ -756,19 +810,17 @@ Write in clear, flowing prose (not bullet points). Be honest about choices and t
     def _generate_final_answer(
         self,
         insight_text: str,
-        plot_evaluation: Dict[str, Any]
+        plot_evaluation: Dict[str, Any],
+        query_output: Any = None
     ) -> Dict[str, Any]:
         """
         Generate structured final answer JSON
         """
         # Extract key findings from insight using LLM
-        extraction_prompt = f"""Extract structured data from this insight:
-**INSIGHT TEXT:**
-{insight_text}
-
-Output JSON with:
+        extraction_prompt = f"""Extract all exact numerical values from {query_output} first and then from the insight below.
+        {insight_text}
 {{
-    "data_summary": {{"key": "value", ...}},  // Key numerical findings
+    "data_summary": {{"key": "value", ...}},  // all Key numerical findings
     "visualization_description": "What the plots show",
     "confidence": 0.0-1.0  // Based on data quality and completeness
 }}
@@ -777,7 +829,7 @@ Output JSON with:
         try:
             try:
                 try:
-                    model_name = getattr(self.text_llm, 'model', None) or getattr(self.text_llm, 'model_name', 'gpt-4o-mini')
+                    model_name = getattr(self.text_llm, 'model', None) or getattr(self.text_llm, 'model_name', 'gpt-5-mini')
                     msgs = [{"role": "user", "content": extraction_prompt}]
                     token_count = log_token_usage(model_name, msgs, label="insight_extraction")
                     add_system_log(f"[token_instrumentation][Finalizer] model={model_name} tokens={token_count}", 'debug')
@@ -788,6 +840,7 @@ Output JSON with:
 
             response = self.text_llm.invoke([{"role": "user", "content": extraction_prompt}])
             response_text = response.content
+            add_system_log(f"[Finalizer] Insight extraction LLM response: {len(response_text)} chars", "info", details=response_text)
             
             if "```json" in response_text:
                 json_start = response_text.find("```json") + 7
