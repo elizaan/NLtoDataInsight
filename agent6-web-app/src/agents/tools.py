@@ -95,27 +95,70 @@ class GeographicConverter:
                 'actual_lon_range': [actual_min_lon, actual_max_lon]
             }
         """
-        # Create mask for points within the lat/lon range
+        # Record the original requested ranges for transparency
+        requested_lat = [float(lat_range[0]), float(lat_range[1])]
+        requested_lon = [float(lon_range[0]), float(lon_range[1])]
+
+        # Compute dataset bounds
+        data_lat_min = float(np.nanmin(self.lat_center))
+        data_lat_max = float(np.nanmax(self.lat_center))
+        data_lon_min = float(np.nanmin(self.lon_center))
+        data_lon_max = float(np.nanmax(self.lon_center))
+
+        # Clamp (intersection) the requested ranges to the dataset bounds
+        used_lat_min = max(requested_lat[0], data_lat_min)
+        used_lat_max = min(requested_lat[1], data_lat_max)
+        used_lon_min = max(requested_lon[0], data_lon_min)
+        used_lon_max = min(requested_lon[1], data_lon_max)
+
+        # If intersection is empty (used_min > used_max), snap to nearest boundary
+        if used_lat_min > used_lat_max:
+            if requested_lat[1] < data_lat_min:
+                used_lat_min = used_lat_max = data_lat_min
+            else:
+                used_lat_min = used_lat_max = data_lat_max
+
+        if used_lon_min > used_lon_max:
+            if requested_lon[1] < data_lon_min:
+                used_lon_min = used_lon_max = data_lon_min
+            else:
+                used_lon_min = used_lon_max = data_lon_max
+
+        # Create mask for points within the used (clamped) lat/lon range
         mask = (
-            (self.lat_center >= lat_range[0]) & (self.lat_center <= lat_range[1]) &
-            (self.lon_center >= lon_range[0]) & (self.lon_center <= lon_range[1])
+            (self.lat_center >= used_lat_min) & (self.lat_center <= used_lat_max) &
+            (self.lon_center >= used_lon_min) & (self.lon_center <= used_lon_max)
         )
-        
+
         y_indices, x_indices = np.where(mask)
-        
+
+        # If mask yielded no indices (edge cases), fall back to the nearest grid cell
         if len(x_indices) == 0 or len(y_indices) == 0:
-            raise ValueError(f"No data found in lat range {lat_range}, lon range {lon_range}")
-        
-        x_min = int(x_indices.min())
-        x_max = int(x_indices.max()) + 1
-        y_min = int(y_indices.min())
-        y_max = int(y_indices.max()) + 1
-        
+            # compute center point of the used range and find nearest grid cell
+            center_lat = (used_lat_min + used_lat_max) / 2.0
+            center_lon = (used_lon_min + used_lon_max) / 2.0
+            dist2 = (self.lat_center - center_lat) ** 2 + (self.lon_center - center_lon) ** 2
+            flat_idx = int(np.argmin(dist2))
+            y, x = np.unravel_index(flat_idx, self.lat_center.shape)
+            x_min = int(x)
+            x_max = int(x) + 1
+            y_min = int(y)
+            y_max = int(y) + 1
+        else:
+            x_min = int(x_indices.min())
+            x_max = int(x_indices.max()) + 1
+            y_min = int(y_indices.min())
+            y_max = int(y_indices.max()) + 1
+
         # Get actual lat/lon bounds of the selected region
         lat_sub = self.lat_center[y_min:y_max, x_min:x_max]
         lon_sub = self.lon_center[y_min:y_max, x_min:x_max]
-        
+
         return {
+            'requested_lat_range': requested_lat,
+            'requested_lon_range': requested_lon,
+            'used_lat_range': [float(used_lat_min), float(used_lat_max)],
+            'used_lon_range': [float(used_lon_min), float(used_lon_max)],
             'x_range': [x_min, x_max],
             'y_range': [y_min, y_max],
             'actual_lat_range': [float(lat_sub.min()), float(lat_sub.max())],
@@ -229,6 +272,10 @@ def get_grid_indices_from_latlon(
             'y_range': y_range,
             'z_range': z_range_used,
             'estimated_points': estimated_points,
+            'requested_lat_range': result.get('requested_lat_range'),
+            'requested_lon_range': result.get('requested_lon_range'),
+            'used_lat_range': result.get('used_lat_range'),
+            'used_lon_range': result.get('used_lon_range'),
             'actual_lat_range': result.get('actual_lat_range'),
             'actual_lon_range': result.get('actual_lon_range'),
             'message': f"Converted lat {lat_range} lon {lon_range} z_range {z_range_used} to grid indices"

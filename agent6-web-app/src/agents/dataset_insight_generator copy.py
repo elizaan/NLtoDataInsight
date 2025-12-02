@@ -73,7 +73,7 @@ class DatasetInsightGenerator:
     
     def __init__(self, api_key: str, base_output_dir: str = None):
         self.llm = ChatOpenAI(
-            model="gpt-4o",
+            model="gpt-5",
             api_key=api_key,
             temperature=0.4  # Higher for creative problem-solving
         )
@@ -1123,7 +1123,7 @@ Common issues:
             try:
                 # Instrument token usage for this planned LLM call (best-effort)
                 try:
-                    model_name = getattr(self.llm, 'model', None) or getattr(self.llm, 'model_name', None) or getattr(self.llm, 'model_name_or_path', 'gpt-4o')
+                    model_name = getattr(self.llm, 'model', None) or getattr(self.llm, 'model_name', None) or getattr(self.llm, 'model_name_or_path', 'gpt-5')
                     token_count = log_token_usage(model_name, self.conversation_history, label=f"iteration_{iteration+1}_phase_{current_phase}")
                     add_system_log(f"[token_instrumentation] model={model_name} tokens={token_count}", "debug")
                 except Exception:
@@ -1384,7 +1384,7 @@ Write your intelligent plot code in <plot_code></plot_code> tags.
                             try:
                                 # Instrument tokens for this follow-up LLM call
                                 try:
-                                    model_name = getattr(self.llm, 'model', None) or getattr(self.llm, 'model_name', None) or getattr(self.llm, 'model_name_or_path', 'gpt-4o')
+                                    model_name = getattr(self.llm, 'model', None) or getattr(self.llm, 'model_name', None) or getattr(self.llm, 'model_name_or_path', 'gpt-5')
                                     token_count = log_token_usage(model_name, self.conversation_history, label=f"suggestion_iter_{iteration+1}")
                                     add_system_log(f"[token_instrumentation] model={model_name} tokens={token_count}", "debug")
                                 except Exception:

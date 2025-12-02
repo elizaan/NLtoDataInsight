@@ -82,7 +82,7 @@ class AnimationAgent:
         self.api_key = api_key
         
         # Initialize LangChain LLM for orchestration
-        self.llm = ChatOpenAI(model="gpt-4o-mini", api_key=api_key)
+        self.llm = ChatOpenAI(model="gpt-5-mini", api_key=api_key)
         # Compute a repository-root-like base path relative to this file so
         # we can locate ai_data when the package layout or working dir vary.
         base_path = os.path.abspath(os.path.join(current_script_dir, '..', '..', '..'))
@@ -792,7 +792,7 @@ Queries are identical if they ask for the same analysis on the same data, even i
         # Use resolved query for intent parsing
         try:
             try:
-                model_name = getattr(self.intent_parser.llm, 'model', None) or getattr(self.intent_parser.llm, 'model_name', 'gpt-4o-mini')
+                model_name = getattr(self.intent_parser.llm, 'model', None) or getattr(self.intent_parser.llm, 'model_name', 'gpt-5-mini')
                 msgs = [{"role": "user", "content": resolved_query[:1000]}, {"role": "user", "content": str(context)[:1000]}]
                 token_count = log_token_usage(model_name, msgs, label="core_intent_pre")
                 add_system_log(f"[token_instrumentation][CoreAgent] intent_parser model={model_name} tokens={token_count}", 'debug')

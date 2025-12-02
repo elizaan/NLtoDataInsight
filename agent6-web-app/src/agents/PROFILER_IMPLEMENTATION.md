@@ -39,7 +39,7 @@ Successfully implemented a robust, production-ready dataset profiling system tha
          │                         │
          │        Stage 1: Statistical Sampling
          │        Stage 2: Pattern Detection  
-         │        Stage 3: LLM Synthesis (gpt-4o)
+         │        Stage 3: LLM Synthesis (gpt-5)
          │        Stage 4: Atomic Save to JSON
          │                         │
          └─────────────┬───────────┘
@@ -138,7 +138,7 @@ else:                      sample_ratio = 0.0001 # 0.01%
 
 ### Stage 3: LLM Synthesis (Intelligent)
 
-**Model:** GPT-4o (not mini - for robust analysis)  
+**Model:** gpt-5 (not mini - for robust analysis)  
 **Temperature:** 0.1 (deterministic, repeatable)
 
 **LLM receives:**
@@ -368,7 +368,7 @@ agent6-web-app/ai_data/dataset_profiles/
 ```python
 # Model selection
 self.llm = ChatOpenAI(
-    model="gpt-4o",      # Use gpt-4o-mini for faster/cheaper
+    model="gpt-5",      # Use gpt-5-mini for faster/cheaper
     temperature=0.1      # Increase for more creative analysis
 )
 
@@ -410,7 +410,7 @@ Potential improvements (not implemented yet):
 
 **1. "Profile generation takes too long"**
 - First run is intentional (one-time cost)
-- Consider using gpt-4o-mini for faster analysis
+- Consider using gpt-5-mini for faster analysis
 - Profile is cached - subsequent loads are instant
 
 **2. "Profile keeps regenerating"**

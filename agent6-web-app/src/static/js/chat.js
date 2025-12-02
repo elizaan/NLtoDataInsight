@@ -422,7 +422,7 @@ if (typeof window !== 'undefined') window.updateArtifactsPanelLayout = updateArt
                 if (!msg.data || !msg.data.awaiting_clarification) {
                     this.addMessage('🔍 Intent Analysis:', 'bot');
                     const intentStr = JSON.stringify(msg.data, null, 2);
-                    this.addMessage(intentStr, 'bot');
+                    // this.addMessage(intentStr, 'bot');
                 }
                 break;
             
@@ -431,7 +431,7 @@ if (typeof window !== 'undefined') window.updateArtifactsPanelLayout = updateArt
                 try {
                     this.addMessage('🔎 Insight Analysis:', 'bot');
                     const analysisStr = typeof msg.data === 'string' ? msg.data : JSON.stringify(msg.data, null, 2);
-                    this.addMessage(analysisStr, 'bot');
+                    // this.addMessage(analysisStr, 'bot');
                 } catch (e) {
                     this.addMessage(String(msg.data), 'bot');
                 }
@@ -570,7 +570,7 @@ if (typeof window !== 'undefined') window.updateArtifactsPanelLayout = updateArt
                             console.log('🔍 Adding intent parsing message');
                             this.addMessage('🔍 Intent Analysis:', 'bot');
                             const intentStr = JSON.stringify(msg.data, null, 2);
-                            this.addMessage(intentStr, 'bot');
+                            // this.addMessage(intentStr, 'bot');
                             console.log('Intent message added');
                         } else {
                             console.log('Skipping intent display (awaiting_clarification=true, already shown via progress)');
@@ -583,7 +583,7 @@ if (typeof window !== 'undefined') window.updateArtifactsPanelLayout = updateArt
                         this.addMessage('💡 Generating Insight...', 'bot');
                         if (msg.data.insight) {
                             console.log('Adding insight text:', msg.data.insight.substring(0, 50));
-                            this.addMessage(msg.data.insight, 'bot');
+                            // this.addMessage(msg.data.insight, 'bot');
                         }
                         // Only show data_summary if it exists and is not empty
                         if (msg.data.data_summary) {

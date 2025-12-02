@@ -53,14 +53,14 @@ class InsightFinalizerAgent:
     def __init__(self, api_key: str):
         # Vision-enabled model for plot evaluation
         self.vision_llm = ChatOpenAI(
-            model="gpt-4o",  # Supports vision
+            model="gpt-5",  # Supports vision
             api_key=api_key,
             temperature=0.1
         )
         
         # Regular model for insight writing
         self.text_llm = ChatOpenAI(
-            model="gpt-4o",
+            model="gpt-5",
             api_key=api_key,
             temperature=0.1
         )
@@ -256,7 +256,7 @@ Be strict but fair. Only set needs_revision=true if a SIGNIFICANT improvement is
             
             try:
                 try:
-                    model_name = getattr(self.vision_llm, 'model', None) or getattr(self.vision_llm, 'model_name', 'gpt-4o')
+                    model_name = getattr(self.vision_llm, 'model', None) or getattr(self.vision_llm, 'model_name', 'gpt-5')
                     token_count = log_token_usage(model_name, messages, label="vision_plot_eval")
                     add_system_log(f"[token_instrumentation][Finalizer] model={model_name} tokens={token_count}", 'debug')
                 except Exception:
@@ -413,7 +413,7 @@ Output ONLY the complete Python code in <plot_code></plot_code> tags.
         try:
             try:
                 try:
-                    model_name = getattr(self.text_llm, 'model', None) or getattr(self.text_llm, 'model_name', 'gpt-4o-mini')
+                    model_name = getattr(self.text_llm, 'model', None) or getattr(self.text_llm, 'model_name', 'gpt-5-mini')
                     msgs = [{"role": "user", "content": revision_prompt}]
                     token_count = log_token_usage(model_name, msgs, label="plot_revision")
                     add_system_log(f"[token_instrumentation][Finalizer] model={model_name} tokens={token_count}", 'debug')
@@ -435,7 +435,7 @@ Output ONLY the complete Python code in <plot_code></plot_code> tags.
 
                 # Instrument tokens (best-effort)
                 try:
-                    model_name = getattr(self.text_llm, 'model', None) or getattr(self.text_llm, 'model_name', 'gpt-4o-mini')
+                    model_name = getattr(self.text_llm, 'model', None) or getattr(self.text_llm, 'model_name', 'gpt-5-mini')
                     msgs = conv_hist + [{"role": "user", "content": revision_prompt}]
                     token_count = log_token_usage(model_name, msgs, label=f"plot_revision_attempt_{plot_attempts}")
                     add_system_log(f"[token_instrumentation][Finalizer] model={model_name} tokens={token_count}", 'debug')
@@ -634,7 +634,7 @@ Output ONLY the complete Python code in <plot_code></plot_code> tags.
 
             try:
                 try:
-                    model_name = getattr(self.vision_llm, 'model', None) or getattr(self.vision_llm, 'model_name', 'gpt-4o')
+                    model_name = getattr(self.vision_llm, 'model', None) or getattr(self.vision_llm, 'model_name', 'gpt-5')
                     token_count = log_token_usage(model_name, messages, label="vision_plot_eval_final")
                     add_system_log(f"[token_instrumentation][Finalizer] model={model_name} tokens={token_count}", 'debug')
                 except Exception:
@@ -790,7 +790,7 @@ Write in clear, flowing prose (not bullet points). Be honest about choices and t
         try:
             try:
                 try:
-                    model_name = getattr(self.text_llm, 'model', None) or getattr(self.text_llm, 'model_name', 'gpt-4o-mini')
+                    model_name = getattr(self.text_llm, 'model', None) or getattr(self.text_llm, 'model_name', 'gpt-5-mini')
                     msgs = [{"role": "user", "content": prompt}]
                     token_count = log_token_usage(model_name, msgs, label="final_insight_write")
                     add_system_log(f"[token_instrumentation][Finalizer] model={model_name} tokens={token_count}", 'debug')
@@ -829,7 +829,7 @@ Write in clear, flowing prose (not bullet points). Be honest about choices and t
         try:
             try:
                 try:
-                    model_name = getattr(self.text_llm, 'model', None) or getattr(self.text_llm, 'model_name', 'gpt-4o-mini')
+                    model_name = getattr(self.text_llm, 'model', None) or getattr(self.text_llm, 'model_name', 'gpt-5-mini')
                     msgs = [{"role": "user", "content": extraction_prompt}]
                     token_count = log_token_usage(model_name, msgs, label="insight_extraction")
                     add_system_log(f"[token_instrumentation][Finalizer] model={model_name} tokens={token_count}", 'debug')

@@ -75,7 +75,7 @@ class IntentParserAgent:
             api_key: OpenAI API key
         """
         self.llm = ChatOpenAI(
-            model="gpt-4o-mini",
+            model="gpt-5-mini",
             api_key=api_key,
             temperature=0.2  # Low temperature for consistent classification
         )
@@ -222,7 +222,7 @@ Produce only valid JSON as the output.
             # Invoke chain
             try:
                 try:
-                    model_name = getattr(self.llm, 'model', None) or getattr(self.llm, 'model_name', 'gpt-4o-mini')
+                    model_name = getattr(self.llm, 'model', None) or getattr(self.llm, 'model_name', 'gpt-5-mini')
                     msgs = [
                         {"role": "system", "content": self.system_prompt},
                         {"role": "user", "content": f"Classify this query: {user_query}. Context: {context_str[:1000]}"}
@@ -367,7 +367,7 @@ Output ONLY a JSON object:
             
             try:
                 try:
-                    model_name = getattr(self.llm, 'model', None) or getattr(self.llm, 'model_name', 'gpt-4o-mini')
+                    model_name = getattr(self.llm, 'model', None) or getattr(self.llm, 'model_name', 'gpt-5-mini')
                     msgs = [{"role": "user", "content": time_extraction_prompt}]
                     token_count = log_token_usage(model_name, msgs, label="time_extraction")
                     add_system_log(f"[token_instrumentation][IntentParser] model={model_name} tokens={token_count}", 'debug')
@@ -441,7 +441,7 @@ Output ONLY a JSON object:
         try:
             try:
                 try:
-                    model_name = getattr(self.llm, 'model', None) or getattr(self.llm, 'model_name', 'gpt-4o-mini')
+                    model_name = getattr(self.llm, 'model', None) or getattr(self.llm, 'model_name', 'gpt-5-mini')
                     msgs = [
                         {"role": "system", "content": self.clarify_system},
                         {"role": "user", "content": f"User query: {user_query}\n\nClassification: {json.dumps(classification)}\n\nContext: {context_str[:1000]}"}

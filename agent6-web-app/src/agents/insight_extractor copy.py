@@ -58,7 +58,7 @@ class InsightExtractorAgent:
 
     def __init__(self, api_key: str, base_output_dir: str = None):
         self.llm = ChatOpenAI(
-            model="gpt-4o", 
+            model="gpt-5", 
             api_key=api_key, 
             temperature=0.1
         )
@@ -700,7 +700,7 @@ ANALYSIS INSTRUCTIONS:
                 # Call LLM for initial analysis
                  # Call LLM for initial analysis
                 try:
-                    model_name = getattr(self.llm, 'model', None) or getattr(self.llm, 'model_name', 'gpt-4o')
+                    model_name = getattr(self.llm, 'model', None) or getattr(self.llm, 'model_name', 'gpt-5')
                     
                     # DEBUG: Try formatting the system prompt and catch errors
                     try:
@@ -1209,7 +1209,7 @@ Do NOT output JSON. Output natural language text only.
             metadata_chain = metadata_insight_prompt | self.llm
             try:
                 try:
-                    model_name = getattr(self.llm, 'model', None) or getattr(self.llm, 'model_name', 'gpt-4o')
+                    model_name = getattr(self.llm, 'model', None) or getattr(self.llm, 'model_name', 'gpt-5')
                     msgs = [{"role": "system", "content": "You are an expert scientific dataset analyst who provides clear, detailed insights based on dataset metadata."}, {"role": "user", "content": metadata_prompt}]
                     token_count = log_token_usage(model_name, msgs, label="metadata_insight")
                     add_system_log(f"[token_instrumentation][InsightExtractor] model={model_name} tokens={token_count}", 'debug')
