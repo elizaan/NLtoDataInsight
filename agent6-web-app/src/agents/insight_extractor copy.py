@@ -124,7 +124,7 @@ Dataset Geographic Coverage: {dataset_geographic_bounds}
 
 Follow these steps:
 
-1. **Detect Location**: Does query mention region/ocean/sea/current names?
+1. **Detect Location**: Does query mention region names?
 
 2. **Check Dataset**: Does dataset have geographic coordinates? Look at metadata.
 

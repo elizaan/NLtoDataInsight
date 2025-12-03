@@ -17,6 +17,9 @@ venv_new
 myenv
 *.log
 .venv
+.github/
+github/
+.vscode/
 
 imgui.ini
 sys
@@ -63,5 +66,7 @@ dependency_dir/ospray
 dependency_dir/vtk
 agent6-web-app/src/agents/notes.md
 
-
-agent6-web-app/QUICK_START_PROFILER.md
+.DS_Store
+*.DS_Store
+Thumbs.db
+time-note.md

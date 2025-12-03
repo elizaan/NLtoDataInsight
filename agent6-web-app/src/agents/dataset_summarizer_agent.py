@@ -71,7 +71,7 @@ class DatasetSummarizerAgent:
     # (lazy load to avoid expensive indexing at startup)
         
         # Define the summarization prompt
-        self.system_prompt = """You are an expert oceanographic data scientist who explains complex datasets in an engaging, accessible way.
+        self.system_prompt = """You are an expert data scientist who explains complex datasets in an engaging, accessible way.
 
 Your task is to create a compelling summary of a dataset based on:
 1. The dataset profile JSON (contains metadata, variables, spatial/temporal info)
