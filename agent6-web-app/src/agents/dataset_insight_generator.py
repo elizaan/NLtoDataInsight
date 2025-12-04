@@ -1103,7 +1103,7 @@ Common issues:
                             # Note: `query_attempts` is incremented when the LLM supplies code
                             # (above). Do NOT increment again here to avoid double-counting.
                             if query_attempts >= max_query_attempts:
-                                add_system_log(f"✗ Query failed after {max_query_attempts} attempts", "error")
+                                add_system_log(f" Query failed after {max_query_attempts} attempts", "error")
                                 return {
                                     'error': f'Query code failed after {max_query_attempts} attempts',
                                     'last_error': error_msg,
@@ -1295,7 +1295,7 @@ Write your intelligent plot code in <plot_code></plot_code> tags.
 
                         # Non-timeout failures: retry flow
                         if query_attempts >= max_query_attempts:
-                            add_system_log(f"✗ Query failed after {max_query_attempts} attempts", "error")
+                            add_system_log(f" Query failed after {max_query_attempts} attempts", "error")
                             return {
                                 'error': f'Query code failed after {max_query_attempts} attempts',
                                 'last_error': error_msg,
@@ -1550,7 +1550,7 @@ Proceed to write:
                                 "content": feedback
                             })
                         else:
-                            add_system_log(f"✗ Plot failed (attempt {plot_attempts}/{max_plot_attempts})", "warning")
+                            add_system_log(f" Plot failed (attempt {plot_attempts}/{max_plot_attempts})", "warning")
                             
                             # Detect empty code error and provide specific feedback
                             if "Empty code" in error_msg or "empty response" in error_msg.lower():
@@ -1706,7 +1706,7 @@ Write corrected plot code in <plot_code></plot_code> tags.
             
             return final_answer
         else:
-            add_system_log("✗ Failed to complete insight generation", "error")
+            add_system_log(" Failed to complete insight generation", "error")
             return {
                 'error': 'Failed to complete within iteration limit',
                 'query_success': query_success,

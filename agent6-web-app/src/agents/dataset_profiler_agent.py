@@ -86,20 +86,20 @@ class CodeExecutor:
             if result.returncode == 0:
                 add_system_log(f"✓ Code executed successfully", "info")
             else:
-                add_system_log(f"✗ Code execution failed with code {result.returncode}", "error")
+                add_system_log(f" Code execution failed with code {result.returncode}", "error")
                 add_system_log(f"Error: {result.stderr[:500]}", "error")
             
             return execution_result
             
         except subprocess.TimeoutExpired:
-            add_system_log(f"✗ Code execution timed out", "error")
+            add_system_log(f" Code execution timed out", "error")
             return {
                 "success": False,
                 "error": "Execution timed out (60s limit)",
                 "code_file": code_path
             }
         except Exception as e:
-            add_system_log(f"✗ Code execution error: {str(e)}", "error")
+            add_system_log(f" Code execution error: {str(e)}", "error")
             return {
                 "success": False,
                 "error": str(e),
@@ -283,7 +283,7 @@ Please fix the code and try again, or try a different approach.
                         add_system_log("✓ Successfully parsed final JSON", "info")
                         break
                     except json.JSONDecodeError as e:
-                        add_system_log(f"✗ Failed to parse JSON: {str(e)}", "error")
+                        add_system_log(f" Failed to parse JSON: {str(e)}", "error")
                         self.conversation_history.append({
                             "role": "user",
                             "content": f"JSON parsing error: {str(e)}. Please provide valid JSON."
@@ -341,7 +341,7 @@ Please fix the code and try again, or try a different approach.
                 add_system_log(f"✓ Saved dataset profile to: {output_path}", "success")
                 final_result['saved_path'] = output_path
             except Exception as e:
-                add_system_log(f"✗ Failed to save profile: {str(e)}", "error")
+                add_system_log(f" Failed to save profile: {str(e)}", "error")
                 final_result['save_error'] = str(e)
             
             # Validate against schema
@@ -361,7 +361,7 @@ Please fix the code and try again, or try a different approach.
             print(final_result)
             return final_result
         else:
-            add_system_log("✗ Failed to generate profile after max iterations", "error")
+            add_system_log(" Failed to generate profile after max iterations", "error")
             return {
                 'error': 'Failed to generate profile within iteration limit',
                 'confidence_score': 0.0,

@@ -353,7 +353,7 @@ class DatasetProfilerPretraining:
                     # If the call returned falsy or an error dict, treat it as a failure
                     if not test_result or (isinstance(test_result, dict) and test_result.get('error')):
                         err = (test_result.get('error') if isinstance(test_result, dict) else 'Unknown error')
-                        add_system_log(f"[Profiler] ✗ Quality {quality} FAILED: {err}", "warning")
+                        add_system_log(f"[Profiler]  Quality {quality} FAILED: {err}", "warning")
                         benchmark_results['failed_tests'].append({
                             'quality_level': quality,
                             'test_suite': 'single_timestep_full_region',
@@ -367,7 +367,7 @@ class DatasetProfilerPretraining:
                         add_system_log(f"[Profiler] Quality {quality}: {test_result['execution_time']:.2f}s, {test_result['data_points']:,} points", "info")
                 except Exception as e:
                     error_msg = str(e)
-                    add_system_log(f"[Profiler] ✗ Quality {quality} failed: {error_msg}, continuing...", "warning")
+                    add_system_log(f"[Profiler]  Quality {quality} failed: {error_msg}, continuing...", "warning")
 
                     # Record the failure so LLM knows this quality level is too expensive
                     benchmark_results['failed_tests'].append({

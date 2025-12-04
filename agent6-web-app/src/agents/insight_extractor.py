@@ -192,8 +192,8 @@ Follow these steps:
    Find the BEST quality level that fits within the constraint:
    
    Test each quality level from highest to lowest:
-   - "Q=0:  [time_0] min - {{'✓ FITS' if time_0 <= [user_limit] else '✗ EXCEEDS'}} [user_limit] min constraint"
-   - "Q=-N: [time_-N] min - {{'✓ FITS' if time_-N <= [user_limit] else '✗ EXCEEDS'}} [user_limit] min constraint"
+   - "Q=0:  [time_0] min - {{'✓ FITS' if time_0 <= [user_limit] else ' EXCEEDS'}} [user_limit] min constraint"
+   - "Q=-N: [time_-N] min - {{'✓ FITS' if time_-N <= [user_limit] else ' EXCEEDS'}} [user_limit] min constraint"
    - if user has tight time constraint and the resolution/ quality level 0 read time is high, show more aggressive reductions
    - if user has loose time constraint and even with quality level 0 less difference, you can show less aggressive reductions
    - Continue testing until you find one that FITS
