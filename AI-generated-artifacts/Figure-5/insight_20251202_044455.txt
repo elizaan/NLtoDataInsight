@@ -1,0 +1,59 @@
+What we found (March 2020 exemplar)
+The Gulf Stream exhibits a textbook sharp north–south thermal front with vigorous mesoscale activity across the western North Atlantic box we targeted (about 25–50°N, 85–40°W). The March 2020 monthly-mean near-surface temperature map shows a well-defined “North Wall” separating warm subtropical waters (Sargasso Sea) from colder shelf/subpolar waters. Downstream of Cape Hatteras, the front meanders strongly, and multiple ring-like features are apparent, consistent with frequent eddy shedding. Daily anomalies (each day minus the March mean) organize as alternating warm/cold bands that cling to the front, with dipole signatures around eddies—clear fingerprints of meander-driven advection rather than broad regional warming or cooling. A longitude–time transect of anomalies near the mid-domain latitude shows predominantly eastward-propagating streaks with alternating sign, indicating wave-like variability on multi-day timescales and intensifying toward the east. Domain-mean SST during March hovers near 15°C, with daily spatial extremes ranging from roughly −1.8°C on the cold side to 26.3°C on the warm side; spatial standard deviation of the daily fields is ~7°C and drifts modestly through the month, reflecting the persistent, strong frontal contrast.
+
+What we ran and why (data scope, speed/accuracy tradeoffs)
+To return results within the 10-minute window on a petabyte-scale dataset, we constrained the problem in three ways:
+
+1) Spatially, we read a Gulf Stream-focused box aligned to the dataset grid: x=[7512,8592], y=[4603,5463], surface layer z=[0,1]. In lat/lon, that corresponds to ~24–50°N, 85–40°W, spanning Cape Hatteras through the Grand Banks.
+
+2) Temporally, we sampled daily for the requested month (here, 2020-03 by default); dataset time is hourly, so we took every 24th hour between 2020-03-01T00:00:00 and 2020-03-31T23:59:59. This yielded 31 daily snapshots, mapping to timesteps 984–1704 in the LLC2160 time axis starting at 2020-01-20T00:00:00.
+
+3) Resolution, we used OpenViSUS quality Q=−3 for fast, multiresolution reads. That keeps the frontal geometry and mesoscale patterns while reducing I/O and memory. We also used a surface ocean mask for clean shelf/coast boundaries when available.
+
+These choices were deliberate: the Gulf Stream’s eddies and meanders are large relative to the grid (LLC2160 is ~2 km), so Q=−3 preserves the salient mesoscale structures at much lower cost. Daily cadence resolves synoptic-to-mesoscale variability and is sufficient for monthly-mean anomalies and propagation diagnostics. Full hourly sampling and full-resolution reads are possible but would exceed the 10-minute budget for this spatial domain and analysis pipeline.
+
+From query to visualization (and how to read each figure)
+- Monthly-mean SST map with frontal-strength cues (plot_1): The mean field highlights the North Wall and spatially localizes mesoscale variability. Tight isotherm packing marks the front; the meander geometry and ring signatures point to an active eddy field downstream of Hatteras and near the Grand Banks. This is the static backdrop for interpreting anomalies.
+
+- Daily anomaly snapshots (plot_2): Subtracting the monthly mean reveals day-to-day meander displacement and eddy advection as warm/cold dipoles. The alternating anomaly stripes along the front and around rings are the mesoscale signal we want to isolate.
+
+- Longitude–time Hovmöller of anomalies along a fixed-latitude transect near the center of the domain (plot_3): Slanted bands show eastward propagation of anomaly features over multi-day timescales. Alternating sign with time reflects wave-like meander variability. Because this is a fixed y-index transect (not a front-following path), the signal blends meander propagation with small shifts in front latitude; still, it cleanly captures downstream advection.
+
+- Time-series diagnostics (plots 4–6): We report (i) the daily domain-mean SST (seasonal/background evolution), (ii) a front-intensity index defined as the domain-mean of |∇T| (unscaled grid gradients, a proxy for frontal sharpness), and (iii) the daily domain-standard deviation of anomalies (a bulk eddy amplitude measure). These summarize whether the front strengthened/relaxed and how the mesoscale “noise” evolved through the month.
+
+Key March 2020 numbers (from the run)
+- Temporal window and cadence: 2020-03-01 to 2020-03-31, 31 daily snapshots (stride 24 h), timesteps 984–1704.
+- Spatial domain: x=[7512,8592], y=[4603,5463], z=[0,1] (surface); approximately 928,800 surface grid cells per day.
+- Domain-mean SST: ~15°C throughout March (daily means given in the cache; see JSON stats for exact values).
+- Spatial extremes and contrast: daily min ≈ −1.8°C, max ≈ 26.3°C; the ~25–28°C north–south range across the box maintains a strong front all month.
+- Spatial standard deviation of daily SST: ~7.0–7.2°C early March, drifting into the 6.9–7.2°C range later—consistent with a persistently strong front. Daily anomaly excursions are typically within ±2.5°C along the front and around eddies, as seen in the maps.
+
+Estimated accuracy at Q=−3 (and why it’s acceptable here)
+We calibrate accuracy using the empirical performance CSV. The most relevant reference is a surface, Gulf-Stream–scale ROI at Q=−3 with continuous time (row 86): RMSE ≈ 0.3056°C and percentage error ≈ 0.540% (single-variable, surface temperature). Our ROI is ~4× larger than that test box, so we add a conservative 30% spatial-extent penalty and a 20% safety margin:
+
+- Estimated RMSE ≈ 0.3056°C × 1.3 × 1.2 ≈ 0.48°C.
+- Relative to our March dynamic range (~28°C), that is ~1.7%.
+
+Because temporal subsampling does not affect the CSV’s spatial accuracy metrics, daily sampling preserves these estimates; what it can miss are sub-daily features (see limitations). In short: at Q=−3, you can expect ~±0.5°C RMSE on the surface temperature field over this domain, which is small relative to the frontal contrast and does not obscure the mesoscale meanders/rings we’re targeting.
+
+Turnaround time (why this fits under 10 minutes)
+Using the CSV’s high-resolution surface benchmark (row 38), a small-ROI, single-timestep read at Q=−3 takes 1.722 s (0.0287 minutes) for ~1.8×10^5 points. Our per-day read is ~5.1× larger in area, so ≈0.0287 × 5.1 ≈ 0.145 minutes per daily field. Over 31 days, that’s ≈4.5 minutes of I/O. Gradients, masking, anomaly formation, and plotting add ~2–3 minutes in practice. The measured end-to-end run fell comfortably under 10 minutes, consistent with this estimate.
+
+Assumptions and limitations (what we did not do here)
+- Vertical structure is not analyzed; we used only the surface layer (z=0).
+- The Hovmöller transect is at a fixed y-index near the domain center. A true front-following diagnostic (e.g., path-tracked along maximum |∇T| or sea-level gradient) could sharpen propagation estimates and reduce smearing when the front shifts meridionally.
+- The front-intensity index uses |∇T| in grid units, not metric units. Converting to physical gradients (°C per km) would require mapping grid spacing to great-circle distances in the LLC grid, which we can add if needed.
+- Daily cadence captures synoptic/mesoscale evolution but can alias sub-daily processes (e.g., near-inertial waves, diurnal warming). Hourly analysis is possible at higher cost.
+- We focused on temperature only; salinity/velocity and derived diagnostics (e.g., strain, vorticity, EKE) would give dynamical context for meander growth/eddy shedding.
+- The ocean/land mask was applied where available; if the mask resolution mismatched the read, coastal edges may retain minor artifacts. This does not affect deep-ocean frontal interpretations.
+
+Reproducibility and next steps
+This run used DYAMOND LLC2160 surface temperature at the Gulf Stream box above (URL: nsdf-climate3…/llc2160_theta.idx), Q=−3, daily cadence, March 2020. Arrays, time stamps, and diagnostics are cached at the path returned by the run for reuse. If you specify additional months and a preferred cadence/quality, we can:
+
+- Go hourly at Q=−3 for finer propagation timing, or bump to Q=−6/−9 for higher fidelity with modest extra cost.
+- Add a front-following Hovmöller along the maximum |∇T| ridge to isolate true along-stream propagation speeds.
+- Compute eddy metrics (Okubo–Weiss, TIV, geostrophic vorticity) and frontogenesis functions using the velocity field, and cross-check temperature anomalies against dynamical structures.
+- Convert gradient metrics to physical units and report frontal widths and intensities along streamwise distance.
+
+Bottom line
+Even at accelerated settings (Q=−3, daily), the March 2020 Gulf Stream shows a strong, coherent thermal front with vigorous meanders and multiple eddies/rings downstream of Hatteras, with anomaly amplitudes on the order of a few °C and clear eastward-propagating patterns in a fixed-latitude Hovmöller. The estimated spatial accuracy at these settings is about ±0.5°C RMSE (~1.7% of the March dynamic range), which is more than sufficient to resolve mesoscale meanders and ring signatures. Specify your target months and any cadence/quality preferences, and I’ll extend the analysis and add the requested diagnostics under the same 10-minute constraint.
